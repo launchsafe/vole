@@ -1,7 +1,7 @@
 {
   "name": "vole",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local-first usage, cost and anomaly monitor for AI coding agents \u2014 a native macOS app over a local collector",
   "scripts": {
     "collect": "pnpm --filter @vole/core collect",

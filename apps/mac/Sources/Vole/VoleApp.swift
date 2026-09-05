@@ -8,7 +8,17 @@ struct VoleApp: App {
     @AppStorage("vole.theme") private var theme = "system"
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
-    private static let openDashboardAtLaunch = CommandLine.arguments.contains("--dashboard")
+    /// A first-ever launch presents the dashboard for the same reason the menu-bar
+    /// panel's "Open Dashboard" action does (see MenuPanel.swift) — a brand-new user's
+    /// only action so far is a Finder double-click, and a menu-bar-only app with no
+    /// window and no Dock icon looks exactly like it failed to open. Every launch after
+    /// this one goes back to the lightweight menu-bar-only default.
+    private static let openDashboardAtLaunch: Bool = {
+        let key = "vole.hasLaunchedBefore"
+        let firstLaunch = !UserDefaults.standard.bool(forKey: key)
+        if firstLaunch { UserDefaults.standard.set(true, forKey: key) }
+        return CommandLine.arguments.contains("--dashboard") || firstLaunch
+    }()
 
     private var scheme: ColorScheme? {
         switch theme { case "light": return .light; case "dark": return .dark; default: return nil }
