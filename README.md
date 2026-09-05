@@ -30,7 +30,9 @@ pnpm app         # the menu-bar app
 Supports **Claude Code**, **Codex CLI**, **OpenCode**, **Grok CLI**, **Cursor**, **Devin** and
 **Antigravity**. Full setup, requirements and demo data in [Quick start](#quick-start).
 
-<!-- Screenshot of the dashboard window goes here. -->
+![The Vole dashboard: token/cost KPIs and a 30-day incident-annotated timeline stacked by tool](docs/images/dashboard.png)
+
+*Demo data (`pnpm seed`) — real logs are sparse and rarely fill a 30-day view this evenly.*
 
 ---
 
@@ -492,25 +494,11 @@ Regenerate the PDF after editing any markdown with `pnpm docs:pdf`.
 
 ## Contributing
 
-Contributions are welcome. The two commands that matter before opening a pull request:
-
-```bash
-pnpm test       # unit tests — must pass
-pnpm typecheck  # must be clean
-```
-
-- [DEVELOPMENT.md](docs/DEVELOPMENT.md) — setup, every command, debugging recipes, testing philosophy.
-- [EXTENDING.md](docs/EXTENDING.md) — the guide for the most common contributions: adding a tool,
-  a rule, a model rate, or a panel in the app.
-- [ROADMAP.md](docs/ROADMAP.md#good-first-issues) — ranked next steps and **good first issues**.
-
-Two project rules worth knowing before you write a collector:
-
-1. **Never invent a number.** A token count is either read verbatim from a tool's own logs
-   (`exact`) or it is absent (`activity_only`, `NULL`). There is no "estimated" tier, by policy —
-   see [What is real, and what is not](#what-is-real-and-what-is-not).
-2. **Every collector must be idempotent.** Events are keyed as `<tool>:<stable id>` under a
-   `UNIQUE` constraint, so re-scanning the same logs can never double-count.
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the pre-PR checks,
+and the two rules ("never invent a number," "every collector is idempotent") that shape every
+review here. Bugs and feature requests go in
+[issues](https://github.com/launchsafe/vole/issues); [ROADMAP.md](docs/ROADMAP.md#good-first-issues)
+has ranked next steps and good first issues.
 
 Bugs and feature requests: please open an [issue](https://github.com/launchsafe/vole/issues).
 
