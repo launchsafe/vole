@@ -5,6 +5,7 @@ import UserNotifications
 @main
 struct VoleApp: App {
     @State private var store = Store()
+    @State private var updateChecker = UpdateChecker()
     @AppStorage("vole.theme") private var theme = "system"
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
@@ -69,7 +70,7 @@ struct VoleApp: App {
         .menuBarExtraStyle(.window)
 
         Window("Vole", id: "dashboard") {
-            DashboardView(store: store).preferredColorScheme(scheme)
+            DashboardView(store: store, updateChecker: updateChecker).preferredColorScheme(scheme)
         }
         .defaultLaunchBehavior(Self.openDashboardAtLaunch ? .presented : .suppressed)
         .windowResizability(.contentMinSize)

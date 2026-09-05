@@ -237,6 +237,7 @@ private struct NavIcon: View {
 
 struct DashboardView: View {
     @Bindable var store: Store
+    let updateChecker: UpdateChecker
     // Shared with the menu-bar panel's "Settings" item (see VoleApp / MenuPanel).
     @AppStorage("vole.section") private var sectionRaw = DashSection.dashboard.rawValue
     private var nav: DashSection { DashSection(rawValue: sectionRaw) ?? .dashboard }
@@ -288,6 +289,22 @@ struct DashboardView: View {
             .navigationTitle(nav.rawValue)
             .onChange(of: refreshSeconds) { _, new in store.setRefresh(new) }
             .toolbar {
+                // .navigation groups with the system sidebar toggle, at the toolbar's
+                // leading edge — visible everywhere, not just Dashboard/Breakdown,
+                // since an available update isn't section-specific.
+                if updateChecker.updateAvailable, let url = updateChecker.releaseURL {
+                    ToolbarItem(placement: .navigation) {
+                        Button {
+                            NSWorkspace.shared.open(url)
+                        } label: {
+                            Image(systemName: "arrow.down.circle")
+                                .overlay(alignment: .topTrailing) {
+                                    Circle().fill(.red).frame(width: 6, height: 6)
+                                }
+                        }
+                        .help("Update available\(updateChecker.latestVersion.map { " — v\($0)" } ?? "")")
+                    }
+                }
                 // The range filter drives the Dashboard timeline and Breakdown; the
                 // Incidents feed and Settings don't use it. A fixed ToolbarSpacer keeps
                 // the badge and the picker as separate Liquid Glass groups.
