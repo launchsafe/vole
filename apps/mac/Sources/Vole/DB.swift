@@ -115,6 +115,16 @@ final class DB {
                 .appendingPathComponent(".vole/vole.db").path
         }
 
+        tryOpen()
+    }
+
+    /// A brand-new install has no database file yet at the moment the app launches —
+    /// the embedded collector (a separate process, needing real startup time) hasn't
+    /// created it. `Store.refresh()` calls this on every poll until it succeeds, so
+    /// the app recovers within one poll interval instead of being stuck showing "no
+    /// database" for the rest of the session once the file does exist.
+    func tryOpen() {
+        guard !opened else { return }
         var h: OpaquePointer?
         if sqlite3_open_v2(path, &h, SQLITE_OPEN_READONLY, nil) == SQLITE_OK {
             handle = h; opened = true

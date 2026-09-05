@@ -50,7 +50,7 @@ final class Store {
     private(set) var refreshSeconds: Int = RefreshInterval.saved
 
     let dbPath: String
-    let dbOK: Bool
+    private(set) var dbOK: Bool
 
     /// The command that starts the collector — surfaced in the "no data" state.
     let collectCommand = "pnpm collect"
@@ -94,6 +94,12 @@ final class Store {
     }
 
     func refresh() {
+        // A brand-new install has no database yet at launch — the embedded collector
+        // needs real startup time to create it. Retry every poll rather than trusting
+        // the one-time open in DB.init(), which a fresh machine reliably loses the
+        // race against.
+        if !db.opened { db.tryOpen() }
+        dbOK = db.opened
         guard db.opened, !refreshing else { return }
         refreshing = true
         defer { refreshing = false }
