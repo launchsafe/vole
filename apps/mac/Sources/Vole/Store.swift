@@ -137,6 +137,11 @@ final class Store {
     /// (mirrors the collector's own 15-minute freshness window). Posted from the app so
     /// Notification Center shows the Vole icon — `osascript` always shows Script Editor's.
     private func notifyFreshIncidents() {
+        // UNUserNotificationCenter throws for a process with no bundle identifier — true
+        // of a bare `swift run` binary, never true of a real .app. Skip there rather than
+        // crash; the developer running unbundled has no Notification Center identity to
+        // post to anyway.
+        guard Bundle.main.bundleIdentifier != nil else { return }
         let cutoff = Int(Date.now.timeIntervalSince1970 * 1000) - 15 * 60_000
         let fresh = allIncidents.filter {
             $0.id > lastNotifiedIncidentID && $0.source == "live" && $0.severity != "info" && $0.windowEnd >= cutoff

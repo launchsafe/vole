@@ -15,8 +15,12 @@ struct VoleApp: App {
     }
 
     init() {
-        // Needed once for incident notifications to actually show up.
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // Needed once for incident notifications to actually show up. Guarded: a bare
+        // `swift run` binary has no bundle identifier, and UNUserNotificationCenter
+        // throws (not just fails) for a process without one.
+        if Bundle.main.bundleIdentifier != nil {
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        }
         #if DEBUG
         runSelfCheck()
         #endif
