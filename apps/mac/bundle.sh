@@ -60,15 +60,15 @@ if [ "$RELEASE" = false ]; then
   exit 0
 fi
 
-# 4b. Developer ID signing. Nested code is signed before the outer bundle — Apple
-#     deprecates --deep for distribution because it signs inside-out incorrectly.
+# 4b. Developer ID signing. Vole_Vole.bundle (SwiftPM's resource bundle) is plain PNGs,
+#     no Info.plist and no executable code, so codesign can't treat it as nested code —
+#     signing the outer app alone seals it in via CodeResources, which is all it needs.
 ID="$(security find-identity -v -p codesigning \
       | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)"
 [ -n "$ID" ] || { echo "no 'Developer ID Application' certificate in the keychain — see the header of this script" >&2; exit 1; }
 echo "signing as: $ID"
 
 # --options runtime (Hardened Runtime) and --timestamp are both required for notarisation.
-codesign --force --timestamp --options runtime --sign "$ID" "$APP/Contents/Resources/Vole_Vole.bundle"
 codesign --force --timestamp --options runtime --sign "$ID" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
