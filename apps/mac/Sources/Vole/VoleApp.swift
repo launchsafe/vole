@@ -6,6 +6,7 @@ import UserNotifications
 struct VoleApp: App {
     @State private var store = Store()
     @AppStorage("vole.theme") private var theme = "system"
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     private static let openDashboardAtLaunch = CommandLine.arguments.contains("--dashboard")
 
@@ -58,6 +59,21 @@ struct VoleApp: App {
         }
         .defaultLaunchBehavior(Self.openDashboardAtLaunch ? .presented : .suppressed)
         .windowResizability(.contentMinSize)
+    }
+}
+
+/// Owns the embedded collector's lifecycle — started once AppKit has actually finished
+/// launching (not from VoleApp.init, which also runs for the `--dump` headless check
+/// and exits before this would ever fire), stopped on a normal quit.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let collector = Collector()
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        collector.start()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        collector.stop()
     }
 }
 

@@ -14,9 +14,12 @@
     "seed:purge": "tsx src/cli/seed.ts --purge",
     "test": "node --import tsx --test 'src/**/*.test.ts'",
     "verify": "tsx src/cli/verify.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:sea": "node scripts/build-sea.mjs"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1"
+    "@types/node": "^22.20.1",
+    "esbuild": "^0.28.2",
+    "postject": "1.0.0-alpha.6"
   }
 }

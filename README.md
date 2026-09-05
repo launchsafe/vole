@@ -177,9 +177,13 @@ fullest copy in the logs and reports the live duplication factor.
 
 ## Quick start
 
-Vole is two processes: a **collector** (Node) that parses the logs into `~/.vole/vole.db`, and a
-native **macOS app** (SwiftUI) that reads that database. Requires **Node ≥ 22**, **pnpm**, and
-**Xcode 26** for the app. Built and tested on **macOS 26.5 (arm64)**.
+Vole is a **collector** (Node) that parses the logs into `~/.vole/vole.db`, and a native
+**macOS app** (SwiftUI) that reads that database. A packaged `Vole.app` (built with
+`pnpm app:bundle`, or downloaded as a release) embeds the collector as a self-contained binary
+and starts it itself — nothing else to run. Building and running from source with `pnpm app`
+(unbundled, `swift run`) doesn't have that binary, so it needs the collector started separately,
+below. Requires **Node ≥ 22** and **pnpm** either way, plus **Xcode 26** for the app. Built and
+tested on **macOS 26.5 (arm64)**.
 
 ```bash
 git clone https://github.com/launchsafe/vole
@@ -188,6 +192,8 @@ pnpm install
 ```
 
 ### 1. Collect
+
+Only needed for `pnpm app` (unbundled). A packaged `Vole.app` runs this itself — see below.
 
 Parses every source into `~/.vole/vole.db` and runs the anomaly rules.
 
@@ -210,8 +216,11 @@ pnpm app:bundle       # build/Vole.app, release build, ad-hoc signed, and open i
 ```
 
 The app lives in the menu bar (no Dock icon until you open the dashboard window) and re-reads the
-database every few seconds. It needs nothing but the collector: no server, no port, no browser.
-Details, packaging and the `--dump` headless check are in [apps/mac/README.md](apps/mac/README.md).
+database every few seconds — no server, no port, no browser. A bundled `Vole.app`
+(`pnpm app:bundle`, or a downloaded release) launches its own embedded collector on startup and
+stops it on quit; `pnpm app` (`swift run`, unbundled) has no binary to embed, so it just reads
+whatever `pnpm collect` (above) is writing. Details, packaging and the `--dump` headless check are
+in [apps/mac/README.md](apps/mac/README.md).
 
 ### Demo data
 
@@ -466,8 +475,8 @@ Regenerate the PDF after editing any markdown with `pnpm docs:pdf`.
   under-counts on live data.
 - **Antigravity timing is approximate** — file mtimes, not real timestamps, so its events cluster
   rather than spread across a session.
-- **The app is ad-hoc signed.** `bundle.sh` produces a runnable `Vole.app`, but distribution
-  outside your own machine needs an Apple Developer ID and notarisation.
+- **`pnpm app:bundle` ad-hoc signs.** `bundle.sh --release` signs with a Developer ID, notarises
+  and produces a `.dmg` — see [apps/mac/README.md](apps/mac/README.md#package).
 - **Live sessions, session drill-down, digest and what-if are not drawn in the app yet.** They are
   complete in core and available through `pnpm top`, `pnpm digest` and the MCP server.
 - Cursor and Antigravity coverage is **deliberately shallow** because the data genuinely is not

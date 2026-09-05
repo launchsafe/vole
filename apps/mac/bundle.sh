@@ -43,32 +43,45 @@ fi
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/Vole"
 
+# 2b. the collector, as one self-contained executable (no Node install required to run
+#     it) — see packages/core/scripts/build-sea.mjs. This is what lets the app run
+#     without the user starting `pnpm collect` themselves.
+(cd ../../packages/core && pnpm build:sea)
+COLLECTOR="../../packages/core/dist/vole-collector"
+
 # 3. lay out the bundle
 rm -rf "$APP" "$DMG"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Vole"
+cp "$COLLECTOR" "$APP/Contents/MacOS/vole-collector"
 cp Icon/Vole.icns "$APP/Contents/Resources/AppIcon.icns"
 cp -R "$(dirname "$BIN")/Vole_Vole.bundle" "$APP/Contents/Resources/"   # SwiftPM resources
 sed "s#<string>0.1.0</string>#<string>$VERSION</string>#" Info.plist > "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 if [ "$RELEASE" = false ]; then
-  # 4a. ad-hoc sign (deep, so the nested resource bundle is covered)
+  # 4a. ad-hoc sign (deep, so vole-collector — real nested Mach-O — gets covered too;
+  #     Vole_Vole.bundle, the SwiftPM resource bundle, is plain PNGs with no Info.plist,
+  #     so --deep silently treats it as a resource rather than nested code, which is
+  #     correct — it seals in via CodeResources instead).
   codesign --force --deep --sign - "$APP"
   echo "built $APP  (v$VERSION, ad-hoc — Gatekeeper will reject this on another Mac)"
   [ "$OPEN" = true ] && open "$APP"
   exit 0
 fi
 
-# 4b. Developer ID signing. Vole_Vole.bundle (SwiftPM's resource bundle) is plain PNGs,
-#     no Info.plist and no executable code, so codesign can't treat it as nested code —
-#     signing the outer app alone seals it in via CodeResources, which is all it needs.
+# 4b. Developer ID signing. vole-collector is real executable code — signed before the
+#     outer app, same Hardened Runtime + timestamp, per Apple's nested-code-first rule.
+#     Vole_Vole.bundle (SwiftPM's resource bundle) has no Info.plist and no executable
+#     code, so it can't be signed as nested code and doesn't need to be — signing the
+#     outer app alone seals it in via CodeResources.
 ID="$(security find-identity -v -p codesigning \
       | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)"
 [ -n "$ID" ] || { echo "no 'Developer ID Application' certificate in the keychain — see the header of this script" >&2; exit 1; }
 echo "signing as: $ID"
 
 # --options runtime (Hardened Runtime) and --timestamp are both required for notarisation.
+codesign --force --timestamp --options runtime --sign "$ID" "$APP/Contents/MacOS/vole-collector"
 codesign --force --timestamp --options runtime --sign "$ID" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
