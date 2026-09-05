@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { Database } from '../sqlite';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { paths } from '../paths';
@@ -53,7 +53,7 @@ export function collectDevin(_db: DB): CollectorResult {
       /* keep now() */
     }
 
-    let src: Database.Database;
+    let src: DB;
     try {
       src = new Database(dbPath, { readonly: true, fileMustExist: true });
     } catch (err) {

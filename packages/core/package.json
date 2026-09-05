@@ -16,11 +16,7 @@
     "verify": "tsx src/cli/verify.ts",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "better-sqlite3": "^13.0.3"
-  },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^22.10.2"
+    "@types/node": "^22.20.1"
   }
 }

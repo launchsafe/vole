@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { Database } from '../sqlite';
 import { existsSync } from 'node:fs';
 import { paths } from '../paths';
 import type { DB } from '../db';
@@ -38,7 +38,7 @@ export function collectCursor(_db: DB): CollectorResult {
     return { tool: 'cursor', events, filesScanned: 0, notes: [`No Cursor tracking DB at ${dbPath}`] };
   }
 
-  let src: Database.Database;
+  let src: DB;
   try {
     // Read-only: Cursor may be running and holding this file.
     src = new Database(dbPath, { readonly: true, fileMustExist: true });

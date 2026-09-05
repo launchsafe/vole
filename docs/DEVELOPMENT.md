@@ -11,7 +11,7 @@ looks wrong.
 |---|---|---|
 | Node | ≥ 22 | The collector, CLIs, tests |
 | pnpm | ≥ 9 | Workspace management |
-| Xcode 26 | with the macOS 26 SDK | The app (`swift build`); its CLT also compiles `better-sqlite3` |
+| Xcode 26 | with the macOS 26 SDK | The app (`swift build`) only |
 
 Built and tested on **macOS 26.5 (arm64)**. The collectors read macOS/Linux paths; Windows would
 need `paths.ts` updated.
@@ -22,8 +22,8 @@ cd vole
 pnpm install
 ```
 
-`better-sqlite3` compiles a native binding during install. If that fails, you are missing Xcode
-CLT (`xcode-select --install`).
+`packages/core` has no native dependencies — SQLite comes from Node's own `node:sqlite`
+(stdlib since Node 22), so `pnpm install` never compiles anything.
 
 ---
 

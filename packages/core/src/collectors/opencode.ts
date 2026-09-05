@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { Database } from '../sqlite';
 import { existsSync } from 'node:fs';
 import { paths } from '../paths';
 import { contextWindow } from '../pricing';
@@ -59,7 +59,7 @@ export function collectOpencode(_db: DB): CollectorResult {
     return { tool: 'opencode', events, filesScanned: 0, notes: [`No OpenCode DB at ${dbPath}`] };
   }
 
-  let src: Database.Database;
+  let src: DB;
   try {
     // Read-only: OpenCode may be running and holding this file (WAL).
     src = new Database(dbPath, { readonly: true, fileMustExist: true });

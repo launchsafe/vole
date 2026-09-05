@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import { Database } from './sqlite';
 import { mkdirSync } from 'node:fs';
 import { hostname, userInfo } from 'node:os';
 import { dirname } from 'node:path';
@@ -7,7 +7,7 @@ import { paths } from './paths';
 import { computeCost } from './pricing';
 import type { Anomaly, Tool, UsageEvent } from './types';
 
-export type DB = Database.Database;
+export type DB = Database;
 
 let cached: DB | null = null;
 

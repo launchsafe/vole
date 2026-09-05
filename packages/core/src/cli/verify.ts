@@ -29,7 +29,7 @@
  */
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import Database from 'better-sqlite3';
+import { Database } from '../sqlite';
 import { openDb } from '../db';
 import { paths } from '../paths';
 import { rateFor } from '../pricing';

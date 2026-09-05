@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import Database from 'better-sqlite3';
+import { Database } from '../sqlite';
 import { SCHEMA } from '../schema';
 import { getState, insertEvents } from '../db';
 import { collectClaudeCode } from './claude-code';
