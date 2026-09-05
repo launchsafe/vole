@@ -81,7 +81,12 @@ ID="$(security find-identity -v -p codesigning \
 echo "signing as: $ID"
 
 # --options runtime (Hardened Runtime) and --timestamp are both required for notarisation.
-codesign --force --timestamp --options runtime --sign "$ID" "$APP/Contents/MacOS/vole-collector"
+# vole-collector additionally needs the JIT entitlements below — Hardened Runtime blocks
+# W^X executable-memory allocation by default, which V8 needs; without them it crashes
+# instantly on launch (FatalProcessOutOfMemory during Isolate::Init). Caught by actually
+# running a --release build, not just letting notarytool accept the signature — Apple's
+# scanner has no opinion on whether the binary can survive its own first line of code.
+codesign --force --timestamp --options runtime --entitlements Collector.entitlements --sign "$ID" "$APP/Contents/MacOS/vole-collector"
 codesign --force --timestamp --options runtime --sign "$ID" "$APP"
 codesign --verify --strict --verbose=2 "$APP"
 
