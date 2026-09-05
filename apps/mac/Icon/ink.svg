@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+    <defs>
+      <clipPath id="card"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+      <linearGradient id="k" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#24252A"/><stop offset="1" stop-color="#0B0B0C"/></linearGradient>
+    </defs>
+    <g clip-path="url(#card)">
+      <rect x="100" y="100" width="824" height="824" fill="url(#k)"/>
+      <g transform="translate(512 512) scale(0.78) translate(-512 -512)">
+    <defs><clipPath id="mpef23"><path d="M512,132 L874,332 L874,692 L512,892 L150,692 L150,332 Z"/></clipPath></defs>
+    <g clip-path="url(#mpef23)">
+      <path d="M512,132 L874,332 L874,692 L512,892 L150,692 L150,332 Z" fill="#F5F5F7"/>
+      <g stroke="#141519" stroke-width="104" fill="none" stroke-linecap="round"><path d="M512,512 L512,960"/><path d="M512,512 L96,305"/><path d="M512,512 L928,305"/></g>
+      <circle cx="512" cy="512" r="196" fill="#141519"/>
+      <circle cx="512" cy="512" r="98" fill="#F5F5F7"/>
+    </g></g>
+    </g>
+  </svg>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template consumed by bundle.sh. Version strings are patched in from the arg. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>              <string>Vole</string>
+  <key>CFBundleDisplayName</key>       <string>Vole</string>
+  <key>CFBundleIdentifier</key>        <string>com.launchsafe.vole</string>
+  <key>CFBundleExecutable</key>        <string>Vole</string>
+  <key>CFBundleIconFile</key>          <string>AppIcon</string>
+  <key>CFBundlePackageType</key>       <string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleVersion</key>           <string>1</string>
+  <key>LSMinimumSystemVersion</key>    <string>26.0</string>
+  <key>NSPrincipalClass</key>          <string>NSApplication</string>
+  <key>NSHighResolutionCapable</key>   <true/>
+  <!-- Menu-bar utility: no Dock icon until the dashboard window opens
+       (VoleApp bumps the activation policy to .regular at that point). -->
+  <key>LSUIElement</key>               <true/>
+  <key>NSHumanReadableCopyright</key>  <string>Local usage &amp; anomaly monitor for AI coding agents.</string>
+</dict>
+</plist>

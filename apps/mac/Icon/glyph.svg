@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+    <defs><mask id="m8yp2t">
+      <path d="M512,132 L874,332 L874,692 L512,892 L150,692 L150,332 Z" fill="#fff"/>
+      <g stroke="#000" stroke-width="104" fill="none" stroke-linecap="round"><path d="M512,512 L512,960"/><path d="M512,512 L96,305"/><path d="M512,512 L928,305"/></g>
+      <circle cx="512" cy="512" r="196" fill="#000"/>
+    </mask></defs>
+    <g>
+      <path d="M512,132 L874,332 L874,692 L512,892 L150,692 L150,332 Z" fill="#0A0A0A" mask="url(#m8yp2t)"/>
+      <circle cx="512" cy="512" r="98" fill="#0A0A0A"/>
+    </g></svg>

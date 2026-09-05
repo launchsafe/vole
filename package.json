@@ -1,0 +1,33 @@
+{
+  "name": "vole",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local-first usage, cost and anomaly monitor for AI coding agents \u2014 a native macOS app over a local collector",
+  "scripts": {
+    "collect": "pnpm --filter @vole/core collect",
+    "collect:once": "pnpm --filter @vole/core collect -- --once --verbose",
+    "app": "swift run --package-path apps/mac",
+    "app:bundle": "cd apps/mac && ./bundle.sh --open",
+    "seed": "pnpm --filter @vole/core seed",
+    "seed:purge": "pnpm --filter @vole/core seed:purge",
+    "test": "pnpm --filter @vole/core test",
+    "verify": "pnpm --filter @vole/core verify",
+    "docs:pdf": "node scripts/build-docs-pdf.mjs",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "top": "tsx packages/core/src/cli/top.ts",
+    "pr": "tsx packages/core/src/cli/pr.ts",
+    "statusline": "tsx packages/core/src/cli/statusline.ts",
+    "mcp": "tsx packages/core/src/cli/mcp.ts",
+    "digest": "tsx packages/core/src/cli/digest.ts"
+  },
+  "devDependencies": {
+    "markdown-it": "15",
+    "markdown-it-anchor": "9",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=22"
+  }
+}
