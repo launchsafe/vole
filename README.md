@@ -1,6 +1,17 @@
+<div align="center">
+
+<img src="apps/mac/Icon/AppIcon.appiconset/icon_512x512@2x.png" alt="Vole" width="112" height="112">
+
 # Vole
 
 **Local-first usage, cost and reliability monitor for AI coding agents.**
+
+[![CI](https://github.com/launchsafe/vole/actions/workflows/ci.yml/badge.svg)](https://github.com/launchsafe/vole/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Platform: macOS 26+](https://img.shields.io/badge/platform-macOS%2026%2B-lightgrey.svg)](#quick-start)
+[![Node: 22+](https://img.shields.io/badge/node-%E2%89%A5%2022-brightgreen.svg)](#quick-start)
+
+</div>
 
 Vole reads the logs your AI coding tools already write to disk, normalises them into one
 schema, and surfaces both spend and *misbehaviour* — runaway tool loops, token-burn spikes, retry
@@ -9,6 +20,17 @@ storms, rate-limit pressure.
 It is a monitoring tool, not a cost tracker: the incident feed is the point.
 
 Everything runs locally. No scraping, no cloud APIs, no logging into any web UI.
+
+```bash
+git clone https://github.com/launchsafe/vole && cd vole && pnpm install
+pnpm collect     # parse the logs, keep polling
+pnpm app         # the menu-bar app
+```
+
+Supports **Claude Code**, **Codex CLI**, **OpenCode**, **Grok CLI**, **Cursor**, **Devin** and
+**Antigravity**. Full setup, requirements and demo data in [Quick start](#quick-start).
+
+<!-- Screenshot of the dashboard window goes here. -->
 
 ---
 
@@ -25,7 +47,8 @@ Everything runs locally. No scraping, no cloud APIs, no logging into any web UI.
 - [Verifying it works](#verifying-it-works)
 - [Architecture](#architecture)
 - [Known limitations](#known-limitations)
-- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License](#license)
 
 ---
 
@@ -458,6 +481,32 @@ Regenerate the PDF after editing any markdown with `pnpm docs:pdf`.
 
 ---
 
-## Licence
+## Contributing
+
+Contributions are welcome. The two commands that matter before opening a pull request:
+
+```bash
+pnpm test       # unit tests — must pass
+pnpm typecheck  # must be clean
+```
+
+- [DEVELOPMENT.md](docs/DEVELOPMENT.md) — setup, every command, debugging recipes, testing philosophy.
+- [EXTENDING.md](docs/EXTENDING.md) — the guide for the most common contributions: adding a tool,
+  a rule, a model rate, or a panel in the app.
+- [ROADMAP.md](docs/ROADMAP.md#good-first-issues) — ranked next steps and **good first issues**.
+
+Two project rules worth knowing before you write a collector:
+
+1. **Never invent a number.** A token count is either read verbatim from a tool's own logs
+   (`exact`) or it is absent (`activity_only`, `NULL`). There is no "estimated" tier, by policy —
+   see [What is real, and what is not](#what-is-real-and-what-is-not).
+2. **Every collector must be idempotent.** Events are keyed as `<tool>:<stable id>` under a
+   `UNIQUE` constraint, so re-scanning the same logs can never double-count.
+
+Bugs and feature requests: please open an [issue](https://github.com/launchsafe/vole/issues).
+
+---
+
+## License
 
 MIT — see [LICENSE](LICENSE).
