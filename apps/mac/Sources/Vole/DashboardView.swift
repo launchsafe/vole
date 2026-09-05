@@ -624,7 +624,8 @@ struct DashboardView: View {
             .shadow(color: .black.opacity(0.18), radius: 5, y: 2)
             VStack(alignment: .leading, spacing: 3) {
                 Text("Vole").font(.title2.weight(.semibold))
-                Text("Version 0.1.0").font(.callout).foregroundStyle(.secondary)
+                Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")")
+                    .font(.callout).foregroundStyle(.secondary)
                 Text("Local usage & anomaly monitor for AI coding agents")
                     .font(.callout).foregroundStyle(.secondary)
             }
