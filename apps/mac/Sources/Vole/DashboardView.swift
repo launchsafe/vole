@@ -319,21 +319,30 @@ struct DashboardView: View {
     }
 
     private var noDataView: some View {
-        ContentUnavailableView {
-            Label("Waiting for the collector", systemImage: "bolt.horizontal.circle")
+        // A bundled app runs its own collector — telling that user to run a pnpm
+        // command would be asking them to do something they have no Node, no pnpm,
+        // and no terminal to do. Only an unbundled dev build shows the command.
+        let embedded = Collector.isEmbedded
+        return ContentUnavailableView {
+            Label(embedded ? "Setting up" : "Waiting for the collector",
+                  systemImage: "bolt.horizontal.circle")
         } description: {
-            Text("Vole reads a local database the collector writes. Start it, then keep it running.")
+            Text(embedded
+                 ? "Vole is starting its collector. This takes just a few seconds."
+                 : "Vole reads a local database the collector writes. Start it, then keep it running.")
         } actions: {
-            HStack(spacing: 8) {
-                Text(store.collectCommand)
-                    .font(.callout.monospaced())
-                    .fixedSize()
-                    .padding(.horizontal, 10).padding(.vertical, 5)
-                    .background(.background.tertiary,
-                                in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                Button("Copy") { copyToPasteboard(store.collectCommand) }
+            if !embedded {
+                HStack(spacing: 8) {
+                    Text(store.collectCommand)
+                        .font(.callout.monospaced())
+                        .fixedSize()
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(.background.tertiary,
+                                    in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    Button("Copy") { copyToPasteboard(store.collectCommand) }
+                }
+                .fixedSize()
             }
-            .fixedSize()
         }
     }
 

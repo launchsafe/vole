@@ -14,11 +14,22 @@ import Foundation
 final class Collector {
     private var process: Process?
 
-    func start() {
+    /// True for a real .app built by bundle.sh, false for an unbundled `swift run`
+    /// binary. Also what the empty-state UI checks so a bundled app never tells a
+    /// user to run `pnpm collect` themselves — they have no Node, no pnpm, and
+    /// nothing to run; the collector is already running for them.
+    static let isEmbedded: Bool = {
         guard let exe = Bundle.main.executableURL?
             .deletingLastPathComponent()
-            .appendingPathComponent("vole-collector"),
-            FileManager.default.isExecutableFile(atPath: exe.path)
+            .appendingPathComponent("vole-collector")
+        else { return false }
+        return FileManager.default.isExecutableFile(atPath: exe.path)
+    }()
+
+    func start() {
+        guard Self.isEmbedded, let exe = Bundle.main.executableURL?
+            .deletingLastPathComponent()
+            .appendingPathComponent("vole-collector")
         else { return }
 
         let p = Process()

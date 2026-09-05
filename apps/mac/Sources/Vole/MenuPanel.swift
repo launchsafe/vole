@@ -43,7 +43,10 @@ struct ConfidenceBadge: View {
     }
 }
 
-/// First-run / no-data state: the collector isn't feeding the database yet.
+/// First-run / no-data state: the collector isn't feeding the database yet. A bundled
+/// app runs its own collector already — telling that user to run a pnpm command asks
+/// them to do something they have no Node, no pnpm and no terminal to do, so only an
+/// unbundled dev build (`swift run`) shows the command.
 struct SetupCard: View {
     let command: String
     let path: String
@@ -51,27 +54,34 @@ struct SetupCard: View {
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: 7) {
-                Label("Waiting for the collector", systemImage: "bolt.horizontal.circle")
-                    .font(.subheadline.weight(.semibold))
-                Text("Vole reads a local database the collector writes. Start it, then keep it running:")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 6) {
-                    Text(command)
-                        .font(.callout.monospaced())
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(.background.tertiary, in: RoundedRectangle(cornerRadius: 6))
-                    Button {
-                        copyToPasteboard(command)
-                        withAnimation { copied = true }
-                    } label: {
-                        Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                if Collector.isEmbedded {
+                    Label("Setting up", systemImage: "bolt.horizontal.circle")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Vole is starting its collector. This takes just a few seconds.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Label("Waiting for the collector", systemImage: "bolt.horizontal.circle")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Vole reads a local database the collector writes. Start it, then keep it running:")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 6) {
+                        Text(command)
+                            .font(.callout.monospaced())
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(.background.tertiary, in: RoundedRectangle(cornerRadius: 6))
+                        Button {
+                            copyToPasteboard(command)
+                            withAnimation { copied = true }
+                        } label: {
+                            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Copy")
                     }
-                    .buttonStyle(.borderless)
-                    .help("Copy")
+                    Text(path)
+                        .font(.caption2.monospaced()).foregroundStyle(.tertiary)
+                        .lineLimit(1).truncationMode(.middle)
                 }
-                Text(path)
-                    .font(.caption2.monospaced()).foregroundStyle(.tertiary)
-                    .lineLimit(1).truncationMode(.middle)
             }
         }
     }
