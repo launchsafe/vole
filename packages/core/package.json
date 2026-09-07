@@ -20,7 +20,9 @@
     "dsar": "tsx src/cli/dsar.ts",
     "bundle": "tsx src/cli/bundle.ts",
     "metrics": "tsx src/cli/metrics.ts",
-    "retention": "tsx src/cli/retention.ts"
+    "retention": "tsx src/cli/retention.ts",
+    "otlp": "tsx src/cli/otlp.ts",
+    "kanon": "tsx src/cli/kanon.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

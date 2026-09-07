@@ -17,7 +17,10 @@ const RULE: Record<string, string> = {
   sensitive_read_unasked: 'sensitive reads', agent_wrote_persistence: 'persistence writes',
   agent_self_authorised: 'self-authorisations', scope_drift: 'scope drifts',
   install_after_ingress: 'installs after fetch', unattended_run: 'unattended runs',
-  context_edges: 'external fetches',
+  context_edges: 'external fetches', subagent_inherited_bypass: 'inherited bypasses',
+  cross_scope_read_then_publish: 'cross-scope publishes', vcs_action: 'state-changing git',
+  fetch_ingress: 'web ingress', human_interrupt: 'human interrupts',
+  hidden_unicode_instruction: 'hidden-unicode instructions', mcp_endpoint_alias: 'MCP aliases',
 };
 const base = (p: string) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
 const day = (ts: number) => new Date(ts).toISOString().slice(0, 10);

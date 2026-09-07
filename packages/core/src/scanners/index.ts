@@ -51,6 +51,7 @@ export const collectorHealthScanner: Scanner = {
 };
 
 import { tier2ExtrasScanner } from './tier2-extras';
+import { postureScanner } from './posture-deep';
 import { dlpScanner } from '../dlp/scanner';
 
-export const SCANNERS: Scanner[] = [collectorHealthScanner, aiSurfacesScanner, tier2ExtrasScanner, dlpScanner];
+export const SCANNERS: Scanner[] = [collectorHealthScanner, aiSurfacesScanner, tier2ExtrasScanner, dlpScanner, postureScanner];

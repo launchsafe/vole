@@ -107,7 +107,9 @@ export type AnomalyRule =
   | 'cross_scope_read_then_publish'
   | 'vcs_action'
   | 'fetch_ingress'
-  | 'human_interrupt';
+  | 'human_interrupt'
+  | 'hidden_unicode_instruction'
+  | 'mcp_endpoint_alias';
 
 export type Severity = 'info' | 'warn' | 'critical';
 
