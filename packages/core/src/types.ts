@@ -116,7 +116,49 @@ export type AnomalyRule =
   | 'paged_bulk_read'
   | 'daily_exposure_rollup'
   | 'tool_first_seen'
-  | 'posture_escalated';
+  | 'posture_escalated'
+  // ── foundation additions: rule ids the roadmap features reference. A builder
+  // whose rule is not here must widen this union in the same change — the
+  // `as never` casts that landed rows under wrong ids are exactly the debt
+  // these literals retire.
+  | 'coverage_degraded' // tier2: readable root went unreadable (ok → eperm only)
+  | 'agent_home_moved' // tier2: session under no known agent root
+  | 'foreign_root_transcript' // tier2: event's project path missing on disk
+  | 'ai_gateway_persistent' // tier2: launchd-declared AI gateway
+  | 'provider_key_without_sanctioned_surface' // tier2
+  | 'exposed_local_bind' // tier2: local model runtime bound off-loopback
+  | 'shadow_account_on_corporate_repo' // tier3
+  | 'account_switched' // tier3: session_identity account change mid-history
+  | 'principal_conflict' // tier3: one machine, multiple OS users (or inverse)
+  | 'secret_at_rest' // tier4: the DLP ledger's own rule id
+  | 'cross_vendor_context_import' // tier4
+  | 'unattended_full_access' // tier5
+  | 'policy_downgraded' // tier5
+  | 'shadow_mcp_server' // tier6: called, present in no local config
+  | 'crown_jewel_read_unasked' // tier6
+  | 'crown_jewel_egress' // tier6
+  | 'tier1_remote_write' // tier6
+  | 'crown_jewel_left_device' // tier6
+  | 'content_stale' // tier6: pack older than its kind's floor
+  | 'envelope_change_escaped' // tier6: write reached committed/pushed state
+  | 'write_then_hide' // tier6: change made unreviewable (.gitignore &c)
+  | 'repo_carried_grant' // tier6: committed permission allowlist
+  | 'agent_config_with_dependency' // tier6: config whose lockfile-sha moved
+  | 'install_hook_added' // tier6: lifecycle script planted at install
+  | 'root_not_present' // tier6: tombstoned work root
+  | 'mcp_instructions_changed' // tier6: server-instruction rug pull
+  | 'untrusted_execution' // tier6: workspace-trust flip
+  | 'security_envelope_changed' // tier6
+  | 'noise_budget_exceeded' // tier7
+  | 'source_rewritten' // tier7: chained prefix digest mismatch
+  | 'log_source_stopped' // tier7: dead-man's switch
+  | 'export_drop' // tier7: outbox dropped a document
+  | 'clock_suspect' // tier7: wall clock vs boot-anchored uptime
+  | 'shadow_account_spend' // tier8: console-blind spend
+  | 'reconcile_gap' // tier8
+  | 'activity_after_departure' // tier8
+  | 'budget_exceeded' // tier8
+  | 'budget_indeterminate'; // tier8: budget verdict cannot be computed
 
 export type Severity = 'info' | 'warn' | 'critical';
 
@@ -174,3 +216,71 @@ export interface CollectorResult {
    */
   commit?: () => void;
 }
+
+// ── Foundation domain types ───────────────────────────────────────────────────
+//
+// The vocabularies the remaining features stamp into the nullable columns the
+// foundation migrations added. Every value is read from a source or declared by
+// an admin — never inferred silently — and every column stays NULL until one of
+// those two things happens.
+
+/** Why a cost_usd figure means what it means (tier 8: cost_basis). */
+export type CostBasis =
+  | 'list_equivalent' // computed from published list rates (computeCost)
+  | 'provider_reported' // the vendor's own local figure (OpenCode d.cost)
+  | 'free_tier'; // a genuinely-free model, not an unknown rate
+
+/** Account class resolved from the auth path (tier 3) — never from model names. */
+export type AccountClass =
+  | 'org_oauth'
+  | 'personal_oauth'
+  | 'api_key'
+  | 'cloud_provider'
+  | 'team_seat'
+  | 'unknown';
+
+/**
+ * How strongly a session is bound to its principal (tier 3). Ranked:
+ * session_proved > store_origin > ambient > unbound.
+ */
+export type BindingEvidence =
+  | 'session_proved' // the session's own records name the account
+  | 'store_origin' // inferred from which store produced the row
+  | 'ambient' // only the ambient environment implies it
+  | 'unbound';
+
+/** The gate a tool call actually had (tier 5: authorization_basis). */
+export type AuthorizationBasis =
+  | 'bypass_no_gate' // bypassPermissions interval / danger-full-access turn
+  | 'mode_auto' // an auto-approval mode answered, no human in the loop
+  | 'rule_matched' // an allow entry matched
+  | 'human_denied' // a human refused it
+  | 'unknown'; // no record — never 'gated'
+
+/** Trust class of a content pack (tier 6: two trust classes, one builtin floor). */
+export type TrustClass = 'vendor_signed' | 'admin_authored';
+
+/** Suppression register mode (tier 6): evaluate-and-hide vs skip-and-unknown. */
+export type SuppressionMode = 'mute_report' | 'mute_scan';
+
+/** Kind of system an action targeted (tier 5: action_targets). */
+export type TargetKind =
+  | 'cloud_account'
+  | 'k8s_context'
+  | 'database'
+  | 'vcs_repo'
+  | 'package_registry'
+  | 'saas'
+  | 'remote_host';
+
+/** Where a targeted system lives (tier 5). */
+export type Locality = 'loopback' | 'remote' | 'unknown';
+
+/** Declared environment of a targeted system (tier 5) — a declaration, never a guess. */
+export type EnvClass = 'prod' | 'staging' | 'dev' | 'unknown';
+
+/** Declared principal state (tier 8) — written from declarations only, never observation. */
+export type PrincipalState = 'active' | 'departing' | 'departed' | 'scope_changed' | 'suspended';
+
+/** Direction a secret or payload moved (tier 4/5). */
+export type Direction = 'at_rest' | 'at_wire' | 'human_pasted' | 'agent_typed' | 'off_device';

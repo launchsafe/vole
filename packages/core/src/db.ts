@@ -501,6 +501,842 @@ export const MIGRATIONS: Migration[] = [
       return 0;
     },
   },
+  {
+    // ── FOUNDATION (migrations 20–26) ─────────────────────────────────────────
+    //
+    // These steps lay every table and column the remaining roadmap features need,
+    // so feature builders never append a migration of their own and never edit
+    // this file concurrently. Rules of the seam:
+    //   * every column added to an existing table is nullable — NULL is an honest
+    //     unknown, never a defaulted zero;
+    //   * every new table is CREATE IF NOT EXISTS with a UNIQUE upsert key that
+    //     must not contain now()-derived values (idempotency contract);
+    //   * tables are write-side only here — no view or read model depends on them
+    //     until a builder wires one.
+    version: 20,
+    name: 'surfaces-depth-and-readability',
+    kind: 'ddl',
+    // Tier 2 seam: the shadow-AI spine grows the columns the spec names (vendor,
+    // identifier, state, scanner, confidence, evidence_kind, discovery) plus the
+    // attempted-read ledger scan_access — existsSync is not a permission oracle,
+    // and the four-state probe outcome is the only honest observable.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS scan_access (
+          root            TEXT    NOT NULL,
+          launch_context  TEXT,
+          state           TEXT    NOT NULL,
+          errno           TEXT,
+          entries         INTEGER,
+          last_ok_ts      INTEGER,
+          last_ok_entries INTEGER,
+          last_result     TEXT,
+          first_seen      INTEGER NOT NULL,
+          last_seen       INTEGER NOT NULL,
+          UNIQUE (root, launch_context)
+        );
+        CREATE TABLE IF NOT EXISTS agent_roots (
+          root_path    TEXT NOT NULL UNIQUE,
+          tool         TEXT NOT NULL,
+          discovered_by TEXT,
+          first_seen   INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS model_routes (
+          route_key      TEXT NOT NULL UNIQUE,
+          alias          TEXT NOT NULL,
+          target_model   TEXT,
+          api_base       TEXT,
+          api_key_present INTEGER,
+          source         TEXT NOT NULL,
+          first_seen     INTEGER NOT NULL,
+          last_seen      INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS surface_activity (
+          surface_key TEXT NOT NULL,
+          counter_kind TEXT NOT NULL,
+          counter     INTEGER NOT NULL DEFAULT 0,
+          watermark   INTEGER,
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL,
+          UNIQUE (surface_key, counter_kind)
+        );
+        CREATE TABLE IF NOT EXISTS provider_keys (
+          key_name    TEXT NOT NULL,
+          source_file TEXT NOT NULL,
+          shape       TEXT,
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL,
+          UNIQUE (key_name, source_file)
+        );
+        CREATE TABLE IF NOT EXISTS ai_dependencies (
+          dep_key  TEXT NOT NULL UNIQUE,
+          name     TEXT NOT NULL,
+          kind     TEXT,
+          source   TEXT,
+          path     TEXT,
+          version  TEXT,
+          first_seen INTEGER NOT NULL,
+          last_seen  INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS site_capabilities (
+          origin    TEXT NOT NULL,
+          capability TEXT NOT NULL,
+          pref_key  TEXT NOT NULL,
+          pref_file TEXT NOT NULL,
+          first_seen INTEGER NOT NULL,
+          last_seen  INTEGER NOT NULL,
+          UNIQUE (origin, capability, pref_file)
+        );
+        CREATE TABLE IF NOT EXISTS column_provenance (
+          table_name            TEXT NOT NULL,
+          column_name           TEXT NOT NULL,
+          migration_version     INTEGER,
+          first_populated_ts     INTEGER,
+          unbackfillable_rows    INTEGER,
+          PRIMARY KEY (table_name, column_name)
+        );`);
+      return (
+        addColumn(db, 'ai_surfaces', 'vendor', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'identifier', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'state', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'scanner', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'confidence', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'evidence_kind', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'account_class', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'class_evidence', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'discovery', 'TEXT')
+      );
+    },
+  },
+  {
+    version: 21,
+    name: 'identity-machinery',
+    kind: 'ddl',
+    // Tier 3 seam: execution_context_id on every event-bearing ledger (origin
+    // quarantine), the account-class columns on session_identity, hostname
+    // history, the view-governance access log, and the pseudonymised insert
+    // (subject_id) that replaces cleartext user/machine going forward. The
+    // cleartext columns stay — rows collected before this step keep their NULL
+    // honesty and a builder migrates them deliberately.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS hostname_history (
+          device_key TEXT NOT NULL,
+          hostname   TEXT NOT NULL,
+          first_seen INTEGER NOT NULL,
+          last_seen  INTEGER NOT NULL,
+          UNIQUE (device_key, hostname)
+        );
+        CREATE TABLE IF NOT EXISTS access_log (
+          id       INTEGER PRIMARY KEY AUTOINCREMENT,
+          accessor TEXT NOT NULL,
+          purpose  TEXT NOT NULL,
+          view     TEXT NOT NULL,
+          ts       INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS scope_history (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          captured_at INTEGER NOT NULL,
+          sha256      TEXT NOT NULL,
+          diff        TEXT,
+          source      TEXT
+        );
+        CREATE TABLE IF NOT EXISTS vendor_identities (
+          vendor           TEXT NOT NULL,
+          local_key_kind   TEXT NOT NULL,
+          local_key        TEXT NOT NULL,
+          vendor_id_kind   TEXT,
+          vendor_id_hmac   TEXT,
+          plan             TEXT,
+          org_id_hmac      TEXT,
+          auth_path        TEXT,
+          evidence_artifact TEXT,
+          first_seen       INTEGER NOT NULL,
+          last_seen        INTEGER NOT NULL,
+          UNIQUE (vendor, local_key_kind, local_key)
+        );
+        -- v_people was created (migration 18) with an uncorrelated sessions
+        -- subquery and zero readers. Correlated to principals via the
+        -- session_identity join it was always meant to have.
+        DROP VIEW IF EXISTS v_people;
+        CREATE VIEW v_people AS
+        SELECT p.id, p.display, p.principal_key, p.first_seen, p.last_seen,
+               (SELECT COUNT(DISTINCT si.session_id) FROM session_identity si
+                WHERE si.principal_key = p.principal_key) AS sessions
+        FROM principals p;`);
+      return (
+        addColumn(db, 'usage_events', 'execution_context_id', 'TEXT') +
+        addColumn(db, 'usage_events', 'subject_id', 'TEXT') +
+        addColumn(db, 'usage_events', 'cli_version', 'TEXT') +
+        addColumn(db, 'usage_events', 'cost_basis', 'TEXT') +
+        addColumn(db, 'usage_events', 'pricing_rev', 'INTEGER') +
+        addColumn(db, 'usage_events', 'observed_at', 'INTEGER') +
+        addColumn(db, 'anomalies', 'execution_context_id', 'TEXT') +
+        addColumn(db, 'anomalies', 'case_key', 'TEXT') +
+        addColumn(db, 'anomalies', 'detail_key', 'TEXT') +
+        addColumn(db, 'anomalies', 'detail_params', 'TEXT') +
+        addColumn(db, 'anomalies', 'content_rev', 'INTEGER') +
+        addColumn(db, 'anomalies', 'asset_id', 'TEXT') +
+        addColumn(db, 'anomalies', 'asset_tier', 'INTEGER') +
+        addColumn(db, 'anomalies', 'asset_rev', 'INTEGER') +
+        addColumn(db, 'anomalies', 'state', 'TEXT') +
+        addColumn(db, 'anomalies', 'state_ts', 'INTEGER') +
+        addColumn(db, 'anomalies', 'state_actor', 'TEXT') +
+        addColumn(db, 'principals', 'principal_source', 'TEXT') +
+        addColumn(db, 'principals', 'valid_from', 'INTEGER') +
+        addColumn(db, 'principals', 'valid_to', 'INTEGER') +
+        addColumn(db, 'session_identity', 'tool', 'TEXT') +
+        addColumn(db, 'session_identity', 'account_id', 'TEXT') +
+        addColumn(db, 'session_identity', 'org_id', 'TEXT') +
+        addColumn(db, 'session_identity', 'account_class', 'TEXT') +
+        addColumn(db, 'session_identity', 'class_evidence', 'TEXT') +
+        addColumn(db, 'session_identity', 'plan', 'TEXT') +
+        addColumn(db, 'session_identity', 'seat_role', 'TEXT') +
+        addColumn(db, 'session_identity', 'surface', 'TEXT') +
+        addColumn(db, 'session_identity', 'source', 'TEXT')
+      );
+    },
+  },
+  {
+    version: 22,
+    name: 'dlp-ledger-depth',
+    kind: 'ddl',
+    // Tier 4 seam: resumable cursors on dlp_scan_state (the byte-budget
+    // livelock fix), widening columns on secret_sightings, the opaque-payload
+    // ledger, key residency, cross-vendor context imports, the data-terms
+    // chain and the answerability horizon.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS payload_sightings (
+          sighting_key   TEXT NOT NULL UNIQUE,
+          session_id     TEXT,
+          kind           TEXT NOT NULL,
+          media_type     TEXT,
+          bytes_on_disk  INTEGER,
+          bytes_received INTEGER,
+          scannable      INTEGER,
+          context_class  TEXT,
+          first_seen     INTEGER NOT NULL,
+          last_seen      INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS key_residency (
+          repo          TEXT NOT NULL,
+          manifest_path TEXT NOT NULL,
+          var_name      TEXT NOT NULL,
+          target_class  TEXT NOT NULL,
+          source        TEXT,
+          first_seen    INTEGER NOT NULL,
+          last_seen     INTEGER NOT NULL,
+          UNIQUE (repo, manifest_path, var_name)
+        );
+        CREATE TABLE IF NOT EXISTS context_imports (
+          event_key         TEXT PRIMARY KEY,
+          source_tool       TEXT NOT NULL,
+          source_path_hmac  TEXT,
+          source_dir_prefix TEXT,
+          content_sha256    TEXT NOT NULL,
+          dest_tool         TEXT NOT NULL,
+          dest_thread_id    TEXT,
+          imported_at       INTEGER,
+          source_bytes      INTEGER,
+          source_present    INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS terms_basis (
+          surface_key TEXT NOT NULL,
+          basis       TEXT NOT NULL,
+          source      TEXT,
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL,
+          UNIQUE (surface_key, basis)
+        );
+        CREATE TABLE IF NOT EXISTS recipient_state (
+          surface_key  TEXT NOT NULL,
+          state        TEXT NOT NULL,
+          evidence_ref TEXT,
+          first_seen   INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL,
+          UNIQUE (surface_key, state)
+        );
+        CREATE TABLE IF NOT EXISTS residency_evidence (
+          surface_key TEXT NOT NULL,
+          rank        INTEGER,
+          evidence    TEXT,
+          source      TEXT,
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL,
+          UNIQUE (surface_key, evidence)
+        );
+        CREATE TABLE IF NOT EXISTS processing_terms (
+          surface_key TEXT NOT NULL,
+          kind        TEXT NOT NULL,
+          value       TEXT,
+          as_of       INTEGER,
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL,
+          UNIQUE (surface_key, kind)
+        );
+        CREATE TABLE IF NOT EXISTS answerable_from (
+          source         TEXT NOT NULL,
+          indicator_kind TEXT NOT NULL,
+          horizon_ts     INTEGER,
+          basis          TEXT,
+          first_seen     INTEGER NOT NULL,
+          last_seen      INTEGER NOT NULL,
+          PRIMARY KEY (source, indicator_kind)
+        );`);
+      return (
+        addColumn(db, 'dlp_scan_state', 'cursor_kind', 'TEXT') +
+        addColumn(db, 'dlp_scan_state', 'cursor_text', 'TEXT') +
+        addColumn(db, 'dlp_scan_state', 'cursor_int', 'INTEGER') +
+        addColumn(db, 'dlp_scan_state', 'inode', 'INTEGER') +
+        addColumn(db, 'dlp_scan_state', 'backfill_done', 'INTEGER') +
+        addColumn(db, 'dlp_scan_state', 'pack_rev', 'INTEGER') +
+        addColumn(db, 'secret_sightings', 'occurrences', 'INTEGER') +
+        addColumn(db, 'secret_sightings', 'provider', 'TEXT') +
+        addColumn(db, 'secret_sightings', 'class_entry_id', 'TEXT') +
+        addColumn(db, 'secret_sightings', 'validator_checked', 'TEXT') +
+        addColumn(db, 'secret_sightings', 'fixture_reason', 'TEXT') +
+        addColumn(db, 'secret_sightings', 'execution_context_id', 'TEXT')
+      );
+    },
+  },
+  {
+    version: 23,
+    name: 'toolcall-authority-and-behaviour-ledgers',
+    kind: 'ddl',
+    // Tier 5 seam: the authority/basis columns on tool_calls, posture columns
+    // on autonomy_intervals, and the target-system + file-write + remote-action
+    // ledgers the behaviour rules and Blast Radius read from. call_key columns
+    // reference tool_calls.tool_call_key (no FK — the ledger is append-only and
+    // a missing parent must not abort a child write).
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS action_targets (
+          call_key     TEXT NOT NULL,
+          target_kind  TEXT NOT NULL,
+          target_label TEXT,
+          locality     TEXT,
+          env_class    TEXT,
+          reversible   TEXT,
+          resolution   TEXT,
+          evidence_path TEXT,
+          asset_id     TEXT,
+          first_seen   INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL,
+          UNIQUE (call_key, target_kind, target_label)
+        );
+        CREATE INDEX IF NOT EXISTS idx_at_kind ON action_targets(target_kind);
+        CREATE TABLE IF NOT EXISTS anomaly_context (
+          anomaly_key          TEXT PRIMARY KEY,
+          distinct_files       INTEGER,
+          distinct_dirs        INTEGER,
+          out_of_repo_writes   INTEGER,
+          destructive_calls    INTEGER,
+          failed_calls         INTEGER,
+          unknown_outcome_calls INTEGER,
+          top_path_classes     TEXT,
+          contributing_sessions TEXT,
+          window_end           INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS agent_edges (
+          edge_key        TEXT NOT NULL UNIQUE,
+          session_id      TEXT NOT NULL,
+          agent_id        TEXT,
+          parent_agent_id TEXT,
+          workflow_id     TEXT,
+          agent_type      TEXT,
+          spawn_depth     INTEGER,
+          parent_call_key TEXT,
+          first_seen      INTEGER NOT NULL,
+          last_seen       INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ae_session ON agent_edges(session_id);
+        CREATE TABLE IF NOT EXISTS file_writes (
+          write_key        TEXT NOT NULL UNIQUE,
+          tool_call_key    TEXT,
+          session_id       TEXT,
+          path             TEXT,
+          path_class       TEXT,
+          write_class      TEXT,
+          change_risk_class TEXT,
+          class_pattern_id TEXT,
+          content_rev      INTEGER,
+          escape_state     TEXT,
+          visibility_class TEXT,
+          ts               INTEGER,
+          first_seen       INTEGER NOT NULL,
+          last_seen        INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_fw_session ON file_writes(session_id, ts);
+        CREATE TABLE IF NOT EXISTS path_classes (
+          pattern_id   TEXT NOT NULL,
+          pack_version INTEGER NOT NULL,
+          class        TEXT NOT NULL,
+          pattern      TEXT NOT NULL,
+          first_seen   INTEGER NOT NULL,
+          UNIQUE (pattern_id, pack_version)
+        );
+        CREATE TABLE IF NOT EXISTS secret_store_reads (
+          call_key    TEXT NOT NULL,
+          store_kind  TEXT NOT NULL,
+          target_ref  TEXT,
+          item_name   TEXT,
+          field_name   TEXT,
+          materialised TEXT,
+          ts          INTEGER,
+          UNIQUE (call_key, store_kind, item_name, field_name)
+        );
+        CREATE TABLE IF NOT EXISTS grant_deposits (
+          deposit_key  TEXT NOT NULL UNIQUE,
+          tool_call_key TEXT,
+          store_kind   TEXT,
+          target_ref  TEXT,
+          item_name   TEXT,
+          ts          INTEGER,
+          first_seen   INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS db_actions (
+          call_key        TEXT NOT NULL,
+          statement_class TEXT NOT NULL,
+          object_names    TEXT,
+          target_key      TEXT,
+          ts              INTEGER,
+          UNIQUE (call_key, statement_class, object_names)
+        );
+        CREATE TABLE IF NOT EXISTS remote_exec (
+          call_key     TEXT NOT NULL,
+          hop          INTEGER NOT NULL,
+          host         TEXT,
+          user         TEXT,
+          inner_pattern TEXT,
+          ts           INTEGER,
+          UNIQUE (call_key, hop)
+        );
+        CREATE TABLE IF NOT EXISTS vcs_actions (
+          call_key      TEXT NOT NULL,
+          verb          TEXT NOT NULL,
+          repo          TEXT,
+          escape_state  TEXT,
+          push_evidence TEXT,
+          ts            INTEGER,
+          UNIQUE (call_key, verb, repo)
+        );
+        CREATE TABLE IF NOT EXISTS package_execs (
+          call_key       TEXT NOT NULL,
+          package_name   TEXT,
+          registry       TEXT,
+          fetch_and_run  INTEGER,
+          ts             INTEGER,
+          UNIQUE (call_key, package_name)
+        );
+        CREATE TABLE IF NOT EXISTS fetch_ingress (
+          call_key TEXT NOT NULL,
+          url_host TEXT,
+          status   INTEGER,
+          bytes    INTEGER,
+          ts       INTEGER,
+          UNIQUE (call_key, url_host)
+        );
+        CREATE TABLE IF NOT EXISTS context_edges (
+          call_key    TEXT NOT NULL,
+          transport   TEXT,
+          verb        TEXT,
+          destination TEXT,
+          direction   TEXT,
+          ts          INTEGER,
+          UNIQUE (call_key, destination, direction)
+        );
+        CREATE TABLE IF NOT EXISTS sensitive_access (
+          path_class          TEXT NOT NULL,
+          path_hash           TEXT NOT NULL,
+          authorization_basis TEXT,
+          count               INTEGER NOT NULL DEFAULT 0,
+          window_start        INTEGER NOT NULL,
+          UNIQUE (path_class, path_hash, window_start)
+        );
+        CREATE TABLE IF NOT EXISTS bulk_uploads (
+          upload_key     TEXT NOT NULL UNIQUE,
+          repo_path      TEXT,
+          turn           INTEGER,
+          max_file_bytes INTEGER,
+          size_bytes     INTEGER,
+          gcs_path       TEXT,
+          blobs          INTEGER,
+          started_at     INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS upload_decisions (
+          upload_key                 TEXT NOT NULL UNIQUE,
+          uploads_enabled           INTEGER,
+          upload_reason             TEXT,
+          trace_upload_source       TEXT,
+          telemetry_mode            TEXT,
+          data_collection_disabled  INTEGER,
+          in_env_trace_upload       INTEGER,
+          in_cfg_telemetry_trace_upload INTEGER,
+          in_remote_trace_upload_enabled INTEGER,
+          has_remote_settings       INTEGER,
+          ts                        INTEGER
+        );`);
+      return (
+        addColumn(db, 'tool_calls', 'server', 'TEXT') +
+        addColumn(db, 'tool_calls', 'tool_name', 'TEXT') +
+        addColumn(db, 'tool_calls', 'authority_evidence', 'TEXT') +
+        addColumn(db, 'tool_calls', 'authorization_basis', 'TEXT') +
+        addColumn(db, 'tool_calls', 'pattern_id', 'TEXT') +
+        addColumn(db, 'tool_calls', 'pack_version', 'INTEGER') +
+        addColumn(db, 'tool_calls', 'target_scope', 'TEXT') +
+        addColumn(db, 'tool_calls', 'origin_kind', 'TEXT') +
+        addColumn(db, 'tool_calls', 'permission_mode', 'TEXT') +
+        addColumn(db, 'tool_calls', 'autonomy_rank', 'TEXT') +
+        addColumn(db, 'tool_calls', 'execution_context_id', 'TEXT') +
+        addColumn(db, 'autonomy_intervals', 'mode_raw', 'TEXT') +
+        addColumn(db, 'autonomy_intervals', 'autonomy', 'TEXT') +
+        addColumn(db, 'autonomy_intervals', 'fs_policy', 'TEXT') +
+        addColumn(db, 'autonomy_intervals', 'approval_policy', 'TEXT') +
+        addColumn(db, 'autonomy_intervals', 'sandbox_policy', 'TEXT') +
+        addColumn(db, 'autonomy_intervals', 'permission_profile', 'TEXT')
+      );
+    },
+  },
+  {
+    version: 24,
+    name: 'posture-grants-and-pack-plane',
+    kind: 'ddl',
+    // Tier 6 seam: grants precedence columns, the overrides ledger, the MCP
+    // identity table, repo roots/artifacts, the suppression register's proper
+    // shape (entry-keyed, mode-aware, with hidden-count accounting), pack trust
+    // classes, and the posture ledgers (hooks, signing, levers, plugins,
+    // extensions).
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS overrides (
+          override_key TEXT NOT NULL UNIQUE,
+          agent        TEXT NOT NULL,
+          source_file  TEXT NOT NULL,
+          kind         TEXT NOT NULL,
+          entry        TEXT NOT NULL,
+          first_seen   INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS posture_mcp_servers (
+          source         TEXT NOT NULL,
+          config_path    TEXT NOT NULL,
+          client         TEXT NOT NULL,
+          server_name    TEXT NOT NULL,
+          mcp_identity   TEXT NOT NULL,
+          transport      TEXT,
+          command        TEXT,
+          argv           TEXT,
+          url             TEXT,
+          cwd             TEXT,
+          enabled        INTEGER,
+          env_key_names  TEXT,
+          first_seen     INTEGER NOT NULL,
+          last_seen      INTEGER NOT NULL,
+          UNIQUE (source, mcp_identity)
+        );
+        CREATE TABLE IF NOT EXISTS work_roots (
+          root_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+          root_path    TEXT NOT NULL UNIQUE,
+          origin_slug  TEXT,
+          exists_now   INTEGER,
+          disappeared_at INTEGER,
+          first_seen   INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS repo_artifacts (
+          artifact_key TEXT NOT NULL UNIQUE,
+          root_path    TEXT NOT NULL,
+          rel_path     TEXT NOT NULL,
+          kind         TEXT,
+          tracked_state TEXT,
+          sha256       TEXT,
+          size_bytes   INTEGER,
+          mtime        INTEGER,
+          first_seen   INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ra_root ON repo_artifacts(root_path);
+        CREATE TABLE IF NOT EXISTS repo_scan_state (
+          root_path    TEXT PRIMARY KEY,
+          cursor_int   INTEGER,
+          bytes_scanned INTEGER,
+          last_scan_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS suppressed_counts (
+          day       INTEGER NOT NULL,
+          kind      TEXT NOT NULL,
+          entry_id  TEXT NOT NULL,
+          n         INTEGER,
+          UNIQUE (day, kind, entry_id)
+        );
+        CREATE TABLE IF NOT EXISTS hook_ledger (
+          hook_key     TEXT NOT NULL UNIQUE,
+          agent        TEXT NOT NULL,
+          hook_event   TEXT NOT NULL,
+          command_hash TEXT NOT NULL,
+          source_file  TEXT NOT NULL,
+          first_seen   INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS signing_ledger (
+          surface_key   TEXT NOT NULL,
+          team_id       TEXT,
+          cdhash        TEXT,
+          signature_kind TEXT,
+          first_seen    INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL,
+          UNIQUE (surface_key, cdhash)
+        );
+        CREATE TABLE IF NOT EXISTS posture_levers (
+          agent          TEXT NOT NULL,
+          lever          TEXT NOT NULL,
+          observed_value  TEXT,
+          hardened_value TEXT,
+          source_file    TEXT,
+          first_seen     INTEGER NOT NULL,
+          last_seen      INTEGER NOT NULL,
+          UNIQUE (agent, lever, source_file)
+        );
+        CREATE TABLE IF NOT EXISTS plugins (
+          plugin_key  TEXT NOT NULL UNIQUE,
+          agent       TEXT NOT NULL,
+          name        TEXT NOT NULL,
+          version     TEXT,
+          marketplace TEXT,
+          installed_at INTEGER,
+          enabled     INTEGER,
+          source      TEXT,
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS extension_versions (
+          root       TEXT NOT NULL,
+          ext_id     TEXT NOT NULL,
+          version    TEXT NOT NULL,
+          first_seen INTEGER NOT NULL,
+          last_seen  INTEGER NOT NULL,
+          UNIQUE (root, ext_id, version)
+        );
+        CREATE TABLE IF NOT EXISTS store_budget (
+          object       TEXT NOT NULL,
+          kind         TEXT NOT NULL,
+          bytes        INTEGER,
+          rows         INTEGER,
+          bytes_per_row REAL,
+          measured_at  INTEGER,
+          PRIMARY KEY (object, kind)
+        );
+        CREATE TABLE IF NOT EXISTS evidence_freeze (
+          freeze_id          TEXT NOT NULL,
+          principal_key       TEXT NOT NULL,
+          declared_at         INTEGER NOT NULL,
+          path                TEXT NOT NULL,
+          present            INTEGER,
+          size_bytes          INTEGER,
+          mtime               INTEGER,
+          sha256              TEXT,
+          consumed_to_offset  INTEGER,
+          rows_referencing    INTEGER,
+          reason              TEXT,
+          ts                  INTEGER,
+          UNIQUE (freeze_id, path)
+        );`);
+      return (
+        addColumn(db, 'grants', 'granted_by', 'TEXT') +
+        addColumn(db, 'grants', 'path_class', 'TEXT') +
+        addColumn(db, 'grants', 'origin', 'TEXT') +
+        addColumn(db, 'grants', 'scope', 'TEXT') +
+        addColumn(db, 'grants', 'entry_class', 'TEXT') +
+        addColumn(db, 'suppression', 'kind', 'TEXT') +
+        addColumn(db, 'suppression', 'entry_id', 'TEXT') +
+        addColumn(db, 'suppression', 'set_by', 'TEXT') +
+        addColumn(db, 'suppression', 'expires_at', 'INTEGER') +
+        addColumn(db, 'suppression', 'mode', 'TEXT') +
+        addColumn(db, 'content_packs', 'trust', 'TEXT') +
+        addColumn(db, 'content_packs', 'signature', 'TEXT') +
+        addColumn(db, 'content_packs', 'path', 'TEXT') +
+        addColumn(db, 'content_packs', 'active', 'INTEGER')
+      );
+    },
+  },
+  {
+    version: 25,
+    name: 'export-triage-and-telemetry',
+    kind: 'ddl',
+    // Tier 7 seam: the disposition ledger's full column set, the durable outbox,
+    // control intents, vendor-join keys, orphan sessions, hunt runs, the store
+    // epoch, and run-level footprint/clock columns.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS export_outbox (
+          seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+          sink            TEXT NOT NULL,
+          doc_id          TEXT NOT NULL,
+          payload_hash    TEXT,
+          bytes           INTEGER,
+          attempts        INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at INTEGER,
+          state           TEXT NOT NULL DEFAULT 'pending',
+          last_error      TEXT,
+          created_at      INTEGER NOT NULL,
+          UNIQUE (sink, doc_id)
+        );
+        CREATE TABLE IF NOT EXISTS control_intents (
+          intent_id    TEXT NOT NULL UNIQUE,
+          intent       TEXT NOT NULL,
+          session_id   TEXT,
+          pid          INTEGER,
+          actor        TEXT,
+          requested_at INTEGER NOT NULL,
+          expires_at   INTEGER,
+          state        TEXT NOT NULL DEFAULT 'requested',
+          source       TEXT
+        );
+        CREATE TABLE IF NOT EXISTS event_links (
+          event_key TEXT NOT NULL,
+          vendor    TEXT NOT NULL,
+          link_kind TEXT NOT NULL,
+          link_id   TEXT NOT NULL,
+          first_seen INTEGER NOT NULL,
+          UNIQUE (event_key, vendor, link_kind, link_id)
+        );
+        CREATE TABLE IF NOT EXISTS orphan_sessions (
+          session_key     TEXT NOT NULL UNIQUE,
+          tool            TEXT NOT NULL,
+          session_id      TEXT,
+          evidence        TEXT,
+          classification  TEXT,
+          first_seen      INTEGER NOT NULL,
+          last_seen       INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS hunt_runs (
+          hunt_id              TEXT NOT NULL UNIQUE,
+          pack_kind            TEXT NOT NULL,
+          pack_version         INTEGER,
+          signature            TEXT,
+          ran_at               INTEGER NOT NULL,
+          verdict_confirmed    INTEGER,
+          verdict_cleared     INTEGER,
+          verdict_unanswerable INTEGER,
+          verdict_not_seen     INTEGER,
+          horizon_ts           INTEGER,
+          answer_sentence      TEXT
+        );
+        CREATE TABLE IF NOT EXISTS store_epoch (
+          epoch_id           TEXT PRIMARY KEY,
+          created_at         INTEGER NOT NULL,
+          device_key         TEXT,
+          first_event_ts     INTEGER,
+          collector_version  TEXT,
+          prev_epoch_id      TEXT,
+          prev_epoch_last_seq INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS detection_epochs (
+          epoch        INTEGER PRIMARY KEY,
+          rule_set_sha256 TEXT NOT NULL,
+          created_at   INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS network_calls (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          caller      TEXT NOT NULL,
+          destination TEXT NOT NULL,
+          purpose     TEXT,
+          ts          INTEGER NOT NULL
+        );`);
+      return (
+        addColumn(db, 'finding_actions', 'action_id', 'TEXT') +
+        addColumn(db, 'finding_actions', 'case_key', 'TEXT') +
+        addColumn(db, 'finding_actions', 'actor_kind', 'TEXT') +
+        addColumn(db, 'finding_actions', 'reason_code', 'TEXT') +
+        addColumn(db, 'finding_actions', 'content_rev', 'INTEGER') +
+        addColumn(db, 'finding_actions', 'label_mode', 'TEXT') +
+        addColumn(db, 'finding_actions', 'batch_id', 'TEXT') +
+        addColumn(db, 'finding_actions', 'source', 'TEXT') +
+        addColumn(db, 'finding_actions', 'ingested_at', 'INTEGER') +
+        addColumn(db, 'collector_runs', 'rss_peak_bytes', 'INTEGER') +
+        addColumn(db, 'collector_runs', 'cpu_user_ms', 'INTEGER') +
+        addColumn(db, 'collector_runs', 'cpu_sys_ms', 'INTEGER') +
+        addColumn(db, 'collector_runs', 'exit_status', 'INTEGER') +
+        addColumn(db, 'collector_runs', 'boot_epoch', 'INTEGER') +
+        addColumn(db, 'collector_runs', 'wall_ms', 'INTEGER') +
+        addColumn(db, 'collector_state', 'prefix_sha256', 'TEXT') +
+        addColumn(db, 'collector_state', 'head_sha256', 'TEXT') +
+        addColumn(db, 'collector_state', 'inode', 'INTEGER') +
+        addColumn(db, 'collector_state', 'birthtime', 'INTEGER')
+      );
+    },
+  },
+  {
+    version: 26,
+    name: 'vendor-cost-and-lifecycle',
+    kind: 'ddl',
+    // Tier 8 seam: the vendor billing ledger, billing-unit declarations,
+    // quota observations, the declared principal lifecycle, and retention
+    // receipts. Nothing here is ever written from observation except the
+    // quota/vendor rows a collector reads from the vendor's own local files.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS vendor_ledger (
+          vendor         TEXT NOT NULL,
+          period_start   INTEGER NOT NULL,
+          period_end     INTEGER NOT NULL,
+          vendor_cost_usd REAL,
+          currency       TEXT,
+          unit           TEXT,
+          rows           INTEGER,
+          pulled_at      INTEGER,
+          source         TEXT,
+          UNIQUE (vendor, period_start, period_end)
+        );
+        CREATE TABLE IF NOT EXISTS billing_units (
+          declaration_key TEXT NOT NULL UNIQUE,
+          vendor         TEXT NOT NULL,
+          unit           TEXT NOT NULL,
+          usd_per_unit   REAL,
+          effective_from INTEGER,
+          note           TEXT,
+          author         TEXT,
+          first_seen     INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS quota_observations (
+          tool         TEXT NOT NULL,
+          session_id   TEXT,
+          ts           INTEGER NOT NULL,
+          kind         TEXT NOT NULL,
+          used_percent REAL,
+          limit_value  REAL,
+          reset_at     INTEGER,
+          UNIQUE (tool, session_id, ts, kind)
+        );
+        CREATE TABLE IF NOT EXISTS principal_lifecycle (
+          principal_key  TEXT NOT NULL,
+          state          TEXT NOT NULL,
+          effective_from INTEGER NOT NULL,
+          effective_to   INTEGER,
+          declared_by    TEXT,
+          basis          TEXT,
+          decl_hash      TEXT,
+          source         TEXT,
+          first_seen     INTEGER NOT NULL,
+          last_seen      INTEGER NOT NULL,
+          UNIQUE (principal_key, state, effective_from)
+        );
+        CREATE TABLE IF NOT EXISTS store_prunes (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          table_name   TEXT NOT NULL,
+          data_class   TEXT,
+          days         INTEGER,
+          deleted_rows INTEGER,
+          bytes_before INTEGER,
+          bytes_after  INTEGER,
+          ran_at       INTEGER NOT NULL
+        );`);
+      return 0;
+    },
+  },
 ]
 ;
 
