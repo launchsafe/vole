@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { paths } from '../paths';
 import type { DB } from '../db';
 import { parseLine } from '../util/jsonl';
+import { skeletonize, type ToolCallRow } from '../toolcalls/bind';
 import { contentOf, type Content } from '../content';
 import { computeCost, contextWindow } from '../pricing';
 import type { CollectorResult, UsageEvent } from '../types';
@@ -38,6 +39,8 @@ interface Ctx {
   reasoning_tokens?: number;
   tool_name?: string;
   status_code?: number;
+  success?: boolean;
+  elapsed_ms?: number;
 }
 interface Line {
   ts?: string;
@@ -77,6 +80,7 @@ export function collectGrok(_db: DB): CollectorResult {
   const logPath = paths.grokUnifiedLog();
   const events: UsageEvent[] = [];
   const notes: string[] = [];
+  const calls: ToolCallRow[] = [];
 
   if (!existsSync(logPath)) {
     return { tool: 'grok', events, filesScanned: 0, notes: [`No Grok log at ${logPath}`], sourceState: 'no_source' };;
@@ -112,6 +116,26 @@ export function collectGrok(_db: DB): CollectorResult {
       const prev = lastCall.get(e.sid);
       if (prev) prev.tools = prev.tools ? `${prev.tools},${e.ctx.tool_name}` : e.ctx.tool_name;
       if (Number.isFinite(lineTs)) prevLineTs = lineTs;
+      // The ledger: grok's exec_done is call AND verdict in one line — success
+      // flag, elapsed_ms measured. status_source: log_flag.
+      calls.push({
+        tool_call_key: `grok:${e.sid}:${e.ts}:${calls.length}`,
+        tool: 'grok',
+        name: e.ctx.tool_name,
+        shape: skeletonize(e.ctx.tool_name, null),
+        args_digest: null,
+        session_id: e.sid,
+        agent_id: null,
+        ts: lineTs,
+        status: e.ctx.success === false ? 'error' : 'success',
+        status_source: 'log_flag',
+        // elapsed_ms of 0 is a real instant (a cache hit) but not a measured
+        // span — a zero duration is 'no duration', not a fast one.
+        duration_ms: typeof e.ctx.elapsed_ms === 'number' && e.ctx.elapsed_ms > 0 ? e.ctx.elapsed_ms : null,
+        duration_kind: typeof e.ctx.elapsed_ms === 'number' && e.ctx.elapsed_ms > 0 ? 'measured' : null,
+        authority: 'no_record',
+        raw_ref: `${logPath} (${e.sid})`,
+      });
       continue;
     }
     if (e.msg === 'shell.turn.inference_failed') {
@@ -191,5 +215,5 @@ export function collectGrok(_db: DB): CollectorResult {
     lastCall.set(e.sid, ev);
   }
 
-  return { tool: 'grok', events, filesScanned: 1, notes };
+  return { tool: 'grok', events, filesScanned: 1, notes, toolCalls: calls };
 }

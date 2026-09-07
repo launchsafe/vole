@@ -56,6 +56,10 @@ final class Store {
     private(set) var tokenSpeed: TokenSpeed?
     /// Generation speed per model (tok/s), with coverage.
     private(set) var modelSpeeds: [ModelSpeed] = []
+    /// The Tier 5 tool-call ledger (recent window).
+    private(set) var toolCalls: [ToolCallEntry] = []
+    /// Blast Radius destinations from command shapes.
+    private(set) var blastRadius: [BlastEntry] = []
     /// The DLP denominator, in bytes: what the engine has actually read.
     var scanDenominator: Int { scanStates.reduce(0) { $0 + $1.bytesScanned } }
     private(set) var fieldDictionary: [(table: String, columns: [(name: String, type: String)])] = []
@@ -156,6 +160,8 @@ final class Store {
         scanStates = db.scanStates()
         tokenSpeed = db.tokenSpeed()
         modelSpeeds = db.modelSpeeds(range)
+        toolCalls = db.toolCalls()
+        blastRadius = db.blastRadius()
         fieldDictionary = db.fieldDictionary()
         let beats = db.collectorHeartbeats()
         heartbeats = beats

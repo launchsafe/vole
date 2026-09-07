@@ -7,7 +7,9 @@ import {
 } from '../db';
 import { collectAll } from '../collectors';
 import { detectBySource, RULE_IDS } from '../detect';
+import { detectLedgerRules } from '../detect/behaviour';
 import { SCANNERS } from '../scanners';
+import { insertToolCalls } from '../toolcalls/bind';
 import { paths } from '../paths';
 import type { Anomaly, RateLimitObservation, Tool, UsageEvent } from '../types';
 
@@ -41,11 +43,15 @@ function runOnce(): void {
 
   let totalFound = 0;
   let totalInserted = 0;
+  let ledgerInserted = 0;
   const rateLimits: RateLimitObservation[] = [];
 
   for (const r of results) {
     if (r.rateLimits) rateLimits.push(...r.rateLimits);
     const inserted = insertEvents(db, r.events);
+    // Tier 5: the tool-call ledger — inserted before the offset commit so a
+    // failed write never skips calls (the bind is idempotent, re-reads heal).
+    if (r.toolCalls?.length) ledgerInserted += insertToolCalls(db, r.toolCalls);
     r.commit?.(); // offsets advance only once the rows are stored
     totalFound += r.events.length;
     totalInserted += inserted;
@@ -66,6 +72,9 @@ function runOnce(): void {
       notes: r.notes.length ? r.notes.join(' | ') : null,
     });
 
+    if (verbose && r.toolCalls?.length) {
+      console.log(`  ${r.tool.padEnd(12)} ledger: ${String(r.toolCalls.length).padStart(5)} tool call(s)`);
+    }
     if (verbose) {
       const dupes = r.events.length - inserted;
       console.log(
@@ -96,11 +105,13 @@ function runOnce(): void {
   let anomalies: Anomaly[] = [];
   let newAnomalies: Anomaly[] = [];
   let escalatedAnomalies: Anomaly[] = [];
-  if (totalInserted > 0 || rateLimits.length > 0 || epochChanged) {
+  if (totalInserted > 0 || rateLimits.length > 0 || epochChanged || ledgerInserted > 0) {
     const all = db
       .prepare('SELECT * FROM usage_events ORDER BY ts')
       .all() as UsageEvent[];
     anomalies = detectBySource(all, { live: rateLimits }, Date.now());
+    // The ledger rules read the store directly — they run in the same pass.
+    anomalies.push(...detectLedgerRules(db, Date.now()));
     const written = insertAnomalies(db, anomalies);
     newAnomalies = written.inserted;
     escalatedAnomalies = written.escalated;

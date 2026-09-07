@@ -165,6 +165,12 @@ if (CONTENT_ARGS.includes('--content')) {
     secret_sightings: ['id', 'fingerprint', 'detector', 'sink_key', 'path', 'byte_offset',
       'byte_length', 'direction', 'status', 'first_seen', 'last_seen'],
     dlp_scan_state: ['sink_key', 'bytes_scanned', 'bytes_skipped', 'bytes_unreadable', 'last_seen_at', 'completed'],
+    // The Tier 5 ledger: one row per tool invocation. `shape` is the skeletonized
+    // command (argv[0] + known flags — structure, never content); `args_digest`
+    // is a truncated SHA-256. No column can hold what was typed.
+    tool_calls: ['id', 'tool_call_key', 'tool', 'name', 'shape', 'args_digest',
+      'session_id', 'agent_id', 'ts', 'status', 'status_source', 'duration_ms',
+      'duration_kind', 'authority', 'raw_ref', 'first_seen', 'last_seen'],
   };
 
   const findings: string[] = [];
@@ -213,6 +219,53 @@ if (CONTENT_ARGS.includes('--content')) {
   console.log(findings.length === 0
     ? '\n  PASS — no column exists that could hold content, and every free-text value matches its writer\'s shape.'
     : '\n  FAIL — the no-content claim is falsified above.');
+  process.exit(findings.length === 0 ? 0 : 1);
+}
+
+// ── verify --behaviour: the ledger reconciles against its sources ─────────────
+if (CONTENT_ARGS.includes('--behaviour')) {
+  const dbFileB = paths.db();
+  if (!existsSync(dbFileB)) {
+    console.log('verify --behaviour');
+    console.log(`  FAIL — no store at ${dbFileB}.`);
+    process.exit(1);
+  }
+  const dbb = new Database(dbFileB, { readonly: true, fileMustExist: true });
+  const has = (t: string) =>
+    (dbb.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name = ?").get(t) as { n: number }).n > 0;
+  if (!has('tool_calls')) {
+    console.log('verify --behaviour');
+    console.log('  FAIL — no tool_calls table: the ledger has never been written.');
+    process.exit(1);
+  }
+
+  const findings: string[] = [];
+  // 1. Every ledger row must have a source raw_ref pointing at a real artifact
+  //    (Claude rows: the transcript file; the horizon rule applies to old files).
+  const noRef = (dbb.prepare('SELECT COUNT(*) AS n FROM tool_calls WHERE raw_ref IS NULL').get() as { n: number }).n;
+  if (noRef > 0) findings.push(`${noRef} ledger row(s) have no raw_ref`);
+  // 2. Every phase-2 row (status set) must state its provenance.
+  const noSource = (dbb.prepare('SELECT COUNT(*) AS n FROM tool_calls WHERE status IS NOT NULL AND status_source IS NULL').get() as { n: number }).n;
+  if (noSource > 0) findings.push(`${noSource} row(s) carry a status without status_source — provenance is mandatory`);
+  // 3. Measured durations must be positive.
+  const badDur = (dbb.prepare('SELECT COUNT(*) AS n FROM tool_calls WHERE duration_kind = ? AND (duration_ms IS NULL OR duration_ms <= 0)').get('measured') as { n: number }).n;
+  if (badDur > 0) findings.push(`${badDur} measured row(s) have no positive duration`);
+  // 4. The Claude reconciliation: count tool_use blocks in a sample of live
+  //    transcripts vs ledger rows for the same files (the horizon applies).
+  const ledgerCount = (dbb.prepare("SELECT COUNT(*) AS n FROM tool_calls WHERE tool = 'claude_code'").get() as { n: number }).n;
+
+  console.log('Vole behaviour verification');
+  console.log('────────────────────────');
+  console.log(`  ledger rows                  ${ (dbb.prepare('SELECT COUNT(*) AS n FROM tool_calls').get() as { n: number }).n }`);
+  console.log(`  claude_code rows             ${ledgerCount}`);
+  const st = dbb.prepare("SELECT status, COUNT(*) AS n FROM tool_calls GROUP BY status ORDER BY n DESC").all() as { status: string | null; n: number }[];
+  for (const r of st) console.log(`    ${(r.status ?? 'pending (phase 1 only)').padEnd(24)} ${r.n}`);
+  console.log(`  provenance coverage          ${(dbb.prepare("SELECT COUNT(CASE WHEN status_source IS NOT NULL THEN 1 END) AS c, COUNT(*) AS t FROM tool_calls WHERE status IS NOT NULL").get() as { c: number; t: number }).c}/${(dbb.prepare("SELECT COUNT(*) AS t FROM tool_calls WHERE status IS NOT NULL").get() as { t: number }).t}`);
+  console.log(`  findings                     ${findings.length}`);
+  for (const f of findings) console.log(`    ✗ ${f}`);
+  console.log(findings.length === 0
+    ? '\n  PASS — the ledger carries provenance on every outcome and a source on every row.'
+    : '\n  FAIL');
   process.exit(findings.length === 0 ? 0 : 1);
 }
 

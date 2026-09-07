@@ -10,6 +10,9 @@ const RULE: Record<string, string> = {
   rate_limit_pressure: 'rate-limit warnings', context_pressure: 'context-pressure warnings',
   unsanctioned_surface: 'unsanctioned AI surfaces', new_ai_surface: 'new AI surfaces',
   rerouted_model: 'rerouted models',
+  denied_then_achieved: 'guardrail bypasses', remote_execution: 'remote executions',
+  destructive_command: 'destructive commands', tool_failure_storm: 'failure storms',
+  stuck_tool_call: 'stuck calls', headless_bypass_launch: 'headless bypasses',
 };
 const base = (p: string) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
 const day = (ts: number) => new Date(ts).toISOString().slice(0, 10);

@@ -1,5 +1,6 @@
 import { readdirSync, existsSync, statSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { skeletonize, type ToolCallRow } from '../toolcalls/bind';
 import { paths } from '../paths';
 import { getState, setState, type DB } from '../db';
 import { parseLine } from '../util/jsonl';
@@ -75,6 +76,7 @@ export function collectCodex(db: DB): CollectorResult {
   const events: UsageEvent[] = [];
   const rateLimits: RateLimitObservation[] = [];
   const notes: string[] = [];
+  const calls: ToolCallRow[] = [];
   let filesScanned = 0;
   let filesSkipped = 0;
 
@@ -149,8 +151,25 @@ export function collectCodex(db: DB): CollectorResult {
         project = entry.payload?.cwd ?? project;
         return;
       }
+      // Agent identity (v2): computed once per event, before every consumer.
+      const agentIdNow = rolloutId && rolloutId !== sessionId ? rolloutId : null;
       if (entry.type === 'response_item' && TOOL_ITEMS.has(entry.payload?.type ?? '')) {
-        pendingTools.push(entry.payload?.name ?? entry.payload?.type ?? 'tool');
+        const name = entry.payload?.name ?? entry.payload?.type ?? 'tool';
+        pendingTools.push(name);
+        // The ledger, phase 1: the call itself. Codex states no per-call outcome,
+        // so status stays NULL until (never, today) a result shape exists — an
+        // honest unknown, and turn_status says so when a turn-level verdict lands.
+        calls.push({
+          tool_call_key: `codex:${filePath}:${index}`,
+          tool: 'codex',
+          name,
+          shape: skeletonize(name, null),
+          args_digest: null, // call args are encrypted reasoning payloads
+          session_id: sessionId,
+          agent_id: agentIdNow,
+          ts: entry.timestamp ? Date.parse(entry.timestamp) : Date.now(),
+          raw_ref: `${filePath}#${index}`,
+        });
         return;
       }
       if (entry.payload?.type !== 'token_count') return;
@@ -181,7 +200,8 @@ export function collectCodex(db: DB): CollectorResult {
       // carries a uuid distinct from the session id; when they differ, this file IS
       // a sub-agent and the uuid is its agent id (the spawn edge: this rollout, of
       // that session).
-      const agentId = rolloutId && rolloutId !== sessionId ? rolloutId : null;
+      const agentId = agentIdNow ?? null;
+      void agentId;
 
       // Meter delta: what this event consumed, per Codex's own running total.
       let delta: number;
@@ -283,5 +303,5 @@ export function collectCodex(db: DB): CollectorResult {
     setState(db, filePath, 'codex', st.size, Math.trunc(st.mtimeMs));
   }
 
-  return { tool: 'codex', events, filesScanned, notes, rateLimits };
+  return { tool: 'codex', events, filesScanned, notes, rateLimits, toolCalls: calls };
 }

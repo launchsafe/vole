@@ -350,6 +350,52 @@ export const MIGRATIONS: Migration[] = [
       return n;
     },
   },
+  {
+    version: 15,
+    name: 'tool-calls-ledger',
+    kind: 'ddl',
+    // Tier 5's substrate: one row per tool INVOCATION, not per meter event.
+    // Source-native keys + a two-phase NULL-only-widening bind: a tool_use seen
+    // without its result inserts with NULL outcome columns; the result widens
+    // them later — possibly in a later pass. Shape and digest, never content.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS tool_calls (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          tool_call_key TEXT    NOT NULL UNIQUE,
+          tool          TEXT    NOT NULL,
+          name          TEXT    NOT NULL,
+          shape         TEXT,
+          args_digest   TEXT,
+          session_id    TEXT,
+          agent_id      TEXT,
+          ts            INTEGER NOT NULL,
+          status        TEXT,
+          status_source TEXT,
+          duration_ms   INTEGER,
+          duration_kind TEXT,
+          authority     TEXT,
+          raw_ref       TEXT,
+          first_seen    INTEGER NOT NULL,
+          last_seen     INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_tc_session ON tool_calls(session_id, ts);
+        CREATE INDEX IF NOT EXISTS idx_tc_name ON tool_calls(name, ts);`);
+      return 0;
+    },
+  },
+  {
+    version: 16,
+    name: 'tool-calls-ledger-backfill',
+    kind: 'backfill',
+    // The ledger's rows come from the same incremental reads as usage events,
+    // so rows consumed before this feature landed would never be extracted.
+    // One declared reset of the claude-code/codex cursors: the next pass
+    // re-reads everything, event_keys keep tokens a no-op, and the two-phase
+    // bind fills the ledger in place.
+    apply: (db) =>
+      db.prepare("DELETE FROM collector_state WHERE tool IN ('claude_code', 'codex')").run().changes,
+  },
 ]
 ;
 

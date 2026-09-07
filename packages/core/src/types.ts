@@ -87,7 +87,13 @@ export type AnomalyRule =
   | 'context_pressure'
   | 'unsanctioned_surface'
   | 'new_ai_surface'
-  | 'rerouted_model';
+  | 'rerouted_model'
+  | 'denied_then_achieved'
+  | 'remote_execution'
+  | 'destructive_command'
+  | 'tool_failure_storm'
+  | 'stuck_tool_call'
+  | 'headless_bypass_launch';
 
 export type Severity = 'info' | 'warn' | 'critical';
 
@@ -137,6 +143,8 @@ export interface CollectorResult {
   /** Wall-clock cost of this collector's pass, filled in by collectAll. */
   durationMs?: number;
   rateLimits?: RateLimitObservation[];
+  /** Tier 5: per-invocation ledger rows for this pass (two-phase bind). */
+  toolCalls?: import('./toolcalls/bind').ToolCallRow[];
   /**
    * Persists read offsets. Called by the CLI only after `events` were stored, so a
    * failed insert never advances past lines that were consumed but not kept.

@@ -188,6 +188,9 @@ enum Labels {
         "context_pressure": "Context pressure",
         "unsanctioned_surface": "Unsanctioned surface", "new_ai_surface": "New AI surface",
         "rerouted_model": "Rerouted model",
+        "denied_then_achieved": "Guardrail bypass", "remote_execution": "Remote execution",
+        "destructive_command": "Destructive command", "tool_failure_storm": "Failure storm",
+        "stuck_tool_call": "Stuck call", "headless_bypass_launch": "Headless bypass",
     ]
     static func confidence(_ c: String) -> String {
         c == "exact" ? "exact" : "no tokens"

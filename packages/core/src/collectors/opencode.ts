@@ -2,6 +2,7 @@ import { Database } from '../sqlite';
 import { existsSync } from 'node:fs';
 import { paths } from '../paths';
 import { contextWindow } from '../pricing';
+import { skeletonize, type ToolCallRow } from '../toolcalls/bind';
 import type { DB } from '../db';
 import type { CollectorResult, Confidence, UsageEvent } from '../types';
 
@@ -60,6 +61,7 @@ export function collectOpencode(_db: DB): CollectorResult {
   }
 
   let src: DB;
+  const calls: ToolCallRow[] = [];
   try {
     // Read-only: OpenCode may be running and holding this file (WAL).
     src = new Database(dbPath, { readonly: true, fileMustExist: true });
@@ -81,14 +83,40 @@ export function collectOpencode(_db: DB): CollectorResult {
       )
       .all() as MsgRow[];
 
+    // Tool parts: the ledger's richest source — id, status, exit code, and
+    // MEASURED start/end times, straight from the part's own state.
+    const toolParts: {
+      id: string; session_id: string | null; tool: string;
+      status: string | null; exit: number | null; start: number | null; end: number | null;
+    }[] = [];
     const toolsByMessage = new Map<string, string>();
     for (const r of src
       .prepare(
-        `SELECT message_id, group_concat(json_extract(data, '$.tool'), ',') AS tools
-           FROM part WHERE json_extract(data, '$.type') = 'tool' GROUP BY message_id`,
+        `SELECT p.id, p.session_id, p.message_id, p.data
+         FROM part p WHERE json_extract(p.data, '$.type') = 'tool'`,
       )
-      .all() as { message_id: string; tools: string }[]) {
-      toolsByMessage.set(r.message_id, r.tools);
+      .all() as { id: string; session_id: string | null; message_id: string; data: string }[]) {
+      let d: {
+        tool?: string; state?: { status?: string; metadata?: { exit?: number }; time?: { start?: number; end?: number } };
+      };
+      try {
+        d = JSON.parse(r.data);
+      } catch {
+        continue;
+      }
+      const name = d.tool ?? '?';
+      toolParts.push({
+        id: r.id,
+        session_id: r.session_id,
+        tool: name,
+        status: d.state?.status ?? null,
+        exit: d.state?.metadata?.exit ?? null,
+        start: d.state?.time?.start ?? null,
+        end: d.state?.time?.end ?? null,
+      });
+      if (r.message_id) {
+        toolsByMessage.set(r.message_id, toolsByMessage.get(r.message_id) ? `${toolsByMessage.get(r.message_id)},${name}` : name);
+      }
     }
 
     // child session -> { parent, label }. Nesting is one level deep in OpenCode.
@@ -164,9 +192,29 @@ export function collectOpencode(_db: DB): CollectorResult {
             : null,
       });
     }
+    // The ledger: one row per tool part, outcome + MEASURED duration from the
+    // part's own state (status/exit, time.start/end) — the richest source.
+    for (const tp of toolParts) {
+      const errored = tp.status === 'error' || (tp.exit !== null && tp.exit !== 0);
+      calls.push({
+        tool_call_key: `opencode:${tp.id}`,
+        tool: 'opencode',
+        name: tp.tool,
+        shape: skeletonize(tp.tool, null),
+        args_digest: null, // opencode parts carry no args in the tool row
+        session_id: parentOf.get(tp.session_id ?? '')?.parent ?? tp.session_id,
+        agent_id: parentOf.get(tp.session_id ?? '')?.label ?? null,
+        ts: tp.start ?? 0,
+        status: errored ? 'error' : tp.status === 'completed' ? 'success' : null,
+        status_source: tp.exit !== null ? 'exit_code' : 'log_flag',
+        duration_ms: tp.start != null && tp.end != null && tp.end > tp.start ? tp.end - tp.start : null,
+        duration_kind: tp.start != null && tp.end != null && tp.end > tp.start ? 'measured' : null,
+        authority: 'no_record',
+        raw_ref: dbPath,
+      });
+    }
   } finally {
     src.close();
   }
-
-  return { tool: 'opencode', events, filesScanned: 1, notes };
+  return { tool: 'opencode', events, filesScanned: 1, notes, toolCalls: calls };
 }

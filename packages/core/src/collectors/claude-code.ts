@@ -5,6 +5,7 @@ import { getState, setState, type DB } from '../db';
 import { readNewLines, parseLine } from '../util/jsonl';
 import { computeCost, contextWindow } from '../pricing';
 import type { CollectorResult, UsageEvent } from '../types';
+import { skeletonize, argsDigest, type ToolCallRow } from '../toolcalls/bind';
 
 /**
  * Claude Code — exact, rich and live: per-message tokens, cache split and model.
@@ -47,7 +48,18 @@ interface ClaudeEntry {
     model?: string;
     stop_reason?: string | null;
     usage?: ClaudeUsage;
-    content?: { type?: string; name?: string }[] | string;
+    content?: { type?: string; name?: string; id?: string; input?: unknown }[] | string;
+  };
+}
+
+/** User-message entries carry tool_result blocks — phase 2 of the ledger bind. */
+interface ClaudeUserEntry {
+  type?: string;
+  timestamp?: string;
+  sessionId?: string;
+  agentId?: string | null;
+  message?: {
+    content?: { type?: string; tool_use_id?: string; is_error?: boolean; content?: unknown }[] | string;
   };
 }
 
@@ -88,6 +100,7 @@ export function collectClaudeCode(db: DB): CollectorResult {
   }
 
   const pending: [string, number, number][] = [];
+  const calls: ToolCallRow[] = [];
   for (const filePath of walkTranscripts(root)) {
     filesScanned++;
 
@@ -112,6 +125,51 @@ export function collectClaudeCode(db: DB): CollectorResult {
       const entry = parseLine<ClaudeEntry>(line);
       if (!entry) continue;
       const ts = entry.timestamp ? Date.parse(entry.timestamp) : null;
+
+      // ── The tool-call ledger, phase 1 (the call) ──
+      if (entry.type === 'assistant' && Array.isArray(entry.message?.content)) {
+        for (const block of entry.message!.content as { type?: string; id?: string; name?: string; input?: unknown }[]) {
+          if (block?.type === 'tool_use' && block.id && block.name) {
+            calls.push({
+              tool_call_key: `claude_code:${block.id}`,
+              tool: 'claude_code',
+              name: block.name,
+              shape: skeletonize(block.name, block.input),
+              args_digest: argsDigest(block.input),
+              session_id: entry.sessionId ?? null,
+              agent_id: entry.agentId ?? null,
+              ts: ts ?? Date.now(),
+              raw_ref: filePath,
+            });
+          }
+        }
+      }
+      // ── phase 2 (the result) ──
+      if (entry.type === 'user' && Array.isArray((entry as unknown as ClaudeUserEntry).message?.content)) {
+        for (const block of (entry as unknown as ClaudeUserEntry).message!.content as { type?: string; tool_use_id?: string; is_error?: boolean; content?: unknown }[]) {
+          if (block?.type !== 'tool_result' || !block.tool_use_id) continue;
+          const text = typeof block.content === 'string'
+            ? block.content
+            : Array.isArray(block.content)
+              ? block.content.map((c) => (typeof c === 'object' && c && 'text' in c ? String((c as { text?: string }).text ?? '') : '')).join(' ')
+              : '';
+          const denied = /user doesn't want|permission denied|didn't allow|rejected the tool/i.test(text);
+          calls.push({
+            tool_call_key: `claude_code:${block.tool_use_id}`,
+            tool: 'claude_code',
+            name: '',           // widened from the phase-1 row by the bind
+            shape: null,
+            session_id: entry.sessionId ?? null,
+            agent_id: entry.agentId ?? null,
+            ts: ts ?? Date.now(),
+            status: denied ? 'denied' : block.is_error ? 'error' : 'success',
+            status_source: 'result_flag',
+            authority: denied ? 'denied' : null,
+            raw_ref: filePath,
+          });
+        }
+      }
+
       if (entry.type === 'assistant' && entry.message?.id && entry.message?.usage) {
         const messageId = entry.message.id;
         // Every copy coalesces (the fullest wins, per the upsert contract); the
@@ -142,6 +200,7 @@ export function collectClaudeCode(db: DB): CollectorResult {
     events,
     filesScanned,
     notes,
+    toolCalls: calls,
     commit: () => {
       for (const [p, off, mtime] of pending) setState(db, p, 'claude_code', off, mtime);
     },

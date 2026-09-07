@@ -92,6 +92,30 @@ struct TokenSpeed {
     let byTool: [ToolSpeed]
 }
 
+/// One tool invocation from the Tier 5 ledger.
+struct ToolCallEntry: Identifiable {
+    let tool: String
+    let name: String
+    let shape: String?
+    let sessionID: String?
+    let agentID: String?
+    let ts: Int
+    let status: String?
+    let statusSource: String?
+    let durationMs: Int?
+    let durationKind: String?
+    let authority: String?
+    var id: String { "\(tool):\(name):\(ts)" }
+}
+
+/// One Blast Radius destination (a command shape that leaves the laptop).
+struct BlastEntry: Identifiable {
+    let shape: String
+    let calls: Int
+    let last: Int
+    var id: String { shape }
+}
+
 /// One model's measured generation speed, with its coverage.
 struct ModelSpeed: Identifiable {
     let tool: String
@@ -196,7 +220,7 @@ final class DB {
     /// depends on the two agreeing about what "current" means. The read-model
     /// parity check asserts this against the fixture store (always at the TS head),
     /// so a forgotten bump fails CI instead of shipping a gate that blocks users.
-    static let knownSchemaVersion = 14
+    static let knownSchemaVersion = 16
 
     private var handle: OpaquePointer?
     let path: String
@@ -582,6 +606,50 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
                 rows: colInt(row, 5),
                 coverage: withDur + withoutDur > 0 ? Double(withDur) / Double(withDur + withoutDur) : 0,
                 kind: colText(row, 6) == "measured" ? "measured" : "turn_scoped"))
+        }
+        return out
+    }
+
+    /// The tool-call ledger: recent invocations with outcome and authority.
+    func toolCalls(limit: Int = 300) -> [ToolCallEntry] {
+        var out: [ToolCallEntry] = []
+        run("""
+            SELECT tool_call_key, tool, name, shape, session_id, agent_id, ts,
+                   status, status_source, duration_ms, duration_kind, authority
+            FROM tool_calls ORDER BY ts DESC LIMIT ?
+            """, [limit]) { row in
+            out.append(ToolCallEntry(
+                tool: colText(row, 0) ?? "?",
+                name: colText(row, 1) ?? "?",
+                shape: colText(row, 2),
+                sessionID: colText(row, 3),
+                agentID: colText(row, 4),
+                ts: colInt(row, 5),
+                status: colText(row, 6),
+                statusSource: colText(row, 7),
+                durationMs: colIntOpt(row, 8),
+                durationKind: colText(row, 9),
+                authority: colText(row, 10)))
+        }
+        return out
+    }
+
+    /// Blast Radius: every destination the agents touched, from command shapes.
+    func blastRadius() -> [BlastEntry] {
+        var out: [BlastEntry] = []
+        run("""
+            SELECT shape, COUNT(*) AS calls, MAX(ts) AS last
+            FROM tool_calls WHERE shape IS NOT NULL
+              AND (shape LIKE 'ssh%' OR shape LIKE 'scp%' OR shape LIKE 'rsync%'
+                   OR shape LIKE 'docker exec%' OR shape LIKE 'docker run%'
+                   OR shape LIKE 'kubectl%' OR shape LIKE 'curl%' OR shape LIKE 'psql -h%'
+                   OR shape LIKE 'mysql -h%')
+            GROUP BY shape ORDER BY calls DESC
+            """) { row in
+            out.append(BlastEntry(
+                shape: colText(row, 0) ?? "?",
+                calls: colInt(row, 1),
+                last: colInt(row, 2)))
         }
         return out
     }

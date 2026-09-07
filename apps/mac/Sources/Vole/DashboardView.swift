@@ -345,6 +345,8 @@ enum DashSection: String, CaseIterable, Identifiable {
         case .shadowAI:  return ["ai_surfaces"]
         case .posture:   return ["grants"]                    // Tier 6 collector
         case .exposure: return ["secret_sightings"]          // Tier 4 ledger
+        case .behaviour: return ["tool_calls"]               // Tier 5 ledger
+        case .blast:     return ["tool_calls"]
         case .blast:     return ["tool_calls"]                 // Tier 5 ledger
         case .behaviour: return ["tool_calls"]
         case .people:    return ["principals"]                 // Tier 3 identity
@@ -364,7 +366,7 @@ enum DashSection: String, CaseIterable, Identifiable {
         switch self {
         case .posture: return "Tier 6 — the posture & supply-chain collectors"
         case .exposure: return "Tier 4 — the DLP scanner"
-        case .blast, .behaviour: return "Tier 5 — the tool-call ledger"
+        case .behaviour, .blast: return "Tier 5 — the tool-call ledger"
         case .people: return "Tier 3 — the identity seam"
         default: return "a later collector version"
         }
@@ -556,7 +558,9 @@ struct DashboardView: View {
         case .triage:    TriagePane(store: store)
         case .shadowAI:  ShadowAIPane(store: store)
         case .exposure:  DataExposurePane(store: store)
-        case .posture, .blast, .behaviour, .people: EmptyView()  // handled by the capability gate
+        case .behaviour: BehaviourPane(store: store)
+        case .blast:     BlastRadiusPane(store: store)
+        case .posture, .people: EmptyView()  // handled by the capability gate
         case .privacy:   PrivacyPane(store: store)
         case .settings:  settingsPane
         }
