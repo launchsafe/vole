@@ -123,12 +123,16 @@ export function scanSink(sink: Sink, byteBudget: number): SinkScanResult {
   let bytesUnreadable = 0;
   let overBudget = false;
   const sightings: RawSighting[] = [];
+  const MAX_FILES_PER_SINK = 5000;   // a directory sink with 100k files must not
+  let filesScanned = 0;              // cost a full statSync walk before the budget
 
   for (const f of files) {
+    if (filesScanned >= MAX_FILES_PER_SINK) { overBudget = true; break; }
     if (bytesScanned + f.size > byteBudget) {
       overBudget = true;
       break; // the cursor state lets the next scan resume
     }
+    filesScanned++;
     try {
       const raw = readFileSync(f.path);
       bytesScanned += f.size;
@@ -136,7 +140,6 @@ export function scanSink(sink: Sink, byteBudget: number): SinkScanResult {
         // Content-branded at the boundary: measurable, never storable.
         const text = asContent(raw.toString('utf8'));
         const found = scanBuffer(text, 0);
-        // Directories carry many files: offset is per-file, disambiguated by path.
         for (const s of found) sightings.push({ ...s, byteOffset: s.byteOffset });
         void sink;
       }

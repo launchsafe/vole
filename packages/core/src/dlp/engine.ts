@@ -51,6 +51,25 @@ export function shannon(value: string): number {
   return h;
 }
 
+/** A hard ceiling on raw matches per detector per buffer. Without it, a binary
+ *  sink (77MB of SQLite) produces millions of entropy candidates and the scan
+ *  never finishes — the collector's FIRST pass hangs forever, the poll interval
+ *  never arms, and the app reads as stale. Bounded work or no work. */
+const MAX_MATCHES_PER_DETECTOR = 2000;
+
+/** True when the buffer looks like binary (SQLite pages, encrypted blobs): the
+ *  expensive entropy catch-all is skipped; the specific provider shapes still
+ *  run — they are anchored prefixes, cheap even on binary. */
+export function looksBinary(buf: string): boolean {
+  const sample = buf.length > 8192 ? buf.slice(0, 8192) : buf;
+  let control = 0;
+  for (let i = 0; i < sample.length; i++) {
+    const c = sample.charCodeAt(i);
+    if (c < 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d) control++;
+  }
+  return sample.length > 0 && control / sample.length > 0.05;
+}
+
 /**
  * Scans one buffer. The content is branded (`Content`) — it can only be
  * measured, hashed or fingerprinted here, and it leaves this function as a
@@ -59,14 +78,21 @@ export function shannon(value: string): number {
  */
 export function scanBuffer(buf: Content, bufferByteOffset = 0): RawSighting[] {
   const out: RawSighting[] = [];
+  const binary = looksBinary(buf);
   for (const d of DETECTORS) {
+    // The entropy catch-all is text-only: on binary it matches millions of
+    // candidates and each pays a shannon() — the hang this guard exists for.
+    if (binary && d.minEntropy !== undefined) continue;
+
     // Prefilter: the whole buffer is lowercased once per detector's keyword set;
     // a keyword miss skips the regex entirely (the Gitleaks two-step).
     const lower = buf.toLowerCase();
     if (!d.keywords.some((k) => lower.includes(k.toLowerCase()))) continue;
 
     d.pattern.lastIndex = 0;
+    let matched = 0;
     for (const m of buf.matchAll(d.pattern)) {
+      if (matched >= MAX_MATCHES_PER_DETECTOR) break;
       const value = m[1] ?? m[0];
       if (!value || value.length < 12) continue;
       if (d.stopwords?.test(value)) continue;
@@ -79,6 +105,7 @@ export function scanBuffer(buf: Content, bufferByteOffset = 0): RawSighting[] {
         byteOffset,
         byteLength: Buffer.byteLength(value, 'utf8'),
       });
+      matched++;
     }
   }
   return out;
