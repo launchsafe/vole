@@ -406,6 +406,49 @@ export const MIGRATIONS: Migration[] = [
     apply: (db) =>
       db.prepare("DELETE FROM collector_state WHERE tool = 'claude_code'").run().changes,
   },
+  {
+    version: 18,
+    name: 'identity-grants-people',
+    kind: 'ddl',
+    // Tier 3 + Tier 6 substrate. Principals are PSEUDONYMOUS by construction:
+    // the store keeps an HMAC of the username, never the name or email. The
+    // grants table reads each agent's own permission declarations — the file
+    // that granted the authority is the evidence, keyed verbatim.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS principals (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          principal_key TEXT  NOT NULL UNIQUE,  -- keyed HMAC: pseudonymous
+          display     TEXT    NOT NULL,          -- short label, never an email
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS devices (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_key  TEXT    NOT NULL UNIQUE,   -- IOPlatformUUID, HMAC'd
+          hostname    TEXT,
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS grants (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          grant_key   TEXT    NOT NULL UNIQUE,   -- agent + file + entry
+          agent       TEXT    NOT NULL,          -- claude_code | codex | ...
+          source_file TEXT    NOT NULL,
+          kind        TEXT    NOT NULL,          -- allow | deny | ask | hook | mcp
+          entry       TEXT    NOT NULL,          -- the verbatim declaration
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_grants_agent ON grants(agent);
+        CREATE VIEW IF NOT EXISTS v_people AS
+        SELECT p.id, p.display, p.principal_key, p.first_seen, p.last_seen,
+               (SELECT COUNT(DISTINCT session_id) FROM usage_events
+                WHERE user IS NOT NULL AND session_id IS NOT NULL) AS sessions
+        FROM principals p;`);
+      return 0;
+    },
+  },
 ]
 ;
 

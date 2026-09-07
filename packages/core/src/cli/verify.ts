@@ -171,6 +171,13 @@ if (CONTENT_ARGS.includes('--content')) {
     tool_calls: ['id', 'tool_call_key', 'tool', 'name', 'shape', 'args_digest',
       'session_id', 'agent_id', 'ts', 'status', 'status_source', 'duration_ms',
       'duration_kind', 'authority', 'raw_ref', 'first_seen', 'last_seen'],
+    // Tier 3: pseudonymous identity. principal_key is an HMAC under a
+    // Keychain-held key — identifying shape, never a name or email. grants.entry
+    // is the agent's OWN permission declaration, quoted verbatim from its
+    // config: operator-authored config, not conversation content.
+    principals: ['id', 'principal_key', 'display', 'first_seen', 'last_seen'],
+    devices: ['id', 'device_key', 'hostname', 'first_seen', 'last_seen'],
+    grants: ['id', 'grant_key', 'agent', 'source_file', 'kind', 'entry', 'first_seen', 'last_seen'],
   };
 
   const findings: string[] = [];

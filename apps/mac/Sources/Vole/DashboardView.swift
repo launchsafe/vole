@@ -343,13 +343,13 @@ enum DashSection: String, CaseIterable, Identifiable {
         case .incidents: return ["v_incident_explained"]
         case .triage:    return ["finding_actions"]
         case .shadowAI:  return ["ai_surfaces"]
-        case .posture:   return ["grants"]                    // Tier 6 collector
+        case .posture:   return ["grants"]
         case .exposure: return ["secret_sightings"]          // Tier 4 ledger
         case .behaviour: return ["tool_calls"]               // Tier 5 ledger
         case .blast:     return ["tool_calls"]
         case .blast:     return ["tool_calls"]                 // Tier 5 ledger
         case .behaviour: return ["tool_calls"]
-        case .people:    return ["principals"]                 // Tier 3 identity
+        case .people:    return ["principals"]
         case .privacy:   return nil
         }
     }
@@ -560,7 +560,8 @@ struct DashboardView: View {
         case .exposure:  DataExposurePane(store: store)
         case .behaviour: BehaviourPane(store: store)
         case .blast:     BlastRadiusPane(store: store)
-        case .posture, .people: EmptyView()  // handled by the capability gate
+        case .posture:   PosturePane(store: store)
+        case .people:    PeoplePane(store: store)
         case .privacy:   PrivacyPane(store: store)
         case .settings:  settingsPane
         }

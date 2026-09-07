@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { userInfo } from 'node:os';
 import {
   openDb, insertEvents, insertAnomalies, repriceUnpriced, recordCollectorRun,
   scanDue, recordScan, drainInbox,
@@ -10,6 +11,7 @@ import { detectBySource, RULE_IDS } from '../detect';
 import { detectLedgerRules } from '../detect/behaviour';
 import { SCANNERS } from '../scanners';
 import { insertToolCalls } from '../toolcalls/bind';
+import { recordIdentity, sweepGrants } from '../identity';
 import { paths } from '../paths';
 import type { Anomaly, RateLimitObservation, Tool, UsageEvent } from '../types';
 
@@ -38,6 +40,11 @@ function runOnce(): void {
   // Triage writes from the app arrive as spool files; drain them first so the
   // disposition ledger reflects user intent before this pass's rows land.
   const applied = drainInbox(db);
+  // Identity (Tier 3) + grants (Tier 6): once per pass — cheap, idempotent.
+  try { recordIdentity(db, userInfo().username); } catch { /* uid unreadable */ }
+  let grantsSwept = 0;
+  try { grantsSwept = sweepGrants(db); } catch { /* unreadable configs */ }
+  if (verbose && grantsSwept > 0) console.log(`  [grants] ${grantsSwept} declaration(s) swept`);
   if (applied > 0 && verbose) console.log(`  [inbox] applied ${applied} triage action(s)`);
   const results = collectAll(db);
 

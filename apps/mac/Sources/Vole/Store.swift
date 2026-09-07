@@ -62,6 +62,11 @@ final class Store {
     private(set) var blastRadius: [BlastEntry] = []
     /// The subagent tree: session → agent edges.
     private(set) var agentEdges: [AgentEdge] = []
+    /// Tier 3: pseudonymous principals + devices.
+    private(set) var principals: [PrincipalEntry] = []
+    private(set) var devices: [DeviceEntry] = []
+    /// Tier 6: permission declarations.
+    private(set) var grants: [GrantEntry] = []
     /// The DLP denominator, in bytes: what the engine has actually read.
     var scanDenominator: Int { scanStates.reduce(0) { $0 + $1.bytesScanned } }
     private(set) var fieldDictionary: [(table: String, columns: [(name: String, type: String)])] = []
@@ -165,6 +170,9 @@ final class Store {
         toolCalls = db.toolCalls()
         blastRadius = db.blastRadius()
         agentEdges = db.agentEdges()
+        principals = db.principals()
+        devices = db.devices()
+        grants = db.grants()
         fieldDictionary = db.fieldDictionary()
         let beats = db.collectorHeartbeats()
         heartbeats = beats

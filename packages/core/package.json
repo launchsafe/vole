@@ -15,7 +15,8 @@
     "test": "node --import tsx --test 'src/**/*.test.ts'",
     "verify": "tsx src/cli/verify.ts",
     "typecheck": "tsc --noEmit",
-    "build:sea": "node scripts/build-sea.mjs"
+    "build:sea": "node scripts/build-sea.mjs",
+    "export": "tsx src/cli/export.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

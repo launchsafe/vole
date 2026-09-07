@@ -108,6 +108,35 @@ struct ToolCallEntry: Identifiable {
     var id: String { "\(tool):\(name):\(ts)" }
 }
 
+/// A pseudonymous principal — an HMAC, a label, never a name.
+struct PrincipalEntry: Identifiable {
+    let principalKey: String
+    let display: String
+    let firstSeen: Int
+    let lastSeen: Int
+    var id: String { principalKey }
+}
+
+struct DeviceEntry: Identifiable {
+    let deviceKey: String
+    let hostname: String?
+    let firstSeen: Int
+    let lastSeen: Int
+    var id: String { deviceKey }
+}
+
+/// One permission declaration, verbatim from the file that granted it.
+struct GrantEntry: Identifiable {
+    let grantKey: String
+    let agent: String
+    let sourceFile: String
+    let kind: String
+    let entry: String
+    let firstSeen: Int
+    let lastSeen: Int
+    var id: String { grantKey }
+}
+
 /// One session/agent edge in the subagent tree.
 struct AgentEdge: Identifiable {
     let session: String
@@ -231,7 +260,7 @@ final class DB {
     /// depends on the two agreeing about what "current" means. The read-model
     /// parity check asserts this against the fixture store (always at the TS head),
     /// so a forgotten bump fails CI instead of shipping a gate that blocks users.
-    static let knownSchemaVersion = 17
+    static let knownSchemaVersion = 18
 
     private var handle: OpaquePointer?
     let path: String
@@ -641,6 +670,46 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
                 durationMs: colIntOpt(row, 8),
                 durationKind: colText(row, 9),
                 authority: colText(row, 10)))
+        }
+        return out
+    }
+
+    /// Principals: pseudonymous, never a name or email.
+    func principals() -> [PrincipalEntry] {
+        var out: [PrincipalEntry] = []
+        run("SELECT principal_key, display, first_seen, last_seen FROM principals ORDER BY last_seen DESC") { row in
+            out.append(PrincipalEntry(
+                principalKey: colText(row, 0) ?? "?",
+                display: colText(row, 1) ?? "?",
+                firstSeen: colInt(row, 2),
+                lastSeen: colInt(row, 3)))
+        }
+        return out
+    }
+
+    func devices() -> [DeviceEntry] {
+        var out: [DeviceEntry] = []
+        run("SELECT device_key, hostname, first_seen, last_seen FROM devices") { row in
+            out.append(DeviceEntry(
+                deviceKey: colText(row, 0) ?? "?",
+                hostname: colText(row, 1),
+                firstSeen: colInt(row, 2),
+                lastSeen: colInt(row, 3)))
+        }
+        return out
+    }
+
+    func grants() -> [GrantEntry] {
+        var out: [GrantEntry] = []
+        run("SELECT grant_key, agent, source_file, kind, entry, first_seen, last_seen FROM grants ORDER BY kind, entry") { row in
+            out.append(GrantEntry(
+                grantKey: colText(row, 0) ?? "?",
+                agent: colText(row, 1) ?? "?",
+                sourceFile: colText(row, 2) ?? "?",
+                kind: colText(row, 3) ?? "allow",
+                entry: colText(row, 4) ?? "",
+                firstSeen: colInt(row, 5),
+                lastSeen: colInt(row, 6)))
         }
         return out
     }
