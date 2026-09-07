@@ -13,6 +13,11 @@ const RULE: Record<string, string> = {
   denied_then_achieved: 'guardrail bypasses', remote_execution: 'remote executions',
   destructive_command: 'destructive commands', tool_failure_storm: 'failure storms',
   stuck_tool_call: 'stuck calls', headless_bypass_launch: 'headless bypasses',
+  denial_then_reshape: 'denial reshapes', remote_database: 'remote databases',
+  sensitive_read_unasked: 'sensitive reads', agent_wrote_persistence: 'persistence writes',
+  agent_self_authorised: 'self-authorisations', scope_drift: 'scope drifts',
+  install_after_ingress: 'installs after fetch', unattended_run: 'unattended runs',
+  context_edges: 'external fetches',
 };
 const base = (p: string) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
 const day = (ts: number) => new Date(ts).toISOString().slice(0, 10);

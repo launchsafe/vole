@@ -54,6 +54,27 @@ const SHAPE_FLAGS: Record<string, string[]> = {
 };
 
 export function skeletonize(name: string, args: unknown): string | null {
+  // Structural path tags: the DIRECTORY is the signal, never the file's content.
+  // 'cat ~/.ssh/id_rsa' and 'Read .env' carry their risk in the path itself.
+  const text = typeof args === 'string' ? args : JSON.stringify(args ?? '');
+  const tags: string[] = [];
+  if (/~\/\.ssh|\.ssh\/|id_rsa|id_ed25519|\.pem\b|\.env\b|credentials|\.aws|\.netrc|keychain/i.test(text)) {
+    tags.push('sensitive');
+  }
+  if (/LaunchAgents|LaunchDaemons|crontab|\/etc\/periodic|StartupItems/i.test(text)) {
+    tags.push('persistence');
+  }
+  // Own-permission edits only: reading settings to CHECK permissions is routine;
+  // writing them is the agent changing its own guardrails.
+  if (/\.claude\/settings|settings\.local\.json|\.codex\/config/i.test(text) &&
+      /(cp|mv|tee|chmod|sed -i|rm|>|Write|Edit)/.test(name + ' ' + text.slice(0, 200))) {
+    tags.push('own-permissions');
+  }
+  const base = shellShape(name, args);
+  return tags.length ? `${base} [${tags.join(',')}]` : base;
+}
+
+function shellShape(name: string, args: unknown): string | null {
   if (name !== 'Bash' && name !== 'bash' && name !== 'shell' && name !== 'exec_command') {
     // Non-shell tools: the tool name IS the shape.
     return name;
@@ -112,7 +133,8 @@ ON CONFLICT(tool_call_key) DO UPDATE SET
                         THEN excluded.duration_kind ELSE tool_calls.duration_kind END,
   authority     = CASE WHEN tool_calls.authority IS NULL AND excluded.authority IS NOT NULL
                         THEN excluded.authority ELSE tool_calls.authority END,
-  shape         = COALESCE(tool_calls.shape, excluded.shape),
+  shape         = CASE WHEN length(COALESCE(excluded.shape, '')) > length(COALESCE(tool_calls.shape, ''))
+                        THEN excluded.shape ELSE tool_calls.shape END,
   args_digest   = COALESCE(tool_calls.args_digest, excluded.args_digest),
   session_id    = COALESCE(tool_calls.session_id, excluded.session_id),
   agent_id      = COALESCE(tool_calls.agent_id, excluded.agent_id),
@@ -120,7 +142,8 @@ ON CONFLICT(tool_call_key) DO UPDATE SET
 WHERE (tool_calls.status IS NULL AND excluded.status IS NOT NULL)
    OR (tool_calls.duration_ms IS NULL AND excluded.duration_ms IS NOT NULL)
    OR (tool_calls.authority IS NULL AND excluded.authority IS NOT NULL)
-   OR (tool_calls.status_source IS NULL AND excluded.status_source IS NOT NULL)`;
+   OR (tool_calls.status_source IS NULL AND excluded.status_source IS NOT NULL)
+   OR (length(COALESCE(excluded.shape, '')) > length(COALESCE(tool_calls.shape, '')))`;
 
 /**
  * The two-phase bind. Phase 1 (the call): key + name + shape + digest + ts.

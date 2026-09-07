@@ -396,6 +396,16 @@ export const MIGRATIONS: Migration[] = [
     apply: (db) =>
       db.prepare("DELETE FROM collector_state WHERE tool IN ('claude_code', 'codex')").run().changes,
   },
+  {
+    version: 17,
+    name: 'ledger-shape-tag-backfill',
+    kind: 'backfill',
+    // Structural path tags (sensitive/persistence/own-permissions) landed after
+    // the ledger's first fill; the bind keeps the RICHER shape, so one cursor
+    // reset re-reads Claude transcripts and upgrades shapes in place.
+    apply: (db) =>
+      db.prepare("DELETE FROM collector_state WHERE tool = 'claude_code'").run().changes,
+  },
 ]
 ;
 

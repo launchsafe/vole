@@ -19,6 +19,26 @@ struct BehaviourPane: View {
             }
         } else {
             VStack(spacing: 0) {
+                // Acting now (#26): the last 5 minutes of the ledger, per agent.
+                let recent = store.toolCalls.filter { Date.now.timeIntervalSince1970 * 1000 - Double($0.ts) < 300_000 }
+                if !recent.isEmpty {
+                    HStack(spacing: 10) {
+                        Circle().fill(.green).frame(width: 8, height: 8)
+                        Text("Acting now — \(recent.count) call\(recent.count == 1 ? "" : "s") in the last 5 min")
+                            .font(.caption).fontWeight(.medium)
+                        let counts = Dictionary(grouping: recent.map(\.name), by: { $0 }).mapValues(\.count)
+                        if let top = counts.max(by: { $0.value < $1.value }), top.value >= 2 {
+                            Text("· mostly \(top.key)").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if recent.contains(where: { $0.status == "denied" }) {
+                            Label("denials in play", systemImage: "hand.raised.fill")
+                                .font(.caption2).foregroundStyle(.orange)
+                        }
+                    }
+                    .padding(.horizontal, 14).padding(.top, 10)
+                }
+
                 Picker("Filter", selection: $filter) {
                     Text("All").tag("all")
                     Text("Errors").tag("error")
@@ -34,6 +54,30 @@ struct BehaviourPane: View {
                     }
                 }
                 .listStyle(.inset)
+
+                // The subagent tree (#14): who did what, per session/agent.
+                if !store.agentEdges.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Agent tree — top sessions by activity")
+                            .font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
+                        ForEach(store.agentEdges.prefix(6)) { e in
+                            HStack(spacing: 8) {
+                                Image(systemName: e.agent == "main" ? "person.fill" : "arrow.triangle.branch")
+                                    .font(.caption2)
+                                    .foregroundStyle(e.agent == "main" ? AnyShapeStyle(HierarchicalShapeStyle.secondary) : AnyShapeStyle(Color.blue))
+                                Text(e.session.prefix(8)).font(.caption2).monospaced().foregroundStyle(.tertiary)
+                                Text(e.agent == "main" ? "main" : e.agent)
+                                    .font(.caption2).foregroundStyle(e.agent == "main" ? AnyShapeStyle(HierarchicalShapeStyle.secondary) : AnyShapeStyle(Color.blue))
+                                Spacer()
+                                Text("\(e.calls) calls").font(.caption2).monospacedDigit().foregroundStyle(.tertiary)
+                                if e.errors > 0 {
+                                    Text("\(e.errors) err").font(.caption2).foregroundStyle(.red)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                }
             }
         }
     }

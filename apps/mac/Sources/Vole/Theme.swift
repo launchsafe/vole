@@ -191,6 +191,11 @@ enum Labels {
         "denied_then_achieved": "Guardrail bypass", "remote_execution": "Remote execution",
         "destructive_command": "Destructive command", "tool_failure_storm": "Failure storm",
         "stuck_tool_call": "Stuck call", "headless_bypass_launch": "Headless bypass",
+        "denial_then_reshape": "Denial reshape", "remote_database": "Remote database",
+        "sensitive_read_unasked": "Sensitive read", "agent_wrote_persistence": "Persistence write",
+        "agent_self_authorised": "Self-authorised", "scope_drift": "Scope drift",
+        "install_after_ingress": "Install after fetch", "unattended_run": "Unattended run",
+        "context_edges": "External fetch",
     ]
     static func confidence(_ c: String) -> String {
         c == "exact" ? "exact" : "no tokens"

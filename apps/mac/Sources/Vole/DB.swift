@@ -108,6 +108,17 @@ struct ToolCallEntry: Identifiable {
     var id: String { "\(tool):\(name):\(ts)" }
 }
 
+/// One session/agent edge in the subagent tree.
+struct AgentEdge: Identifiable {
+    let session: String
+    let agent: String
+    let calls: Int
+    let first: Int
+    let last: Int
+    let errors: Int
+    var id: String { "\(session):\(agent)" }
+}
+
 /// One Blast Radius destination (a command shape that leaves the laptop).
 struct BlastEntry: Identifiable {
     let shape: String
@@ -220,7 +231,7 @@ final class DB {
     /// depends on the two agreeing about what "current" means. The read-model
     /// parity check asserts this against the fixture store (always at the TS head),
     /// so a forgotten bump fails CI instead of shipping a gate that blocks users.
-    static let knownSchemaVersion = 16
+    static let knownSchemaVersion = 17
 
     private var handle: OpaquePointer?
     let path: String
@@ -630,6 +641,26 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
                 durationMs: colIntOpt(row, 8),
                 durationKind: colText(row, 9),
                 authority: colText(row, 10)))
+        }
+        return out
+    }
+
+    /// The subagent tree: sessions grouped by their main/agent split.
+    func agentEdges() -> [AgentEdge] {
+        var out: [AgentEdge] = []
+        run("""
+            SELECT COALESCE(session_id, 'none') AS session, COALESCE(agent_id, 'main') AS agent,
+                   COUNT(*) AS calls, MIN(ts) AS lo, MAX(ts) AS hi,
+                   SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors
+            FROM tool_calls GROUP BY session, agent ORDER BY calls DESC LIMIT 50
+            """) { row in
+            out.append(AgentEdge(
+                session: colText(row, 0) ?? "none",
+                agent: colText(row, 1) ?? "main",
+                calls: colInt(row, 2),
+                first: colInt(row, 3),
+                last: colInt(row, 4),
+                errors: colInt(row, 5)))
         }
         return out
     }

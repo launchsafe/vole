@@ -89,11 +89,20 @@ export type AnomalyRule =
   | 'new_ai_surface'
   | 'rerouted_model'
   | 'denied_then_achieved'
+  | 'denial_then_reshape'
   | 'remote_execution'
+  | 'remote_database'
   | 'destructive_command'
   | 'tool_failure_storm'
   | 'stuck_tool_call'
-  | 'headless_bypass_launch';
+  | 'headless_bypass_launch'
+  | 'sensitive_read_unasked'
+  | 'agent_wrote_persistence'
+  | 'agent_self_authorised'
+  | 'scope_drift'
+  | 'install_after_ingress'
+  | 'unattended_run'
+  | 'context_edges';
 
 export type Severity = 'info' | 'warn' | 'critical';
 

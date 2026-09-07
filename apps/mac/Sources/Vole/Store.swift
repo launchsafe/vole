@@ -60,6 +60,8 @@ final class Store {
     private(set) var toolCalls: [ToolCallEntry] = []
     /// Blast Radius destinations from command shapes.
     private(set) var blastRadius: [BlastEntry] = []
+    /// The subagent tree: session → agent edges.
+    private(set) var agentEdges: [AgentEdge] = []
     /// The DLP denominator, in bytes: what the engine has actually read.
     var scanDenominator: Int { scanStates.reduce(0) { $0 + $1.bytesScanned } }
     private(set) var fieldDictionary: [(table: String, columns: [(name: String, type: String)])] = []
@@ -162,6 +164,7 @@ final class Store {
         modelSpeeds = db.modelSpeeds(range)
         toolCalls = db.toolCalls()
         blastRadius = db.blastRadius()
+        agentEdges = db.agentEdges()
         fieldDictionary = db.fieldDictionary()
         let beats = db.collectorHeartbeats()
         heartbeats = beats
