@@ -46,10 +46,17 @@ struct VoleApp: App {
             print("refresh interval = \(RefreshInterval.saved)s")
             exit(0)
         }
+        // Read-model parity dump — the CI contract twin of
+        // packages/core/src/cli/readmodel-dump.ts. The Swift reader is an
+        // independent implementation of the same SQL, which is exactly why it
+        // drifts; this output is diffed against the TS side's in CI.
+        if CommandLine.arguments.contains("--dump=readmodel") {
+            print(DB().readModelDump())
+            exit(0)
+        }
         // Dock / ⌘-Tab / About icon — needed for `swift run` (an unbundled binary has
         // no CFBundleIconFile); the .app bundle also carries it as AppIcon.icns.
-        if let u = Bundle.module.url(forResource: "AppIcon", withExtension: "png"),
-           let icon = NSImage(contentsOf: u) {
+        if let icon = Res.image("AppIcon") {
             NSApplication.shared.applicationIconImage = icon
         }
         // `Vole --section=settings` for demos/screenshots; also the key the menu-bar
@@ -99,32 +106,74 @@ struct MenuBarLabel: View {
     @AppStorage("vole.menubar") private var menubar = "tokens"
 
     /// Bundled bare mark, template so AppKit tracks the menu bar's light/dark.
+    /// Sized PROPORTIONALLY: a wide wordmark forced into a square is a 40%
+    /// horizontal squash — the distortion that read as "flipped to the top side".
     private static let mark: NSImage? = {
-        guard let u = Bundle.module.url(forResource: "MenuBarGlyph", withExtension: "png"),
-              let i = NSImage(contentsOf: u) else { return nil }
+        guard let i = Res.image("MenuBarGlyph") else { return nil }
         i.isTemplate = true
-        i.size = NSSize(width: 18, height: 18)
+        let px = i.representations.first
+        let aspect = (px?.pixelsWide ?? 1) > 0 && (px?.pixelsHigh ?? 0) > 0
+            ? Double(px!.pixelsWide) / Double(px!.pixelsHigh)
+            : 1
+        i.size = NSSize(width: 13 * aspect, height: 13)
         return i
     }()
+    /// The live glyph height, surfaced so "is this the new build?" is checkable
+    /// by hovering — one point of doubt fewer.
+    static let glyphHeight: CGFloat = 13
 
     var body: some View {
         let sev = store.liveSeverity
+        let state = menuBarState
         Group {
             if let mark = Self.mark {
                 Image(nsImage: mark)
+                    .help("Vole · mark \(Int(Self.glyphHeight))pt")
             } else {
                 Image(systemName: "shippingbox.fill")   // asset missing — shouldn't happen
             }
         }
         .foregroundStyle(sev == "critical" ? Color.red
                          : sev == "warn" ? Color.orange : Color.primary)
-        switch menubar {
-        case "cost":
-            Text(store.summary.cost != nil ? Fmt.money(store.summary.cost) : "—")
-        case "icon":
-            EmptyView()
-        default:
-            Text(store.summary.tokens > 0 ? Fmt.compact(store.summary.tokens) : "—")
+        if menubar != "icon" {
+            // In a degraded state the figure is not the story — the state is.
+            Text(state.showsFigure
+                 ? (menubar == "cost"
+                    ? (store.summary.cost != nil ? Fmt.money(store.summary.cost) : "—")
+                    : menubar == "speed"
+                      ? (store.tokenSpeed.map { "\(Fmt.compactDbl($0.perMin))/m" } ?? "—")
+                      : (store.summary.tokens > 0 ? Fmt.compact(store.summary.tokens) : "—"))
+                 : state.badge)
+                .foregroundStyle(state.tint)
+                .help(state.label)
+                .monospacedDigit()
+        }
+    }
+
+    /// The six honest menu-bar states (#41): what the glyph+tint actually mean,
+    /// so "Setting up…" is never shown to a machine that merely has no Claude.
+    struct MenuState {
+        let label: String
+        let badge: String
+        let showsFigure: Bool
+        let tint: Color
+    }
+    private var menuBarState: MenuState {
+        switch store.collectorStatus {
+        case .noData:
+            return MenuState(label: "No data yet — the collector has not produced a database", badge: "…", showsFigure: false, tint: .secondary)
+        case .stale:
+            return MenuState(label: "Collector may have stopped — data is stale", badge: "stale", showsFigure: false, tint: .orange)
+        case .live:
+            if store.fullDiskAccess == false {
+                return MenuState(label: "Collection limited: Full Disk Access is not granted — sources behind TCC read as absent", badge: "limited", showsFigure: true, tint: .orange)
+            }
+            switch store.liveSeverity {
+            case "critical": return MenuState(label: "Critical incident active in the last hour", badge: "", showsFigure: true, tint: .red)
+            case "warn": return MenuState(label: "Warning active in the last hour", badge: "", showsFigure: true, tint: .orange)
+            case "info": return MenuState(label: "Info-level incidents in the last hour", badge: "", showsFigure: true, tint: .primary)
+            default: return MenuState(label: "Live — collector healthy, nothing active", badge: "", showsFigure: true, tint: .primary)
+            }
         }
     }
 }

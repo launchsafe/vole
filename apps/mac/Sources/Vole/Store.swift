@@ -47,6 +47,30 @@ final class Store {
     private(set) var allIncidents: [Incident] = []   // every stored incident (Incidents feed)
     private(set) var breakdown: [BreakdownRow] = []
     private(set) var collectorLastSeen: Int?   // epoch-ms of the collector's last scan
+    private(set) var heartbeats: [CollectorHeartbeat] = []  // per-collector, latest pass
+    private(set) var aiSurfaces: [AiSurface] = []
+    private(set) var findingActions: [FindingAction] = []
+    private(set) var secretSightings: [SecretSighting] = []
+    private(set) var scanStates: [ScanStateRow] = []
+    /// The live token burn rate (5-min trailing) and the 24h peak minute.
+    private(set) var tokenSpeed: TokenSpeed?
+    /// Generation speed per model (tok/s), with coverage.
+    private(set) var modelSpeeds: [ModelSpeed] = []
+    /// The DLP denominator, in bytes: what the engine has actually read.
+    var scanDenominator: Int { scanStates.reduce(0) { $0 + $1.bytesScanned } }
+    private(set) var fieldDictionary: [(table: String, columns: [(name: String, type: String)])] = []
+    /// The store's schema version, and whether it was written by a Vole newer than
+    /// this app — in which case every figure on every screen is suspect and the
+    /// version gate banner is the only honest thing to show.
+    private(set) var storeSchemaVersion = 0
+    /// The migration ledger — the upgrade boundary made visible: a step with an
+    /// unknown date predates the ledger, and everything before it must read
+    /// "not recorded", never zero.
+    private(set) var migrationLedger: [MigrationRow] = []
+    /// Every table and view the store actually has — the capability set the
+    /// navigation shell probes against, refreshed on the existing poll.
+    private(set) var availableTables: Set<String> = []
+    var storeIsFromTheFuture: Bool { storeSchemaVersion > DB.knownSchemaVersion }
     private(set) var refreshSeconds: Int = RefreshInterval.saved
 
     let dbPath: String
@@ -59,11 +83,21 @@ final class Store {
     private var timer: Timer?
     private var refreshing = false   // one sqlite connection; don't let callers overlap
 
-    /// High-water mark for incident notifications, persisted so a relaunch doesn't
-    /// re-notify. Starts at 0, but `notifyFreshIncidents` still filters to the last
-    /// 15 minutes, so a first run against months of history stays silent.
-    private var lastNotifiedIncidentID = UserDefaults.standard.integer(forKey: "vole.lastNotifiedIncidentID") {
-        didSet { UserDefaults.standard.set(lastNotifiedIncidentID, forKey: "vole.lastNotifiedIncidentID") }
+    /// Notification watermark, persisted so a relaunch doesn't re-notify.
+    ///
+    /// Two parts, because escalations UPDATE rows in place: `lastNotifiedDetectedAt`
+    /// is the MAX(detected_at) already notified (detected_at advances when the
+    /// collector escalates a stored anomaly, so an UPDATE reaches this gate), and
+    /// `notifiedSeverity` records the severity last notified per anomaly_key, so a
+    /// window that merely GREW — detected_at moved, severity did not — is seen,
+    /// compared, and deliberately not re-notified. The old MAX(id) watermark could
+    /// never see an update at all.
+    private var lastNotifiedDetectedAt = UserDefaults.standard.double(forKey: "vole.lastNotifiedDetectedAt") {
+        didSet { UserDefaults.standard.set(lastNotifiedDetectedAt, forKey: "vole.lastNotifiedDetectedAt") }
+    }
+    private var notifiedSeverity: [String: String] =
+        UserDefaults.standard.dictionary(forKey: "vole.notifiedSeverity") as? [String: String] ?? [:] {
+        didSet { UserDefaults.standard.set(notifiedSeverity, forKey: "vole.notifiedSeverity") }
     }
 
     init() {
@@ -113,6 +147,24 @@ final class Store {
         allIncidents = db.anomalies(.all, limit: 500)
         breakdown = db.breakdown(range)
         collectorLastSeen = db.collectorLastSeen()
+        storeSchemaVersion = db.schemaVersion()
+        migrationLedger = db.migrationLedger()
+        availableTables = db.tableNames()
+        aiSurfaces = db.aiSurfaces()
+        findingActions = db.findingActions()
+        secretSightings = db.secretSightings()
+        scanStates = db.scanStates()
+        tokenSpeed = db.tokenSpeed()
+        modelSpeeds = db.modelSpeeds(range)
+        fieldDictionary = db.fieldDictionary()
+        let beats = db.collectorHeartbeats()
+        heartbeats = beats
+        // With per-collector heartbeats, liveness is "any collector completed a pass
+        // recently" — not "Claude Code touched a file", which left every non-Claude
+        // Mac reading as never-set-up while rows accumulated behind the gate.
+        if let newest = beats.map(\.startedAt).max(), (collectorLastSeen ?? 0) < newest {
+            collectorLastSeen = newest
+        }
         notifyFreshIncidents()
         #if DEBUG
         if prev != (summary.calls, summary.tokens, incidents.count) {
@@ -140,8 +192,16 @@ final class Store {
     }
 
     /// Posts a local notification for each new warn/critical incident that's still fresh
-    /// (mirrors the collector's own 15-minute freshness window). Posted from the app so
-    /// Notification Center shows the Vole icon — `osascript` always shows Script Editor's.
+    /// (mirrors the collector's own 15-minute freshness window), and for each ESCALATION:
+    /// a stored anomaly whose severity rose after it was already notified — a window first
+    /// seen at warn that ends critical must re-notify, a window that merely grew must not.
+    /// Posted from the app so Notification Center shows the Vole icon — `osascript` always
+    /// shows Script Editor's.
+    ///
+    /// Coalescing (#44): incidents are batched per poll — one notification per RULE,
+    /// capped, with "+N more" in the body — and quiet hours (22:00–07:00 by default)
+    /// hold everything except criticals. One bad agent minute must not page a user
+    /// forty times.
     private func notifyFreshIncidents() {
         // UNUserNotificationCenter throws for a process with no bundle identifier — true
         // of a bare `swift run` binary, never true of a real .app. Skip there rather than
@@ -149,19 +209,53 @@ final class Store {
         // post to anyway.
         guard Bundle.main.bundleIdentifier != nil else { return }
         let cutoff = Int(Date.now.timeIntervalSince1970 * 1000) - 15 * 60_000
-        let fresh = allIncidents.filter {
-            $0.id > lastNotifiedIncidentID && $0.source == "live" && $0.severity != "info" && $0.windowEnd >= cutoff
+        let rank: [String: Int] = ["info": 0, "warn": 1, "critical": 2]
+
+        // Quiet hours: 22:00–07:00 unless disabled; criticals always pass.
+        let hour = Calendar.current.component(.hour, from: Date())
+        let quietHours = UserDefaults.standard.object(forKey: "vole.quietHours") as? Bool ?? true
+        let inQuietHours = quietHours && (hour >= 22 || hour < 7)
+
+        var newMax = lastNotifiedDetectedAt
+        var pending: [(Incident, Bool)] = []   // (incident, escalated)
+        for incident in allIncidents.sorted(by: { $0.detectedAt < $1.detectedAt }) {
+            defer {
+                newMax = max(newMax, Double(incident.detectedAt))
+                notifiedSeverity[incident.anomalyKey] = incident.severity
+            }
+            guard incident.source == "live", incident.severity != "info",
+                  incident.windowEnd >= cutoff,
+                  Double(incident.detectedAt) > lastNotifiedDetectedAt
+            else { continue }
+            if let seen = notifiedSeverity[incident.anomalyKey],
+               (rank[seen] ?? 0) >= (rank[incident.severity] ?? 0) { continue }
+            let escalated = notifiedSeverity[incident.anomalyKey] != nil
+            if inQuietHours && incident.severity != "critical" { continue }
+            pending.append((incident, escalated))
         }
-        for incident in fresh.sorted(by: { $0.id < $1.id }) {
+
+        // Coalesce: one notification per rule, newest first, with counts.
+        var byRule: [String: [(Incident, Bool)]] = [:]
+        for p in pending { byRule[p.0.rule, default: []].append(p) }
+        for (rule, items) in byRule.sorted(by: { $0.value.count > $1.value.count }) {
+            let first = items.first!.0
             let content = UNMutableNotificationContent()
-            content.title = "Vole · \(incident.severity.uppercased())"
-            content.body = incident.title
+            content.title = "Vole · \(first.severity.uppercased())\(items.first!.1 ? " (escalated)" : "")"
+            content.body = items.count == 1
+                ? first.title
+                : "\(first.title) — and \(items.count - 1) more \(Labels.ruleLabel(rule))"
             content.sound = .default
             UNUserNotificationCenter.current().add(
-                UNNotificationRequest(identifier: "vole-incident-\(incident.id)", content: content, trigger: nil))
+                UNNotificationRequest(identifier: "vole-incident-\(first.id)", content: content, trigger: nil))
         }
-        if let maxID = allIncidents.map(\.id).max(), maxID > lastNotifiedIncidentID {
-            lastNotifiedIncidentID = maxID
+        lastNotifiedDetectedAt = newMax
+    }
+
+    /// Whether the collector can read everything it was built to read — the FDA
+    /// canary's verdict, from the census. nil when the canary has not run yet.
+    var fullDiskAccess: Bool? {
+        aiSurfaces.first { $0.surfaceKey == "launch-context:fda" }.map { surface in
+            !(surface.evidence ?? "").contains("CANNOT")
         }
     }
 

@@ -14,7 +14,8 @@ docs/.docs-bundle.html
 apps/mac/build/
 apps/mac/Icon/preview/
 apps/mac/Icon/Vole.iconset/
-apps/mac/Icon/Vole.icns
+# Vole.icns is NOT ignored: it is committed prebuilt, because bundle.sh must work on a
+# fresh clone and regenerating it needs sharp, which is not a lockfile dependency.
 
 # Local tooling
 .playwright-mcp/

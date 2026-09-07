@@ -11,6 +11,8 @@ Start here. Each guide is written for a specific job.
 | Add a tool, a rule, or a panel | [EXTENDING.md](EXTENDING.md) |
 | Understand *why* it looks like this | [DECISIONS.md](DECISIONS.md) |
 | Find something worth building next | [ROADMAP.md](ROADMAP.md) |
+| Understand where the product is going | [ENTERPRISE-ROADMAP.md](ENTERPRISE-ROADMAP.md) |
+| Know who else sells this, and why companies buy | [MARKET.md](MARKET.md) |
 | Read or share everything offline | **[Vole-Documentation.pdf](Vole-Documentation.pdf)** |
 
 The PDF is generated from these markdown files by `pnpm docs:pdf`. The markdown is the source of

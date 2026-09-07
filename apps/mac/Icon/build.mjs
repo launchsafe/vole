@@ -4,15 +4,27 @@
 //                                     Icon/Vole.icns            (for the .app bundle)
 //                                     Icon/AppIcon.appiconset/  (if an Xcode project is added later)
 //                                     ../Sources/Vole/Resources/AppIcon.png  (runtime Dock icon)
-// Needs `sharp` (a workspace dep). SVG uses <path> only; the Y-channels are a <mask> knockout.
+// OPT-IN ONLY: bundle.sh never calls this. sharp is NOT a lockfile dependency — it
+// exists only on machines that happened to install it — so a fresh clone must bundle
+// with the committed Vole.icns instead. SVG uses <path> only; Y-channels are a <mask>
+// knockout.
 import { mkdirSync, writeFileSync, rmSync, globSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 
-// sharp is a transitive workspace dep, not hoisted — grab it from the pnpm store.
+// sharp is a transitive workspace dep, not hoisted — grab it from the pnpm store,
+// and fail with a sentence instead of a TypeError when it is not there.
 const require = createRequire(import.meta.url);
 const root = new URL("../../../", import.meta.url).pathname;
-const sharp = require(globSync(`${root}node_modules/.pnpm/sharp@*/node_modules/sharp`)[0]);
+const sharpPath = globSync(`${root}node_modules/.pnpm/sharp@*/node_modules/sharp`)[0];
+if (!sharpPath) {
+  console.error(
+    "sharp is not installed (it is not a lockfile dependency). The committed " +
+      "Icon/Vole.icns is what bundle.sh ships; regenerating the artwork is an " +
+      "explicit, machine-local choice — install sharp yourself first.",
+  );
+  process.exit(1);
+}
+const sharp = require(sharpPath);
 
 const DIR = new URL(".", import.meta.url).pathname;
 const CHOICE = "ink"; // the shipped treatment
@@ -81,7 +93,7 @@ const grad = (id, a, b) => ({
 const TREATMENTS = {
   // transparent master — feed this one into Icon Composer for the Liquid Glass build
   glyph: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">${mark("#0A0A0A", "transparent")}</svg>`,
-  ink: card(grad("k", "#24252A", "#0B0B0C"), "#F5F5F7", "#141519"),
+  ink: card({ fill: "#080808" }, "#F5F5F7", "#141519"),
   light: card(grad("l", "#FDFDFE", "#E9EBEE"), "#0B0B0C", "#FDFDFE"),
   dark: card(grad("d", "#33353A", "#191A1D"), "#F4F4F6", "#212226"),
   blue: card(grad("b", "#3B82F6", "#1D4ED8"), "#FFFFFF", "#2E6BD6"),
@@ -100,17 +112,28 @@ if (process.argv.includes("--emit")) {
   const svg = Buffer.from(TREATMENTS[CHOICE]);
   const png = (s) => sharp(svg).resize(s, s).png().toBuffer();
 
-  // 1. .icns via iconutil
-  const set = `${DIR}Vole.iconset`;
-  rmSync(set, { recursive: true, force: true });
-  mkdirSync(set);
-  for (const s of [16, 32, 64, 128, 256, 512, 1024]) {
+  // 1. .icns, written directly — the format is just an 'icns' header plus
+  // [4-char type, big-endian length, png] entries, so no iconutil round-trip
+  // (which also refuses to run inside the sandbox). Types cover every slot
+  // iconutil would emit for the same PNG set: icp4/icp5/ic11/ic12/ic07/
+  // ic13/ic08/ic14/ic09/ic10 = 16…1024 px plus the @2x slots.
+  const ICNS_TYPES = [
+    ["icp4", 16], ["icp5", 32], ["ic11", 32], ["ic12", 64], ["ic07", 128],
+    ["ic13", 256], ["ic08", 256], ["ic14", 512], ["ic09", 512], ["ic10", 1024],
+  ];
+  const entries = [];
+  for (const [type, s] of ICNS_TYPES) {
     const b = await png(s);
-    if (s !== 1024) writeFileSync(`${set}/icon_${s}x${s}.png`, b);
-    if (s !== 16) writeFileSync(`${set}/icon_${s / 2}x${s / 2}@2x.png`, b);
+    const e = Buffer.alloc(8 + b.length);
+    e.write(type, 0, "ascii");
+    e.writeUInt32BE(8 + b.length, 4);
+    b.copy(e, 8);
+    entries.push(e);
   }
-  execFileSync("iconutil", ["-c", "icns", set, "-o", `${DIR}Vole.icns`]);
-  rmSync(set, { recursive: true, force: true });
+  const head = Buffer.alloc(8);
+  head.write("icns", 0, "ascii");
+  head.writeUInt32BE(8 + entries.reduce((n, e) => n + e.length, 0), 4);
+  writeFileSync(`${DIR}Vole.icns`, Buffer.concat([head, ...entries]));
 
   // 2. .appiconset (only matters if someone adds an Xcode project)
   const aset = `${DIR}AppIcon.appiconset`;

@@ -7,7 +7,7 @@
  * used as the filter.
  */
 import { execFileSync } from 'node:child_process';
-import { openDb } from '../db';
+import { openDbReadOnly } from '../db';
 import { compact, usd } from '../util/format';
 import type { Tool } from '../types';
 
@@ -43,7 +43,7 @@ const basis = sinceDays > 0
     ? `since it diverged from ${base} on ${new Date(divergedAt).toISOString().slice(0, 10)}`
     : 'last 7 days (no base branch found)';
 
-const db = openDb();
+const db = openDbReadOnly();
 interface Row { tool: Tool; model: string | null; calls: number; tokens: number | null; cost: number | null }
 const rows = db
   .prepare(

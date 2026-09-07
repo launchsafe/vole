@@ -35,7 +35,7 @@ export function collectCursor(_db: DB): CollectorResult {
   const notes: string[] = [];
 
   if (!existsSync(dbPath)) {
-    return { tool: 'cursor', events, filesScanned: 0, notes: [`No Cursor tracking DB at ${dbPath}`] };
+    return { tool: 'cursor', events, filesScanned: 0, notes: [`No Cursor tracking DB at ${dbPath}`], sourceState: 'no_source' };;
   }
 
   let src: DB;
@@ -91,6 +91,7 @@ export function collectCursor(_db: DB): CollectorResult {
       tools: null,
       agent_id: null,
       context_window: null,
+      duration_ms: null, duration_kind: null,
         raw_ref: `${dbPath}#request:${r.requestId}`,
       });
     }

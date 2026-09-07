@@ -61,8 +61,20 @@ export function collectClaudeCode(db: DB): CollectorResult {
   // the first copy is a placeholder with output_tokens: 0. Coalesce every occurrence
   // seen this pass down to the fullest one before emitting, and the upsert in
   // insertEvents upgrades any already-stored placeholder from an earlier pass.
+  //
+  // The copies are per-content-block: the same message.id is written once per block
+  // with identical usage, so the tool_use names are spread across sibling copies.
+  // Keeping one copy drops every other copy's names (the live store had tools NULL
+  // on half the tool_use turns before this), so the names are unioned across all
+  // copies of an id, in first-appearance order, and stamped on whichever copy wins.
   const best = new Map<string, UsageEvent>();
+  const toolUnion = new Map<string, string[]>();
   const keep = (id: string, ev: UsageEvent) => {
+    if (ev.tools) {
+      const u = toolUnion.get(id);
+      if (!u) toolUnion.set(id, ev.tools.split(','));
+      else for (const t of ev.tools.split(',')) if (!u.includes(t)) u.push(t);
+    }
     const prev = best.get(id);
     const evTok = ev.total_tokens ?? 0;
     const prevTok = prev?.total_tokens ?? 0;
@@ -72,7 +84,7 @@ export function collectClaudeCode(db: DB): CollectorResult {
   };
 
   if (!existsSync(root)) {
-    return { tool: 'claude_code', events, filesScanned, notes: [`No directory at ${root}`] };
+    return { tool: 'claude_code', events, filesScanned, notes: [`No directory at ${root}`], sourceState: 'no_source' };;
   }
 
   const pending: [string, number, number][] = [];
@@ -88,20 +100,43 @@ export function collectClaudeCode(db: DB): CollectorResult {
       continue;
     }
 
+    // Turn-scoped duration estimation: the gap from the last line that was NOT
+    // part of this message (a user turn, a tool result) to this assistant message
+    // approximates the generation span — including queue time and the permission
+    // prompt, so the derived speed is a LOWER bound, and the row says so via
+    // duration_kind = 'turn_scoped'. Same-id streaming copies never reset the
+    // clock; a new turn does.
+    let turnStartTs: number | null = null;
+    let lastMsgId: string | null = null;
     for (const line of result.lines) {
       const entry = parseLine<ClaudeEntry>(line);
-      if (!entry || entry.type !== 'assistant') continue;
-      const usage = entry.message?.usage;
-      const messageId = entry.message?.id;
-      if (!usage || !messageId) continue;
-
-      keep(messageId, toEvent(entry, usage, messageId, filePath));
+      if (!entry) continue;
+      const ts = entry.timestamp ? Date.parse(entry.timestamp) : null;
+      if (entry.type === 'assistant' && entry.message?.id && entry.message?.usage) {
+        const messageId = entry.message.id;
+        // Every copy coalesces (the fullest wins, per the upsert contract); the
+        // duration is measured from the turn start, which same-id streaming
+        // copies never reset — so the completed copy carries the full gap.
+        const duration =
+          ts !== null && turnStartTs !== null && ts > turnStartTs && ts - turnStartTs < 600_000
+            ? ts - turnStartTs
+            : null;
+        keep(messageId, toEvent(entry, entry.message.usage, messageId, filePath, duration));
+        lastMsgId = messageId;
+      } else if (ts !== null) {
+        turnStartTs = ts;   // a new turn began; the clock restarts here
+        lastMsgId = null;
+      }
     }
 
     pending.push([filePath, result.newOffset, result.mtimeMs]);
   }
 
-  for (const ev of best.values()) events.push(ev);
+  for (const [id, ev] of best) {
+    const union = toolUnion.get(id);
+    if (union?.length) ev.tools = union.join(',');
+    events.push(ev);
+  }
   return {
     tool: 'claude_code',
     events,
@@ -134,6 +169,7 @@ function toEvent(
   usage: ClaudeUsage,
   messageId: string,
   filePath: string,
+  durationMs: number | null,
 ): UsageEvent {
   const input = usage.input_tokens ?? 0;
   const output = usage.output_tokens ?? 0;
@@ -179,5 +215,8 @@ function toEvent(
     tools: tools.length ? tools.join(',') : null,
     agent_id: entry.agentId ?? null,
     context_window: contextWindow(model),
+    // Turn-scoped estimate from the turn-start gap — a lower bound on true speed.
+    duration_ms: durationMs,
+    duration_kind: durationMs !== null ? ('turn_scoped' as const) : null,
   };
 }

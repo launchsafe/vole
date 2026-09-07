@@ -1,7 +1,9 @@
 import { openSync, readSync, closeSync, statSync } from 'node:fs';
+import { contentOf, type Content } from '../content';
 
 export interface ReadResult {
-  lines: string[];
+  /** Raw transcript lines, branded: see content.ts — measurable, never storable. */
+  lines: Content[];
   /** Byte offset to resume from next poll. Never points into a partial line. */
   newOffset: number;
   mtimeMs: number;
@@ -37,12 +39,14 @@ export function readNewLines(path: string, fromOffset: number): ReadResult {
 
   const complete = text.slice(0, lastNewline);
   const consumedBytes = Buffer.byteLength(complete, 'utf8') + 1;
-  const lines = complete.split('\n').filter((l) => l.length > 0);
+  // The single boundary crossing for offset-read files: raw bytes → Content.
+  // Everything downstream can measure but not keep.
+  const lines = complete.split('\n').filter((l) => l.length > 0).map(contentOf);
   return { lines, newOffset: start + consumedBytes, mtimeMs: st.mtimeMs };
 }
 
 /** Parses a JSONL line, returning null instead of throwing on malformed input. */
-export function parseLine<T>(line: string): T | null {
+export function parseLine<T>(line: Content): T | null {
   try {
     return JSON.parse(line) as T;
   } catch {

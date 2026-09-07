@@ -82,6 +82,7 @@ export function collectAntigravity(_db: DB): CollectorResult {
       tools: null,
       agent_id: null,
       context_window: null,
+        duration_ms: null, duration_kind: null,
       raw_ref: `${dir} (${artifacts.length} artifacts; no token data)`,
     });
   }

@@ -6,7 +6,7 @@
  * against its window, value so far, pace, the cache countdown, and open incidents.
  */
 import { readFileSync } from 'node:fs';
-import { openDb } from '../db';
+import { openDbReadOnly } from '../db';
 import { getLiveSessions } from '../queries';
 import { compact, mmss, usd } from '../util/format';
 
@@ -25,7 +25,7 @@ if (!sessionId) {
 }
 
 const now = Date.now();
-const [s] = getLiveSessions(openDb(), { sessionId, now });
+const [s] = getLiveSessions(openDbReadOnly(), { sessionId, now });
 if (!s) {
   console.log('vole: no data yet');
   process.exit(0);

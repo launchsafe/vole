@@ -43,6 +43,21 @@ struct ConfidenceBadge: View {
     }
 }
 
+/// The collector runs but cannot read TCC-protected sources: partial numbers
+/// presented as whole ones would be the exact lie this banner exists to prevent.
+struct FdaBanner: View {
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "lock.shield").foregroundStyle(.orange)
+            Text("Collection limited — grant Full Disk Access in System Settings to see sources behind macOS protection.")
+                .font(.caption)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
 /// First-run / no-data state: the collector isn't feeding the database yet. A bundled
 /// app runs its own collector already — telling that user to run a pnpm command asks
 /// them to do something they have no Node, no pnpm and no terminal to do, so only an
@@ -149,6 +164,13 @@ struct MenuPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             header
 
+            // Permission preflight (#49): the collector runs, but cannot read
+            // everything it was built to — that is a user-actionable state and
+            // the panel says so instead of showing partial numbers as whole ones.
+            if store.collectorStatus == .live, store.fullDiskAccess == false {
+                FdaBanner()
+            }
+
             switch store.collectorStatus {
             case .noData:
                 SetupCard(command: store.collectCommand, path: store.dbPath)
@@ -193,6 +215,23 @@ struct MenuPanel: View {
                         .contentTransition(.numericText())
                         .animation(.default, value: store.summary.cost)
                 }
+                // Live burn rate: the trailing 5-minute average, with the 24h
+                // peak minute for scale — a rate, never an instant.
+                if let speed = store.tokenSpeed {
+                    HStack(spacing: 6) {
+                        Image(systemName: "speedometer")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Text("\(Fmt.compactDbl(speed.perMin)) tok/min")
+                            .font(.caption.monospacedDigit())
+                        Text("peak \(Fmt.compactDbl(speed.peakPerMin))")
+                            .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                        if let top = speed.byTool.first, top.perMin > 0 {
+                            Text("· \(Labels.toolShort[top.tool] ?? top.tool) \(Fmt.compactDbl(top.perMin))")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                        }
+                    }
+                    .help("Trailing 5-minute average across live rows; peak is the busiest single minute in 24h.")
+                }
                 Sparkline(points: store.series).padding(.top, 2)
             }
         }
@@ -221,6 +260,13 @@ struct MenuPanel: View {
                             Text(Fmt.compact(t.tokens))
                                 .font(.caption.monospacedDigit())
                                 .frame(width: 46, alignment: .trailing)
+                            // A mixed group is visibly mixed: tokens are exact, but
+                            // N of the calls recorded nothing — never silently one label.
+                            if t.activityOnlyCalls > 0 {
+                                Text("±\(t.activityOnlyCalls) no-token")
+                                    .font(.caption2).foregroundStyle(.tertiary)
+                                    .help("\(t.activityOnlyCalls) of \(t.calls) calls recorded activity only (no token data); the token figure covers the other \(t.calls - t.activityOnlyCalls).")
+                            }
                         }
                     }
                 }

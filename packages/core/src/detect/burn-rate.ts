@@ -1,73 +1,95 @@
 import type { Anomaly, UsageEvent } from '../types';
-import { bucketOf, groupBy, medianExcluding, withTokens, worstConfidence, fmt, shortId } from './util';
+import { bucketOf, groupBy, leaveOneOutMedians, withTokens, worstConfidence, fmt, shortId } from './util';
 
 const WINDOW_MS = 10 * 60 * 1000;
 /** Below this a "spike" is just noise — a single large prompt should not page anyone. */
 const MIN_TOKENS_IN_WINDOW = 20_000;
 const SPIKE_MULTIPLE = 3;
+/** A leave-one-out median needs at least this many surviving windows to mean anything. */
+const MIN_BASELINE_WINDOWS = 3;
 
 /**
- * Token-burn rate spike.
+ * Billable burn-rate spike.
  *
- * Compares each 10-minute window's tokens/min against the median window for that same
- * tool+model, so a model that is simply expensive does not permanently look anomalous —
- * only a departure from its OWN normal does.
+ * Scores each 10-minute window on what it COST, not on raw tokens: for Claude Code
+ * ~85% of total_tokens is cache reads priced at 0.1x, so a total-token rule reports
+ * that "the context got large", not that money was spent — on the live store it
+ * fired on 14.8% of windows and dominated the incident feed with cache-read noise.
+ * A window is scored on SUM(cost_usd) when every row in it is priced, and on
+ * SUM(total_tokens - cache_read_tokens) otherwise (cache reads are the cheap 0.1x
+ * component; cache writes are billable and stay in). The raw token total stays in
+ * the detail line so nothing is hidden.
  *
- * Windows are scanned across the whole timeline rather than only the trailing window, so
- * historical logs still produce an incident feed.
+ * Baseline hygiene: only windows that themselves clear MIN_TOKENS_IN_WINDOW are
+ * baseline candidates. A stray call, or the still-open current window under polling,
+ * must not drag the median down — a [30k, 800, 90k] sequence used to report 5.8x
+ * where the truth is 3.0x. The group is (tool, model, session), so concurrent
+ * subagents sharing a window are no longer charged to a single session's baseline.
  */
-export function detectBurnRate(events: UsageEvent[], now: number): Anomaly[] {
+export function detectBillableBurn(events: UsageEvent[], now: number): Anomaly[] {
   const out: Anomaly[] = [];
   const usable = withTokens(events);
 
-  for (const [key, group] of groupBy(usable, (e) => `${e.tool}::${e.model ?? 'unknown'}`)) {
+  for (const [key, group] of groupBy(usable, (e) => `${e.tool}::${e.model ?? 'unknown'}::${e.session_id ?? 'none'}`)) {
     const windows = groupBy(group, (e) => String(bucketOf(e.ts, WINDOW_MS)));
-    if (windows.size < 3) continue; // too little history to have a "normal"
+    if (windows.size < MIN_BASELINE_WINDOWS + 1) continue; // too little history to have a "normal"
 
-    const rates = new Map<number, { tokens: number; events: UsageEvent[] }>();
-    for (const [bucketStr, evs] of windows) {
-      const tokens = evs.reduce((s, e) => s + (e.total_tokens ?? 0), 0);
-      rates.set(Number(bucketStr), { tokens, events: evs });
-    }
+    const scored = [...windows.entries()].map(([bucketStr, evs]) => ({
+      bucket: Number(bucketStr),
+      evs,
+      raw: evs.reduce((s, e) => s + (e.total_tokens ?? 0), 0),
+      // Cost when the whole window is priced; otherwise uncached tokens, which are
+      // the expensive majority of what is left after 0.1x cache reads come out.
+      score: evs.every((e) => e.cost_usd !== null)
+        ? evs.reduce((s, e) => s + (e.cost_usd ?? 0), 0)
+        : evs.reduce((s, e) => s + Math.max(0, (e.total_tokens ?? 0) - (e.cache_read_tokens ?? 0)), 0),
+      priced: evs.every((e) => e.cost_usd !== null),
+    }));
 
-    const entries = [...rates.entries()];
-    const allTokens = entries.map(([, r]) => r.tokens);
+    const candidates = scored.filter((w) => w.raw >= MIN_TOKENS_IN_WINDOW);
+    if (candidates.length < MIN_BASELINE_WINDOWS + 1) continue;
 
-    const [tool, model] = key.split('::');
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      if (!entry) continue;
-      const [bucket, r] = entry;
+    // One O(W log W) pass for the whole group: the leave-one-out median of the
+    // surviving candidates for each surviving candidate.
+    const loo = leaveOneOutMedians(candidates.map((c) => c.score));
 
-      // Baseline excludes this window, so a spike cannot mask itself.
-      const baseline = medianExcluding(allTokens, i);
+    const [tool, model, session] = key.split('::');
+    for (let ci = 0; ci < candidates.length; ci++) {
+      const w = candidates[ci]!;
+
+      // Baseline excludes this window, so a spike cannot mask itself — and every
+      // sub-threshold window, which is noise by definition, not a "normal" one.
+      const baseline = loo[ci]!;
       if (baseline <= 0) continue;
-      if (r.tokens < MIN_TOKENS_IN_WINDOW) continue;
-      if (r.tokens <= baseline * SPIKE_MULTIPLE) continue;
+      if (w.score <= baseline * SPIKE_MULTIPLE) continue;
 
-      const multiple = r.tokens / baseline;
-      const perMin = r.tokens / (WINDOW_MS / 60000);
-      const first = r.events[0];
+      const multiple = w.score / baseline;
+      const first = w.evs[0];
       if (!first) continue;
 
+      const perMin = w.score / (WINDOW_MS / 60000);
+      const money = w.priced
+        ? `$${w.score.toFixed(2)} in 10 min ($${perMin.toFixed(2)}/min)`
+        : `${fmt(w.score)} uncached tokens in 10 min (${fmt(perMin)}/min)`;
+
       out.push({
-        anomaly_key: `burn_rate_spike:${tool}:${model}:${bucket}`,
-        rule: 'burn_rate_spike',
+        anomaly_key: `billable_burn_spike:${tool}:${model}:${session}:${w.bucket}`,
+        rule: 'billable_burn_spike',
         severity: multiple >= 6 ? 'critical' : 'warn',
         tool: first.tool,
         session_id: first.session_id,
         model: model === 'unknown' ? null : (model ?? null),
-        window_start: bucket,
-        window_end: bucket + WINDOW_MS,
-        title: `Token burn spike on ${first.tool} (${model})`,
+        window_start: w.bucket,
+        window_end: w.bucket + WINDOW_MS,
+        title: `Billable burn spike on ${first.tool} (${model})`,
         detail:
-          `Burned ${fmt(r.tokens)} tokens in 10 min (${fmt(perMin)}/min) across ` +
-          `${r.events.length} calls — ${multiple.toFixed(1)}x this model's typical ` +
-          `${fmt(baseline)}-token window. Session ${shortId(first.session_id)}.`,
-        observed: r.tokens,
+          `${money} across ${w.evs.length} calls — ${multiple.toFixed(1)}x this session's typical window ` +
+          `(${w.priced ? `$${baseline.toFixed(2)}` : `${fmt(baseline)} uncached tokens`}). ` +
+          `Raw ${fmt(w.raw)} tokens including cache reads. Session ${shortId(first.session_id)}.`,
+        observed: w.score,
         baseline,
         threshold: baseline * SPIKE_MULTIPLE,
-        confidence: worstConfidence(r.events),
+        confidence: worstConfidence(w.evs),
         source: first.source,
         detected_at: now,
       });

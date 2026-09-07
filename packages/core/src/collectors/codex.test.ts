@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Database } from '../sqlite';
+import { SCHEMA } from '../schema';
 import type { DB } from '../db';
 import { collectCodex } from './codex';
 
@@ -23,7 +25,9 @@ function run(name: string, lines: Record<string, Record<string, unknown>[]>) {
   process.env.VOLE_HOME_OVERRIDE = root;
   try {
     for (const [n, l] of Object.entries(lines)) fixture(root, n, l);
-    return collectCodex(null as unknown as DB);
+    const db: DB = new Database(join(root, 't.db'));
+    db.exec(SCHEMA);
+    return { result: collectCodex(db), db, root };
   } finally {
     delete process.env.VOLE_HOME_OVERRIDE;
   }
@@ -33,7 +37,7 @@ const META = { type: 'session_meta', payload: { id: 'sess-1' } };
 const MODEL = { type: 'turn_context', payload: { model: 'gpt-5.5' } };
 
 test('zero breakdown: the meter delta is kept exact, components stay NULL', () => {
-  const r = run('zero', {
+  const { result: r } = run('zero', {
     a: [META, MODEL, tc({
       total_token_usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 73256 },
       last_token_usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 73256 },
@@ -50,7 +54,7 @@ test('zero breakdown: the meter delta is kept exact, components stay NULL', () =
 });
 
 test('healthy breakdown: components stored as reported, total equals meter delta', () => {
-  const r = run('healthy', {
+  const { result: r } = run('healthy', {
     a: [META, MODEL, tc({
       total_token_usage: { input_tokens: 17038, cached_input_tokens: 5504, output_tokens: 452, reasoning_output_tokens: 361, total_tokens: 17490 },
       last_token_usage: { input_tokens: 17038, cached_input_tokens: 5504, output_tokens: 452, reasoning_output_tokens: 361, total_tokens: 17490 },
@@ -69,13 +73,13 @@ test('duplicate emission advances the meter by zero and is skipped', () => {
     total_token_usage: { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 50, reasoning_output_tokens: 0, total_tokens: 1050 },
     last_token_usage: { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 50, reasoning_output_tokens: 0, total_tokens: 1050 },
   };
-  const r = run('dup', { a: [META, MODEL, tc(info), tc(info)] });
+  const { result: r } = run('dup', { a: [META, MODEL, tc(info), tc(info)] });
   assert.equal(r.events.length, 1, 'the second identical event must not be counted again');
   assert.equal(r.events[0]!.total_tokens, 1050);
 });
 
 test('multi-turn file: each row is its own meter segment, summing to the session total', () => {
-  const r = run('multi', {
+  const { result: r } = run('multi', {
     a: [
       META, MODEL,
       tc({
@@ -98,7 +102,7 @@ test('multi-turn file: each row is its own meter segment, summing to the session
 });
 
 test('partial breakdown: meter total kept, cost NULL (split does not cover the meter)', () => {
-  const r = run('partial', {
+  const { result: r } = run('partial', {
     a: [META, { type: 'turn_context', payload: { model: 'claude-opus-5' } }, tc({
       total_token_usage: { input_tokens: 6047, cached_input_tokens: 0, output_tokens: 3, reasoning_output_tokens: 0, total_tokens: 6075 },
       last_token_usage: { input_tokens: 6047, cached_input_tokens: 0, output_tokens: 3, reasoning_output_tokens: 0, total_tokens: 6075 },
@@ -112,7 +116,7 @@ test('partial breakdown: meter total kept, cost NULL (split does not cover the m
 
 test('tool calls since the previous meter event are attributed to it, with the tool-reported window', () => {
   const call = (name: string) => ({ type: 'response_item', payload: { type: 'function_call', name } });
-  const r = run('tools', {
+  const { result: r } = run('tools', {
     a: [META, MODEL, call('exec_command'), call('apply_patch'), tc({
       total_token_usage: { input_tokens: 100, cached_input_tokens: 0, output_tokens: 10, reasoning_output_tokens: 0, total_tokens: 110 },
       last_token_usage: { input_tokens: 100, cached_input_tokens: 0, output_tokens: 10, reasoning_output_tokens: 0, total_tokens: 110 },
@@ -121,4 +125,71 @@ test('tool calls since the previous meter event are attributed to it, with the t
   });
   assert.equal(r.events[0]!.tools, 'exec_command,apply_patch');
   assert.equal(r.events[0]!.context_window, 258400);
+});
+
+test('B2: rollout files sharing a session id never collide on event_key', () => {
+  // A sub-agent rollout replays the parent's session_meta verbatim, so both files
+  // carry id sess-1. The keys must still be distinct or one file's rows silently
+  // vanish (INSERT OR IGNORE) and the session tree under-counts.
+  const info = (total: number) => ({
+    total_token_usage: { input_tokens: total, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: total },
+    last_token_usage: { input_tokens: total, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: total },
+  });
+  const { result: r } = run('shared', {
+    parent: [META, MODEL, tc(info(100))],
+    'sub-agent': [META, MODEL, tc(info(200))],
+  });
+  assert.equal(r.events.length, 2, 'both files must contribute rows');
+  const keys = new Set(r.events.map((e) => e.event_key));
+  assert.equal(keys.size, 2, 'event_keys must be unique per rollout file');
+  assert.deepEqual(
+    r.events.map((e) => e.total_tokens).sort((a, b) => (a ?? 0) - (b ?? 0)),
+    [100, 200],
+    'no row may be lost to a key collision',
+  );
+  for (const e of r.events) {
+    assert.equal(e.session_id, 'sess-1', 'session attribution is preserved');
+    assert.ok(e.event_key.includes('rollout-'), 'the key names the source file');
+  }
+});
+
+test('B13: unchanged rollout files are skipped by the (size, mtime) cursor', () => {
+  const info = (total: number) => ({
+    total_token_usage: { input_tokens: total, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: total },
+    last_token_usage: { input_tokens: total, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: total },
+  });
+  // The override must stay live for all three passes — this test drives the
+  // collector directly instead of through run().
+  const root = mkdtempSync(join(tmpdir(), 'vole-codex-cursor-'));
+  process.env.VOLE_HOME_OVERRIDE = root;
+  try {
+    const file = fixture(root, 'a', [META, MODEL, tc(info(100))]);
+    const db: DB = new Database(join(root, 't.db'));
+    db.exec(SCHEMA);
+
+    const first = collectCodex(db);
+    assert.equal(first.events.length, 1);
+    assert.equal(first.filesScanned, 1, 'first pass reads the file');
+
+    // Second pass, same store: the cursor knows (size, mtime) and skips the parse.
+    const second = collectCodex(db);
+    assert.equal(second.filesScanned, 0, 'unchanged files are not re-read');
+    assert.equal(second.events.length, 0, 'and emit nothing to re-dedupe');
+
+    // Appending changes mtime/size → the file is read again and the new event
+    // lands under its own stable key; the old one is untouched.
+    appendFileSync(file, JSON.stringify(tc(info(250))) + '\n');
+    const future = new Date(Date.now() + 2000); // same-ms writes can collide
+    utimesSync(file, future, future);
+
+    const third = collectCodex(db);
+    assert.equal(third.filesScanned, 1, 'an appended file is read again');
+    assert.deepEqual(
+      third.events.map((e) => e.total_tokens).sort((a, b) => (a ?? 0) - (b ?? 0)),
+      [100, 150],
+      're-read recomputes the same first delta (stable key) and the appended meter delta',
+    );
+  } finally {
+    delete process.env.VOLE_HOME_OVERRIDE;
+  }
 });

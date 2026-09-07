@@ -1,6 +1,26 @@
 import SwiftUI
 import AppKit
 
+// MARK: - Resources
+//
+// SwiftPM's generated `Bundle.module` looks for Vole_Vole.bundle next to the executable's
+// *bundle* URL — that is `Vole.app/Vole_Vole.bundle` — then falls back to the absolute
+// .build path of the machine that compiled it, and `fatalError`s. `bundle.sh` puts the
+// resource bundle where a .app is supposed to keep it (Contents/Resources), so look there
+// first and keep `.module` for `swift run`, where there is no Resources directory.
+enum Res {
+    static let bundle: Bundle = {
+        if let u = Bundle.main.resourceURL?.appendingPathComponent("Vole_Vole.bundle"),
+           let b = Bundle(url: u) { return b }
+        return .module
+    }()
+
+    static func image(_ name: String) -> NSImage? {
+        guard let u = bundle.url(forResource: name, withExtension: "png") else { return nil }
+        return NSImage(contentsOf: u)
+    }
+}
+
 // MARK: - Palette
 //
 // Apple-native: series and status colours are the system palette, so they track the
@@ -74,6 +94,17 @@ enum Fmt {
         if a >= 1e3 { return String(format: "%.1fK", Double(n) / 1e3) }
         return String(n)
     }
+    /// Incident figures are REAL (observed, baseline, threshold): token counts for
+    /// rate rules, dollars for cost-scored rules, ratios for context pressure.
+    static func compactDbl(_ n: Double?) -> String {
+        guard let n else { return "—" }
+        let a = abs(n)
+        if a >= 1e9 { return String(format: "%.1fB", n / 1e9) }
+        if a >= 1e6 { return String(format: "%.1fM", n / 1e6) }
+        if a >= 1e3 { return String(format: "%.1fK", n / 1e3) }
+        if n == n.rounded() { return String(Int(n)) }
+        return String(format: "%.2f", n)
+    }
     static func money(_ n: Double?) -> String {
         guard let n else { return "—" }               // never coerced to $0
         return String(format: "$%.2f", n)
@@ -107,8 +138,7 @@ struct ToolIcon: View {
     private static let logos: [String: NSImage] = {
         var m: [String: NSImage] = [:]
         for t in ["claude_code", "codex", "cursor", "antigravity", "opencode", "grok", "devin"] {
-            if let u = Bundle.module.url(forResource: t, withExtension: "png"),
-               let i = NSImage(contentsOf: u) { m[t] = i }
+            if let i = Res.image(t) { m[t] = i }
         }
         return m
     }()
@@ -139,7 +169,9 @@ struct ToolIcon: View {
 }
 
 enum Labels {
-    static let order = ["claude_code", "codex", "cursor", "antigravity", "opencode", "grok", "devin"]
+    // No hard-coded tool order anymore: the domain is whatever the store holds
+    // (DashboardView derives it from the data), so a new collector's tool renders
+    // with these label/symbol fallbacks the day it first writes a row.
     static let tool: [String: String] = [
         "claude_code": "Claude Code", "codex": "Codex",
         "cursor": "Cursor", "antigravity": "Antigravity",
@@ -151,12 +183,27 @@ enum Labels {
         "opencode": "OpenCode", "grok": "Grok", "devin": "Devin",
     ]
     static let rule: [String: String] = [
-        "burn_rate_spike": "Burn spike", "loop_suspected": "Runaway loop",
+        "billable_burn_spike": "Burn spike", "repeat_call_loop": "Runaway loop",
         "error_storm": "Retry storm", "rate_limit_pressure": "Rate limit",
         "context_pressure": "Context pressure",
+        "unsanctioned_surface": "Unsanctioned surface", "new_ai_surface": "New AI surface",
+        "rerouted_model": "Rerouted model",
     ]
     static func confidence(_ c: String) -> String {
         c == "exact" ? "exact" : "no tokens"
+    }
+    /// Notification-friendly plural for a rule id ("burn spikes", "rerouted models").
+    static func ruleLabel(_ r: String) -> String {
+        switch r {
+        case "billable_burn_spike": return "burn spikes"
+        case "repeat_call_loop": return "runaway loops"
+        case "rerouted_model": return "rerouted models"
+        case "unsanctioned_surface": return "unsanctioned surfaces"
+        case "new_ai_surface": return "new surfaces"
+        case "context_pressure": return "context-pressure warnings"
+        case "error_storm": return "retry storms"
+        default: return "\(r) incidents"
+        }
     }
 }
 

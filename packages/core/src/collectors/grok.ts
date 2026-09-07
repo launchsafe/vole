@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { paths } from '../paths';
 import type { DB } from '../db';
 import { parseLine } from '../util/jsonl';
+import { contentOf, type Content } from '../content';
 import { computeCost, contextWindow } from '../pricing';
 import type { CollectorResult, UsageEvent } from '../types';
 
@@ -78,13 +79,15 @@ export function collectGrok(_db: DB): CollectorResult {
   const notes: string[] = [];
 
   if (!existsSync(logPath)) {
-    return { tool: 'grok', events, filesScanned: 0, notes: [`No Grok log at ${logPath}`] };
+    return { tool: 'grok', events, filesScanned: 0, notes: [`No Grok log at ${logPath}`], sourceState: 'no_source' };;
   }
 
   const meta = sessionMeta();
-  let lines: string[];
+  let lines: Content[];
   try {
-    lines = readFileSync(logPath, 'utf8').split('\n');
+    // contentOf via map: the boundary crossing for the unified log. Full re-read
+    // each pass (cheap, 18ms) so cross-chunk exec_done attribution stays correct.
+    lines = readFileSync(logPath, 'utf8').split('\n').map(contentOf);
   } catch (err) {
     return { tool: 'grok', events, filesScanned: 0, notes: [`Could not read ${logPath}: ${(err as Error).message}`] };
   }
@@ -94,16 +97,21 @@ export function collectGrok(_db: DB): CollectorResult {
   const failNull = {
     input_tokens: null, output_tokens: null, cache_write_5m_tokens: null,
     cache_write_1h_tokens: null, cache_read_tokens: null, reasoning_tokens: null,
-    total_tokens: null, cost_usd: null,
+    total_tokens: null, cost_usd: null, duration_ms: null, duration_kind: null,
   };
 
+  let prevLineTs: number | null = null;
   for (const raw of lines) {
     const e = parseLine<Line>(raw);
-    if (!e || !e.ctx || !e.sid || !e.ts) continue;
+    if (!e || !e.ctx || !e.sid || !e.ts) {
+      continue;
+    }
+    const lineTs = Date.parse(e.ts);
 
     if (e.msg === 'shell.tool.exec_done' && e.ctx.tool_name) {
       const prev = lastCall.get(e.sid);
       if (prev) prev.tools = prev.tools ? `${prev.tools},${e.ctx.tool_name}` : e.ctx.tool_name;
+      if (Number.isFinite(lineTs)) prevLineTs = lineTs;
       continue;
     }
     if (e.msg === 'shell.turn.inference_failed') {
@@ -139,6 +147,13 @@ export function collectGrok(_db: DB): CollectorResult {
     const freshInput = Math.max(0, prompt - cached);
     const m = meta.get(e.sid);
     const model = m?.model ?? null;
+    // Turn-scoped estimate: the gap from the previous log line (same runtime,
+    // any session) to this completion. Includes queue time; the kind says so.
+    const duration =
+      prevLineTs !== null && lineTs > prevLineTs && lineTs - prevLineTs < 600_000
+        ? lineTs - prevLineTs
+        : null;
+    if (Number.isFinite(lineTs)) prevLineTs = lineTs;
 
     const tokens = {
       input_tokens: freshInput,
@@ -169,6 +184,8 @@ export function collectGrok(_db: DB): CollectorResult {
       tools: null,
       agent_id: null,
       context_window: contextWindow(model),
+      duration_ms: duration,
+      duration_kind: duration !== null ? ('turn_scoped' as const) : null,
     };
     events.push(ev);
     lastCall.set(e.sid, ev);

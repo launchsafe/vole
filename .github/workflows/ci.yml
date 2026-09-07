@@ -33,3 +33,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: swift build --package-path apps/mac
+      # Read-model parity: the TS reader (queries.ts) and the Swift reader (DB.swift)
+      # are deliberately independent implementations of the same SQL — which is exactly
+      # why they drift. Both dumps run against one deterministic fixture store and the
+      # normalized JSON must be identical. queries.ts gained observed/baseline/threshold
+      # on incidents while DB.swift silently didn't; this gate exists so that class of
+      # drift can never land quietly again.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @vole/core exec tsx scripts/parity-fixture.mjs "$RUNNER_TEMP/parity/vole.db"
+      - run: VOLE_DB="$RUNNER_TEMP/parity/vole.db" pnpm --filter @vole/core exec tsx src/cli/readmodel-dump.ts > "$RUNNER_TEMP/parity/ts.json"
+      - run: VOLE_DB="$RUNNER_TEMP/parity/vole.db" apps/mac/.build/debug/Vole --dump=readmodel > "$RUNNER_TEMP/parity/swift.json"
+      - run: |
+          diff <(jq -S . "$RUNNER_TEMP/parity/ts.json") <(jq -S . "$RUNNER_TEMP/parity/swift.json") \
+            && echo "read-model parity: identical"

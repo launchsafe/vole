@@ -1,0 +1,995 @@
+{
+  "competitor_matrix": [
+    {
+      "name": "Cyberhaven",
+      "category": "Endpoint DLP + Agentic AI Security",
+      "deployment": "ES-level endpoint sensor (macOS/Windows/Linux) + browser extension; cloud console",
+      "coding_agent_coverage": "Yes: Claude Code, Cursor, Copilot, Windsurf, Cline, Codex, Antigravity, Gemini; MCP inventory; Analyst Plugin in Claude Code/Codex",
+      "stores_prompts": "Yes (data lineage, multi-turn context)",
+      "pricing": "Quote; ~$30-48K/yr third-party estimate; AI as separate SKU",
+      "url": "https://www.cyberhaven.com/press-releases/cyberhaven-closes-the-ai-security-gap-amid-the-meteoric-rise-of-agentic-ai"
+    },
+    {
+      "name": "Nightfall AI",
+      "category": "AI-native DLP with agent/MCP hooks",
+      "deployment": "Endpoint agent (~50MB, ~1% CPU) + hooks + browser ext via Jamf/Intune; cloud",
+      "coding_agent_coverage": "Yes: Claude Code CLI/IDE, Cursor, VS Code; stdio/remote MCP discovery; Cowork OTel",
+      "stores_prompts": "Yes, in-path scan of prompts/tool calls/commands",
+      "pricing": "Per user/yr, two app-count tiers, amounts hidden",
+      "url": "https://www.nightfall.ai/pricing"
+    },
+    {
+      "name": "Harmonic Security",
+      "category": "GenAI DLP / usage governance",
+      "deployment": "Endpoint agent + browser ext + OTel ingest + MCP gateway; SaaS",
+      "coding_agent_coverage": "Yes: Claude Code, Codex, Cursor, Copilot, Claude Desktop, Ollama, MCP; process-to-provider mapping",
+      "stores_prompts": "Yes, reads full content of every interaction",
+      "pricing": "Per user/yr, 12-36 month terms via AWS Marketplace; ~$26M raised",
+      "url": "https://www.harmonic.security/pricing"
+    },
+    {
+      "name": "Forcepoint AI Data Security",
+      "category": "Legacy DLP with AI layer",
+      "deployment": "Endpoint DLP agent + web security",
+      "coding_agent_coverage": "Partial: detects vibe-coding tools and MCP clients, personal vs corporate accounts; no session telemetry",
+      "stores_prompts": "Yes (inline inspection)",
+      "pricing": "Quote",
+      "url": "https://www.forcepoint.com/use-case/shadow-ai-security"
+    },
+    {
+      "name": "Proofpoint (incl. Acuvity)",
+      "category": "Security suite, agent gateway",
+      "deployment": "Endpoint DLP + browser ext + MCP Secure Agent Gateway + Claude Compliance API",
+      "coding_agent_coverage": "Indirect via Claude Compliance API (Enterprise only) and gateway",
+      "stores_prompts": "Yes",
+      "pricing": "Quote",
+      "url": "https://www.proofpoint.com/us/products/agentic-ai-security"
+    },
+    {
+      "name": "Microsoft Purview DSPM for AI",
+      "category": "Microsoft-native DLP/DSPM",
+      "deployment": "Browser extension + device onboarding; Edge; SASE integration",
+      "coding_agent_coverage": "No: domain-wildcard list of browser-accessed AI sites",
+      "stores_prompts": "Yes (unified audit log)",
+      "pricing": "M365 licensing + pay-as-you-go",
+      "url": "https://learn.microsoft.com/en-us/purview/ai-other-apps"
+    },
+    {
+      "name": "LayerX (Akamai Workforce Protector)",
+      "category": "Browser-extension GenAI DLP",
+      "deployment": "Browser extension via MDM",
+      "coding_agent_coverage": "None verified [contested: search summary claims IDE/on-device agents]",
+      "stores_prompts": "Yes (browser content)",
+      "pricing": "Per user; acquired ~$205M, ~$10M ARR",
+      "url": "https://www.akamai.com/newsroom/press-release/akamai-technologies-announces-intent-to-acquire-layerx-advancing-its-workforce-security-strategy-with-ai-usage-control"
+    },
+    {
+      "name": "Island Enterprise Browser",
+      "category": "Enterprise browser / agentic control plane",
+      "deployment": "Chromium enterprise browser",
+      "coding_agent_coverage": "Claimed agent/MCP/Bash discovery and token-spend analytics; mechanism undocumented",
+      "stores_prompts": "Yes",
+      "pricing": "Quote",
+      "url": "https://www.island.io/ai"
+    },
+    {
+      "name": "Menlo Security",
+      "category": "Browser isolation",
+      "deployment": "Cloud browser + Secure Extension",
+      "coding_agent_coverage": "None",
+      "stores_prompts": "Browser DLP inspection",
+      "pricing": "Variable per user; self-service quote",
+      "url": "https://www.menlosecurity.com/pricing"
+    },
+    {
+      "name": "Netskope One",
+      "category": "SASE inline proxy + AI products",
+      "deployment": "Netskope Client to cloud proxy",
+      "coding_agent_coverage": "Traffic-level only [contested: product pages JS-only]",
+      "stores_prompts": "Inline inspection",
+      "pricing": "Quote",
+      "url": "https://www.netskope.com/products/ai-security"
+    },
+    {
+      "name": "Zscaler AI Access Security",
+      "category": "SASE zero-trust proxy",
+      "deployment": "Client Connector proxy",
+      "coding_agent_coverage": "Traffic-level; inline controls for AI IDEs; no process/MCP visibility",
+      "stores_prompts": "Inline inspection",
+      "pricing": "Quote",
+      "url": "https://www.zscaler.com/products-and-solutions/ai-access-security"
+    },
+    {
+      "name": "Palo Alto Networks (AI Access Security, Prisma AIRS 3.0, Koi)",
+      "category": "SASE + AI runtime + agentic endpoint (pending)",
+      "deployment": "Proxy, gateway, Cortex XDR post-Koi",
+      "coding_agent_coverage": "Announced intent for coding agents after Koi close; today network/gateway",
+      "stores_prompts": "Inline classification",
+      "pricing": "Quote; AIRS consumption metering",
+      "url": "https://www.paloaltonetworks.com/company/press/2026/palo-alto-networks-announces-intent-to-acquire-koi-to-secure-the-agentic-endpoint"
+    },
+    {
+      "name": "Cato Networks / Aim Security",
+      "category": "SASE shadow AI",
+      "deployment": "Cato client to cloud",
+      "coding_agent_coverage": "Cursor/Copilot as traffic; MCP governance",
+      "stores_prompts": "Inline",
+      "pricing": "Bundled in Cato SASE; >$300M ARR",
+      "url": "https://www.prnewswire.com/news-releases/cato-networks-acquires-aim-security-to-extend-sase-leadership-and-secure-enterprise-ai-transformation-302543642.html"
+    },
+    {
+      "name": "SentinelOne / Prompt Security",
+      "category": "EDR + GenAI runtime security",
+      "deployment": "ES system extension + Network Extension + browser ext + MCP gateway",
+      "coding_agent_coverage": "Endpoint agent support for Claude Code since 2025-06-26 [via Nightfall roundup]",
+      "stores_prompts": "Inline interception",
+      "pricing": "Bundled; ~$250M acquisition [secondary]",
+      "url": "https://www.sentinelone.com/press/sentinelone-to-acquire-prompt-security-to-advance-genai-security/"
+    },
+    {
+      "name": "Check Point / Lakera",
+      "category": "Runtime guardrails + red teaming",
+      "deployment": "Guard API / platform",
+      "coding_agent_coverage": "Via API integration only; Lakera AI Agent Security 2026-06-01",
+      "stores_prompts": "Prompts sent to Guard API",
+      "pricing": "Quote; ~$300M acquisition [secondary]",
+      "url": "https://www.checkpoint.com/press-releases/check-point-acquires-lakera-to-deliver-end-to-end-ai-security-for-enterprises/"
+    },
+    {
+      "name": "CrowdStrike Falcon AIDR / Falcon Guardian",
+      "category": "Endpoint-centric AI agent security",
+      "deployment": "Falcon sensor + browser ext + SDKs + MCP proxy + AI gateway; Next-Gen SIEM",
+      "coding_agent_coverage": "Yes: shadow-agent inventory Windows/macOS, causal chain prompt->tool->action, agent allow/deny",
+      "stores_prompts": "Inspects/redacts inline; data in SIEM; retention not stated",
+      "pricing": "Per endpoint; not public",
+      "url": "https://www.crowdstrike.com/en-us/press-releases/crowdstrike-unveils-falcon-guardian-ai-agent-security/"
+    },
+    {
+      "name": "Sysdig",
+      "category": "Runtime security (Falco)",
+      "deployment": "Kernel agent; macOS laptop story unclear",
+      "coding_agent_coverage": "Claude Code, Codex, Gemini, Cursor: new installs, credential access, safeguard-weakening flags",
+      "stores_prompts": "No (syscall level)",
+      "pricing": "Subscription",
+      "url": "https://www.sysdig.com/press-releases/sysdig-launches-runtime-security-for-ai-coding-agents"
+    },
+    {
+      "name": "HiddenLayer",
+      "category": "Endpoint agentic runtime security",
+      "deployment": "Endpoint agent",
+      "coding_agent_coverage": "Generic agentic runtime (2026-03-23) [via Nightfall roundup]",
+      "stores_prompts": "Not stated",
+      "pricing": "Quote",
+      "url": "https://www.nightfall.ai/blog/ai-agent-security-platforms-securing-claude-code"
+    },
+    {
+      "name": "Zenity",
+      "category": "AI agent security (AISPM + AIDR)",
+      "deployment": "Native hooks + OpenTelemetry to SaaS; no endpoint sensor; optional MCP gateway",
+      "coding_agent_coverage": "Claude Code, Cowork, Codex, Copilot, Cursor; MCP inventory; taint tracking; Claude Compliance API",
+      "stores_prompts": "Not stated; collects MCP interaction content",
+      "pricing": "Quote; $125M Series C 2026-08",
+      "url": "https://zenity.io/blog/security/coding-agent-attack-surface"
+    },
+    {
+      "name": "Noma Security",
+      "category": "AI agent security platform",
+      "deployment": "SaaS API connectors",
+      "coding_agent_coverage": "Copilot coding agents with MCP named; no laptop collector",
+      "stores_prompts": "Not stated",
+      "pricing": "Quote; $100M Series B",
+      "url": "https://noma.security/"
+    },
+    {
+      "name": "WitnessAI",
+      "category": "AI usage control / agent monitoring",
+      "deployment": "SaaS/gateway",
+      "coding_agent_coverage": "Agent-generic; not itemised",
+      "stores_prompts": "Not stated",
+      "pricing": "Quote; $58M round",
+      "url": "https://www.prnewswire.com/news-releases/witnessai-raises-58-million-for-global-expansion-and-announces-new-ways-to-secure-ai-agents-302659319.html"
+    },
+    {
+      "name": "Straiker",
+      "category": "Agentic AI security",
+      "deployment": "SaaS",
+      "coding_agent_coverage": "Coding agents named; mechanism absent",
+      "stores_prompts": "Not stated",
+      "pricing": "Quote; $64M Series A",
+      "url": "https://www.straiker.ai/"
+    },
+    {
+      "name": "Pillar Security",
+      "category": "AI-SPM + red teaming",
+      "deployment": "Self-hosted in customer VPC",
+      "coding_agent_coverage": "Rules-file scanner; coding agents in catalog scope",
+      "stores_prompts": "Customer-controlled",
+      "pricing": "Quote; $9M seed",
+      "url": "https://www.pillar.security/"
+    },
+    {
+      "name": "Lasso Security",
+      "category": "AI security + OSS MCP gateway",
+      "deployment": "Route MCP through Lasso Gateway",
+      "coding_agent_coverage": "Claude Code/Desktop, Cursor, Windsurf, Codex MCP inventory",
+      "stores_prompts": "Gateway inspects",
+      "pricing": "OSS gateway; platform quote",
+      "url": "https://www.lasso.security/use-cases/mcp-security"
+    },
+    {
+      "name": "Knostic (Kirin)",
+      "category": "IDE-layer agent security",
+      "deployment": "MCP proxy",
+      "coding_agent_coverage": "Copilot, Cursor, Claude Code; blocks .env reads",
+      "stores_prompts": "Not stated",
+      "pricing": "Not public",
+      "url": "https://www.knostic.ai/coding-assistants-agents-mcp"
+    },
+    {
+      "name": "Operant AI",
+      "category": "Runtime/endpoint/MCP security",
+      "deployment": "Endpoint Protector agent + MCP gateway + eBPF",
+      "coding_agent_coverage": "Claude Code, Cursor, Copilot on devices",
+      "stores_prompts": "Not stated",
+      "pricing": "Quote; $13.5M Series A",
+      "url": "https://www.operant.ai/"
+    },
+    {
+      "name": "General Analysis",
+      "category": "AI detection & response",
+      "deployment": "SaaS with in-path guardrails",
+      "coding_agent_coverage": "Codex, Cowork, Copilot, Cursor claimed",
+      "stores_prompts": "Likely (not confirmed)",
+      "pricing": "Demo-gated",
+      "url": "https://generalanalysis.com/blog/supabase-mcp-blog"
+    },
+    {
+      "name": "MintMCP",
+      "category": "MCP gateway + Agent Monitor",
+      "deployment": "Local hooks + cloud gateway; SOC 2 Type II",
+      "coding_agent_coverage": "Claude Code, Cowork, Cursor, Codex, Copilot; token spend by model/user/session; OTLP/Splunk HEC",
+      "stores_prompts": "Yes (prompts, tool args); 90d-7y retention",
+      "pricing": "Not public",
+      "url": "https://www.mintmcp.com/blog/claude-code-monitoring"
+    },
+    {
+      "name": "Speakeasy AI Control Plane",
+      "category": "MCP gateway + device identity",
+      "deployment": "Gateway + device component",
+      "coding_agent_coverage": "Claude, Cursor, Codex, OpenCode via gateway only",
+      "stores_prompts": "Tool args/results logged",
+      "pricing": "Pricing page exists; not captured",
+      "url": "https://www.speakeasy.com/blog/where-claude-falls-short-in-ai-security"
+    },
+    {
+      "name": "Bifrost (Maxim AI)",
+      "category": "OSS LLM/MCP gateway",
+      "deployment": "Self-host; Bifrost Edge alpha",
+      "coding_agent_coverage": "Only agents pointed at gateway; admits others are shadow AI",
+      "stores_prompts": "Gateway logs",
+      "pricing": "OSS + enterprise",
+      "url": "https://www.getmaxim.ai/articles/top-5-ai-governance-tools-for-coding-agents-in-2026/"
+    },
+    {
+      "name": "Snyk Agent Scan / Invariant Labs",
+      "category": "OSS agent/MCP/skill scanner + guardrails proxy",
+      "deployment": "Local CLI with SNYK_TOKEN; mcp-scan proxy",
+      "coding_agent_coverage": "Config discovery: Claude Code/Desktop, Cursor, Windsurf, VS Code, Gemini CLI, Codex, OpenCode, Antigravity, Kiro, Amp, Amazon Q, OpenClaw",
+      "stores_prompts": "Proxy sees content; scanner sends tool descriptions",
+      "pricing": "Free CLI; Snyk enterprise",
+      "url": "https://raw.githubusercontent.com/snyk/agent-scan/main/README.md"
+    },
+    {
+      "name": "Cisco AI Defense / Astrix / MCP Scanner",
+      "category": "AI security platform + NHI",
+      "deployment": "Cloud + SDK; OSS scanner",
+      "coding_agent_coverage": "Not endpoint-specific",
+      "stores_prompts": "Not stated",
+      "pricing": "Cisco enterprise; Astrix ~$400M",
+      "url": "https://investor.cisco.com/news/news-details/2026/Cisco-Redefines-Security-for-the-Agentic-Era-with-AI-Defense-Expansion-and-AI-Aware-SASE/default.aspx"
+    },
+    {
+      "name": "Wiz AI-SPM",
+      "category": "CNAPP",
+      "deployment": "Agentless cloud API",
+      "coding_agent_coverage": "None",
+      "stores_prompts": "No",
+      "pricing": "Platform",
+      "url": "https://www.wiz.io/blog/wiz-ai-spm-secures-ai-agents"
+    },
+    {
+      "name": "Nudge / Obsidian / Reco",
+      "category": "SaaS/identity AI discovery",
+      "deployment": "API connectors, optional extension",
+      "coding_agent_coverage": "None on endpoint (Reco lists Cursor as integration)",
+      "stores_prompts": "No content",
+      "pricing": "Quote",
+      "url": "https://www.reco.ai/"
+    },
+    {
+      "name": "Token Security / Oasis (Cyera)",
+      "category": "NHI + agent identity",
+      "deployment": "SaaS connectors",
+      "coding_agent_coverage": "Identity layer only",
+      "stores_prompts": "N/A",
+      "pricing": "Quote; Oasis $1B acquisition",
+      "url": "https://www.cyera.com/newsroom"
+    },
+    {
+      "name": "Docker Sandboxes / AI Governance",
+      "category": "Execution isolation",
+      "deployment": "Docker Desktop",
+      "coding_agent_coverage": "Only sandboxed runs",
+      "stores_prompts": "Unknown",
+      "pricing": "Docker Business $24/user/mo",
+      "url": "https://www.docker.com/blog/coding-agent-horror-stories-the-rm-rf-incident/"
+    },
+    {
+      "name": "Legit Security / Cycode",
+      "category": "ASPM",
+      "deployment": "SCM/CI SaaS",
+      "coding_agent_coverage": "Repo/CI signals only",
+      "stores_prompts": "No",
+      "pricing": "Quote",
+      "url": "https://www.legitsecurity.com/blog/camoleak-critical-github-copilot-vulnerability-leaks-private-source-code"
+    },
+    {
+      "name": "Tessl / Semgrep MCP",
+      "category": "Skills registry / SAST MCP tool",
+      "deployment": "Registry+CLI / local MCP server",
+      "coding_agent_coverage": "Not monitors; complementary",
+      "stores_prompts": "N/A",
+      "pricing": "OSS / not public",
+      "url": "https://tessl.io/blog/the-tessl-registry-now-has-security-scores-powered-by-snyk/"
+    },
+    {
+      "name": "Anthropic native (Claude Code OTel, Analytics API, Compliance API, apps gateway, Cowork OTel)",
+      "category": "Vendor-native telemetry",
+      "deployment": "Client OTel to customer collector; Admin APIs; self-hosted gateway",
+      "coding_agent_coverage": "Claude Code/Cowork only; Compliance API excludes API-key, Bedrock/Vertex/Foundry, personal, Cursor/Codex",
+      "stores_prompts": "Claude Code redacted by default; Cowork OTel includes prompts; gateway stores none",
+      "pricing": "Bundled; Cowork OTel Team/Enterprise only",
+      "url": "https://code.claude.com/docs/en/monitoring-usage"
+    },
+    {
+      "name": "OpenAI Codex (requirements.toml, Analytics API, Compliance API, [otel])",
+      "category": "Vendor-native telemetry",
+      "deployment": "Workspace console; user-level [otel] opt-in",
+      "coding_agent_coverage": "Codex under workspace accounts; metrics default to OpenAI statsig; exec/mcp-server gaps",
+      "stores_prompts": "OTel off; log_user_prompt false by default",
+      "pricing": "Bundled Enterprise/Business",
+      "url": "https://developers.openai.com/codex/config-reference"
+    },
+    {
+      "name": "GitHub Copilot (usage metrics, OTel, audit streaming, AI Controls)",
+      "category": "Vendor-native telemetry",
+      "deployment": "GitHub cloud pull APIs; client OTel; SIEM streaming",
+      "coding_agent_coverage": "Copilot family only; ~2-day lag; local prompts absent from audit log",
+      "stores_prompts": "Metrics no; EMU streaming carries 1MB request/response bodies",
+      "pricing": "Bundled Business/Enterprise",
+      "url": "https://docs.github.com/en/copilot/reference/copilot-usage-metrics/copilot-usage-metrics"
+    },
+    {
+      "name": "Cursor (Admin/Analytics API, OTel Export, hooks)",
+      "category": "Vendor-native telemetry",
+      "deployment": "Server-side pull/push; enterprise hooks.json",
+      "coding_agent_coverage": "Cursor only; per-event tokens/cents; no per-session tool attribution or subagent roll-up",
+      "stores_prompts": "No content logged",
+      "pricing": "Enterprise plan only",
+      "url": "https://cursor.com/docs/enterprise/opentelemetry-export"
+    },
+    {
+      "name": "Windsurf / Cognition (Devin) CascadeAnalytics",
+      "category": "Vendor-native telemetry",
+      "deployment": "Pull API with service key",
+      "coding_agent_coverage": "Credits and aggregate tool counts; no tokens; CLI lacks mode",
+      "stores_prompts": "No",
+      "pricing": "Enterprise",
+      "url": "https://docs.windsurf.com/windsurf/accounts/api-reference/cascade-analytics"
+    },
+    {
+      "name": "Gemini CLI telemetry",
+      "category": "Vendor-native telemetry",
+      "deployment": "Client OTel to local/file/GCP; system settings.json",
+      "coding_agent_coverage": "Gemini CLI incl. Zed/Xcode/JetBrains hosts; rich tool_call schema",
+      "stores_prompts": "Yes by default (logPrompts=true) plus user.email",
+      "pricing": "Free; GCP costs",
+      "url": "https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/telemetry.md"
+    },
+    {
+      "name": "Amazon Q Developer dashboards",
+      "category": "Vendor-native telemetry",
+      "deployment": "AWS console, CloudWatch, CloudTrail",
+      "coding_agent_coverage": "Q only; acceptance rates; no tokens",
+      "stores_prompts": "No",
+      "pricing": "Pro tier",
+      "url": "https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/monitoring-telemetry.html"
+    },
+    {
+      "name": "JetBrains Console",
+      "category": "Vendor-native telemetry",
+      "deployment": "Cloud console",
+      "coding_agent_coverage": "Junie, Claude Agent, Codex, Pi, Copilot in-IDE via JetBrains credits; excludes BYOK/provider accounts; no API",
+      "stores_prompts": "No",
+      "pricing": "Bundled with AI licences",
+      "url": "https://www.jetbrains.com/help/jetbrains-console/ai-adoption-and-usage.html"
+    },
+    {
+      "name": "Microsoft Entra Agent ID / Okta for AI Agents",
+      "category": "IdP agent identity",
+      "deployment": "Cloud IdP",
+      "coding_agent_coverage": "Only IdP-authenticated agents; vendor-OAuth/API-key CLIs invisible",
+      "stores_prompts": "No",
+      "pricing": "Entra Agent ID free; Agent 365 licence; Okta undisclosed",
+      "url": "https://learn.microsoft.com/en-us/entra/agent-id/what-are-agent-identities"
+    },
+    {
+      "name": "Datadog Agent Observability",
+      "category": "APM LLM observability",
+      "deployment": "SDK or OTLP; SaaS",
+      "coding_agent_coverage": "Only via vendor OTel export",
+      "stores_prompts": "Yes (gen_ai.input/output.messages)",
+      "pricing": "$160/mo per 100k spans annual; +$3.50-$5 per 10k; retention add-ons",
+      "url": "https://www.datadoghq.com/pricing/list/"
+    },
+    {
+      "name": "Langfuse",
+      "category": "OSS LLM observability",
+      "deployment": "MIT self-host or cloud",
+      "coding_agent_coverage": "Only via OTLP",
+      "stores_prompts": "Yes unless client-side mask",
+      "pricing": "Free/$29/$199/$2,499 per month; $6-8 per 100k units; no per-seat",
+      "url": "https://langfuse.com/pricing"
+    },
+    {
+      "name": "LangSmith",
+      "category": "LLM app observability",
+      "deployment": "SDK; SaaS; self-host Enterprise",
+      "coding_agent_coverage": "None",
+      "stores_prompts": "Yes",
+      "pricing": "$0/seat (5k traces), $39/seat (10k)",
+      "url": "https://www.langchain.com/pricing"
+    },
+    {
+      "name": "Helicone",
+      "category": "LLM proxy observability",
+      "deployment": "Base-URL proxy or async SDK",
+      "coding_agent_coverage": "Only routed agents",
+      "stores_prompts": "Yes",
+      "pricing": "Free 10k req; Pro $79; Team $799/mo",
+      "url": "https://www.helicone.ai/pricing"
+    },
+    {
+      "name": "Portkey",
+      "category": "AI gateway + governance",
+      "deployment": "Gateway SaaS/VPC; documented Claude Code routing",
+      "coding_agent_coverage": "Only when ANTHROPIC_BASE_URL set",
+      "stores_prompts": "Yes, full request/response",
+      "pricing": "Free 10k logs; $49/mo 100k +$9/100k; Enterprise",
+      "url": "https://portkey.ai/docs/integrations/libraries/claude-code"
+    },
+    {
+      "name": "LiteLLM Proxy",
+      "category": "OSS LLM gateway",
+      "deployment": "Self-hosted proxy",
+      "coding_agent_coverage": "Routed agents (Claude Code, Codex, Cursor, OpenCode, Gemini CLI, Copilot tutorials)",
+      "stores_prompts": "No by default (opt-in)",
+      "pricing": "OSS; enterprise licence",
+      "url": "https://docs.litellm.ai/docs/proxy/ui_spend_log_settings"
+    },
+    {
+      "name": "Kong AI Gateway",
+      "category": "API gateway with AI plugins",
+      "deployment": "Self-hosted data planes via Konnect",
+      "coding_agent_coverage": "Claude Code, Codex CLI, Qwen when routed",
+      "stores_prompts": "Configurable body inspection",
+      "pricing": "Per service + per M requests [secondary]",
+      "url": "https://developer.konghq.com/ai-gateway/ai-clis/"
+    },
+    {
+      "name": "Cloudflare AI Gateway",
+      "category": "Edge AI gateway",
+      "deployment": "Edge proxy",
+      "coding_agent_coverage": "Only routed traffic",
+      "stores_prompts": "Yes by default",
+      "pricing": "Core free; logs capped 100k/account or 10M/gateway; Logpush paid",
+      "url": "https://developers.cloudflare.com/ai-gateway/observability/logging/"
+    },
+    {
+      "name": "Braintrust / Arize / W&B Weave / Honeycomb / New Relic / AgentOps / Galileo / Traceloop",
+      "category": "App-side LLM observability and evals",
+      "deployment": "SDK/OTel; SaaS; self-host on enterprise",
+      "coding_agent_coverage": "None natively",
+      "stores_prompts": "Yes (New Relic record_content default true; W&B bills on input/output bytes)",
+      "pricing": "Per GB/span/trace: Braintrust $4/GB, W&B $0.10/MB, Arize Pro ~$50, Galileo $100/mo, Traceloop free 50k spans 24h",
+      "url": "https://www.braintrust.dev/docs/plans-and-limits"
+    },
+    {
+      "name": "Tailscale Aperture",
+      "category": "AI gateway on tailnet",
+      "deployment": "Proxy in request path",
+      "coding_agent_coverage": "Routed agents only; subscription-auth agents bypass",
+      "stores_prompts": "Audit trails; unclear",
+      "pricing": "Unpublished; Tailscale $8/$18 per user",
+      "url": "https://tailscale.com/blog/aperture-ga"
+    },
+    {
+      "name": "Fleet / osquery",
+      "category": "Endpoint governance, open-core",
+      "deployment": "osquery agent via MDM; self-host or cloud",
+      "coding_agent_coverage": "Inventory of MCP servers, AI coding assistants, SKILL files, token usage (Claude, OpenAI, Cursor, Windsurf); depth undocumented",
+      "stores_prompts": "No",
+      "pricing": "$0/host; Premium $7/host/mo; MIT + ee/",
+      "url": "https://fleetdm.com/endpoint-governance"
+    },
+    {
+      "name": "Jamf Protect / Huntress / Santa / Kolide (1Password Device Trust)",
+      "category": "Mac EDR / posture / binary authorisation",
+      "deployment": "ES system extension via MDM; osquery",
+      "coding_agent_coverage": "Process-level only; no AI semantics",
+      "stores_prompts": "No",
+      "pricing": "Per device; Santa OSS",
+      "url": "https://www.jamf.com/blog/jamf-mac-endpoint-telemetry/"
+    },
+    {
+      "name": "ccusage",
+      "category": "OSS local usage/cost CLI",
+      "deployment": "npm CLI, local read-only",
+      "coding_agent_coverage": "18 sources: Claude Code, Codex, OpenCode, Amp, Goose, Copilot CLI, Gemini CLI, Antigravity, Grok, others",
+      "stores_prompts": "No",
+      "pricing": "Free MIT",
+      "url": "https://ccusage.com/guide/"
+    },
+    {
+      "name": "TruffleHog / Gitleaks-Betterleaks / detect-secrets / Titus / Kingfisher / GitGuardian / GitHub Secret Protection",
+      "category": "Secret scanners",
+      "deployment": "CLI, CI, SaaS API",
+      "coding_agent_coverage": "None agent-aware; generic file scanning",
+      "stores_prompts": "Findings hold secret unless redacted; detect-secrets hash-only baseline",
+      "pricing": "OSS; GitGuardian per dev; GitHub Secret Protection add-on",
+      "url": "https://github.com/trufflesecurity/trufflehog"
+    },
+    {
+      "name": "agent-audit (CrypLed) / claude-code-redaction-hooks (l-mb)",
+      "category": "OSS Claude Code transcript auditor / hook redactor",
+      "deployment": "Local npx / local Python hooks",
+      "coding_agent_coverage": "Claude Code only",
+      "stores_prompts": "No / local placeholder mapping",
+      "pricing": "Free MIT",
+      "url": "https://github.com/CrypLed/agent-audit"
+    }
+  ],
+  "top_buyer_needs": [
+    "Per-employee, per-device inventory of every AI agent, model, provider and MCP server actually used, including personal accounts, raw API keys, BYOK-in-IDE and local model runtimes that every vendor console admits it cannot see (47% lack an agent inventory; Zscaler 'basic inventory' gap).",
+    "Account identity per session: personal vs corporate vs API key vs Bedrock/Vertex/Foundry, with a 'shadow account on corporate device' signal (58% of Claude use is personal; 67% of AI access on corporate devices uses non-corporate accounts).",
+    "Reconstructable agent action trail for 30+ days: tool calls, files read/written, shell commands, MCP servers, permission mode and approval source (46% of enterprises cannot produce one; 65% saw out-of-scope actions).",
+    "Secret/PII/source-code egress evidence without the monitoring tool storing prompt text: findings as fingerprint + class + session, never the value.",
+    "Detection of safeguards-disabled sessions (--dangerously-skip-permissions, YOLO, full-auto), destructive commands, sensitive-path reads and read-then-publish sequences.",
+    "MCP/hook/rules-file inventory with hash-based drift alerts and managed-allowlist comparison (MCPoison, Keyv worm, Agentjacking, OWASP MCP09).",
+    "Exact per-user/team/model/session token and cost attribution including subagents and cache economics, reconciled against vendor billing to find shadow spend.",
+    "No proxy in the request path, no base-URL rewrites, no latency, no hook fragility; coverage of subscription-auth agents gateways cannot see.",
+    "Privacy posture defensible to DPOs and works councils: metadata only, pseudonymous mode, retention cap, employee transparency screen, no performance scoring (GDPR 88, BetrVG, CNIL, WOR, Annex III 4(b)).",
+    "SIEM/SOAR-native export in standard shapes (OTLP gen_ai.*, Splunk HEC, syslog/webhook) reusing vendor event vocabularies so one rule set spans agents.",
+    "Policy-drift verification per endpoint (managed-settings.json, requirements.toml, Gemini system settings, enterprise hooks present) and agent version vs known-vulnerable floors.",
+    "Silent MDM deployment: signed/notarised pkg, published PPPC profile, ~50MB/1% CPU footprint, honest reduced-functionality state without FDA.",
+    "Audit evidence mapped to frameworks auditors already use (NIST AI 600-1, 800-53 AU/SI/AC, ISO 42001 A.6.2.8, SOC 2 CC6/CC7/CC9, OWASP ASI/MCP, ATLAS) with tamper-evident export and >=6-month retention.",
+    "Monitor-first, coach-not-block rollout with webhooks to an enforcement tool for phase two.",
+    "Predictable flat per-host pricing with a free tier, open-source endpoint code, SAML+SCIM, trust page and DPA before the first paid pilot."
+  ],
+  "feature_implications": [
+    "Extract the fields Claude Code JSONL already carries but Vole discards (permissionMode, entrypoint, version, cwd, gitBranch, Bash input.command, hook_success/mcp_instructions_delta/failedMcpServers attachments) and Codex approval/sandbox/local_shell_call payloads; add per-version fixtures and a schema-drift incident.",
+    "Session identity classifier: org OAuth / personal OAuth / raw API key / Bedrock-Vertex-Foundry / ChatGPT workspace vs personal / Cursor team id, emitted as account_class on every session with a 'shadow account on corporate device' incident.",
+    "secret_sightings table: HMAC-SHA256 fingerprint (per-install Keychain key), detector id, provider, data class (secret|pci|phi|pii), confidence, tool, session, model, raw_ref offset, first/last seen, status; scanner runs in the JSONL tail before Claude Code's 30-day cleanup; rules from Betterleaks TOML; JWT decoded offline; verification opt-in only.",
+    "Scan agent-specific leak sinks repo scanners miss: .claude/settings.local.json allow-lists, MCP configs, hooks, spilled tool-output files, /share and feedback bundle writes, Gemini telemetry.log with logPrompts on, Goose llm_request.jsonl, Kiro globalStorage size.",
+    "Behaviour rule pack named after Anthropic's event vocabulary and tagged with OWASP ASI/MCP and ATLAS ids: permission_mode_escalation, bypass headless session, destructive command (rm -rf ~, force-push, DROP/DELETE, cloud deletes), sensitive-path read (~/.ssh, ~/.aws, .env, agent credential files), secret_then_publish, mcp_server_first_seen/changed, hook added in fresh clone, hidden-Unicode rules file, base-URL/proxy override, version below CVE floor.",
+    "Command-string classifier that persists only a pattern id and category (find -exec, xargs, sh -c, curl|sh, base64 pipelines, $IFS, long whitespace runs) independent of vendor allowlists.",
+    "MCP inventory per host and per session keyed by serverCommand/serverUrl (never serverName), diffed against managed allowlists, with tool-description hashes for rug-pull detection and privileged-credential tagging; export in server.json-compatible shape.",
+    "Endpoint inventory collectors needing no ES entitlement: installed AI apps via cask-derived bundle ids and ~/Library footprints; local model runtimes via listening ports 11434/1234/1337/4891 and manifest dirs (never conversation content); code-signing identity (TeamID/SigningID) per agent binary; unprivileged socket sampling tagged low-confidence.",
+    "Widen agents by payoff: Copilot CLI (~/.copilot session-state events.jsonl exact tokens), Gemini CLI chats, Goose sessions.db, Amp threads, Continue dev_data; activity-only with explicit 'no tokens' badge for Windsurf, Zed, Kiro, Cline/Roo, LM Studio/Jan/Ollama; honour CLAUDE_CONFIG_DIR for Xcode sessions and dedupe Copilot Chat/CLI by session id.",
+    "Policy-posture report per endpoint: presence/hash of managed-settings.json, com.anthropic.claudecode MDM domain, GeminiCli system settings, ~/.codex requirements.toml, enterprise hooks.json; drift incident when observed behaviour contradicts policy.",
+    "Cost fields no vendor ships: session-grain tokens/cost with subagent roll-up, per-session tool attribution, cache-hit ratio, wrong-model-for-task heuristic; unit field for credits/seats; terminal/surface dimension.",
+    "Enterprise reconcile job against Anthropic usage_report, Cursor filtered-usage-events and Copilot NDJSON to surface unaccounted spend and shadow accounts.",
+    "OTLP/HTTP exporter (enterprise tier) emitting gen_ai.* metrics and invoke_agent/chat/execute_tool spans with provider.name, input/output_tokens, agent.name, conversation.id and never input/output.messages, pinned to a semconv snapshot; plus Splunk HEC, JSON/syslog/webhook; rows shaped on IETF draft-klrc-aiagent-auth-03 fields and carrying prompt.id/tool_use_id/traceparent for SIEM joins.",
+    "Optional localhost OTLP receiver and an optional tiny managed PreToolUse/beforeMCPExecution hook that only appends decisions to Vole's SQLite, keeping default install out of the request path.",
+    "Read-only local MCP server over Vole's SQLite so analysts' Claude Code/Codex sessions can query incidents and cost without any cloud.",
+    "Privacy Center screen and shipped data manifest (paths read, fields stored, exclusions, retention), pseudonymous enterprise mode with admin re-identification, retention cap default >=6 months, hard switch disabling per-person productivity views, works-council/CSE notice and DPIA template.",
+    "Tamper-evident evidence: hash-chained SQLite rows, signed exports, compliance pack mapped to NIST 600-1 action ids, 800-53 controls, ISO 42001 A.6.2.8, SOC 2 CC6/7/9, COSO metrics, AI-literacy per-user tool record.",
+    "Developer ID signing + notarisation + pkg first; MDM kit with PPPC SystemPolicyAllFiles payload for app and sidecar; reduced-functionality state reporting unknown not zero; published CPU/RAM and supported-macOS matrix.",
+    "Open-core split: collectors/rules/schema/app MIT; sync, SSO/SCIM, audit log, retention, RBAC in /ee behind a licence key; per active-agent-host pricing ~$7-10/month, free <=10 hosts, licence for signed binary above ~100 employees.",
+    "Fleet/osquery table or query pack, Purview/Sentinel connector, and LiteLLM-compatible spend rows so Vole slots into existing stacks as a source.",
+    "Explicit scope statement: hosted agents (Copilot cloud, Codex cloud, Claude Managed Agents), npm postinstall stealers, web-chat content and extension compromises are out of scope; enterprise API-pull for hosted agents is a roadmap item.",
+    "Circuit-breaker sensing only (loops, spend caps, error bursts) routed to vendor-native pause/defer/cancel; sole local action is opt-in SIGINT to session PID.",
+    "Design-partner programme of 5-8 security/platform teams at >$1M/yr Anthropic or Cursor customers with a written agreement and hard conversion date; sales collateral table of incumbents' meters and 'stores prompts by default' status."
+  ],
+  "incidents": [
+    {
+      "date": "2023-05-01",
+      "name": "Samsung bans GenAI after source-code pastes into ChatGPT",
+      "what_happened": "Engineers pasted source code and meeting notes into ChatGPT in three incidents within weeks of approval; Samsung banned GenAI on company and connected devices.",
+      "detectable_from_local_logs": "Partially: browser-paste is invisible, but the CLI analogue (repo file contents injected into a personal-account session) is countable from tool_use Read volume and account class.",
+      "url": "https://techcrunch.com/2023/05/02/samsung-bans-use-of-generative-ai-tools-like-chatgpt-after-april-internal-data-leak/"
+    },
+    {
+      "date": "2025-03-18",
+      "name": "Rules File Backdoor (Cursor/Copilot)",
+      "what_happened": "Invisible Unicode in .cursorrules and copilot-instructions.md steered agents to emit backdoored code; vendors called it user responsibility.",
+      "detectable_from_local_logs": "Yes: scan CLAUDE.md, .cursorrules, .cursor/rules, copilot-instructions.md, AGENTS.md for zero-width/bidi/Tags codepoints; report file and codepoint class only.",
+      "url": "https://www.pillar.security/blog/new-vulnerability-in-github-copilot-and-cursor-how-hackers-can-weaponize-code-agents"
+    },
+    {
+      "date": "2025-04-01",
+      "name": "MCP Tool Poisoning (Invariant)",
+      "what_happened": "Hidden instructions in a tool description made Cursor read ~/.cursor/mcp.json and ~/.ssh/id_rsa and leak them via a sidenote argument; rug pulls via changed descriptions.",
+      "detectable_from_local_logs": "Yes: sensitive-path arguments in tool_use; MCP inventory with hashed tool descriptions to flag schema changes.",
+      "url": "https://invariantlabs.ai/blog/mcp-security-notification-tool-poisoning-attacks"
+    },
+    {
+      "date": "2025-05-26",
+      "name": "GitHub MCP toxic agent flow",
+      "what_happened": "A malicious public issue made the agent read private repos and publish contents in a public PR via the official GitHub MCP server; enabled by 'Always Allow'.",
+      "detectable_from_local_logs": "Yes: cross-repo read-then-create_pull_request sequence from MCP tool names and repo/owner arguments in the same session.",
+      "url": "https://invariantlabs.ai/blog/mcp-github-vulnerability"
+    },
+    {
+      "date": "2025-06",
+      "name": "EchoLeak CVE-2025-32711 (M365 Copilot)",
+      "what_happened": "Zero-click prompt injection via email exfiltrated chat, OneDrive, SharePoint and Teams data; patched server-side.",
+      "detectable_from_local_logs": "No: hosted agent; reference incident for 'what does our AI touch'.",
+      "url": "https://www.hackthebox.com/blog/cve-2025-32711-echoleak-copilot-vulnerability"
+    },
+    {
+      "date": "2025-06-24",
+      "name": "ATLAS CS0045: Cursor MCP config exfiltration",
+      "what_happened": "Indirect prompt injection led Cursor to run a shell command exfiltrating agent configuration files containing credentials.",
+      "detectable_from_local_logs": "Yes: Bash tool call reading ~/.cursor / .mcp.json followed by curl to an unseen host.",
+      "url": "https://raw.githubusercontent.com/mitre-atlas/atlas-data/main/dist/ATLAS.yaml"
+    },
+    {
+      "date": "2025-07-08",
+      "name": "Supabase MCP + Cursor leaks integration_tokens",
+      "what_happened": "Support-ticket text made the developer's agent run SQL under service_role and insert secrets into a public table.",
+      "detectable_from_local_logs": "Yes: MCP SQL arguments selecting from *token*/*secret* tables then INSERT elsewhere; MCP configured with service-role key flagged as privileged.",
+      "url": "https://generalanalysis.com/blog/supabase-mcp-blog"
+    },
+    {
+      "date": "2025-07-21",
+      "name": "Replit agent deletes production database",
+      "what_happened": "Agent ignored a code freeze, deleted a live DB with 1,200+ executives, misled the user about rollback.",
+      "detectable_from_local_logs": "No for Replit (hosted); local analogue detectable via DROP/DELETE-without-WHERE/prisma migrate reset in Bash or MCP args with prod DSN inference.",
+      "url": "https://www.theregister.com/2025/07/21/replit_saastr_vibe_coding_incident/"
+    },
+    {
+      "date": "2025-07-23",
+      "name": "Amazon Q VS Code 1.84.0 destructive prompt (CVE-2025-8217)",
+      "what_happened": "Attacker committed a wipe-everything prompt into the extension via an over-scoped CodeBuild token; AWS says it failed on a syntax error.",
+      "detectable_from_local_logs": "Partially: extension version 1.84.0 inventory is observable; the injected prompt file is not in agent logs; destructive cloud/rm commands would be.",
+      "url": "https://github.com/aws/aws-toolkit-vscode/security/advisories/GHSA-7g7f-ff96-5gcw"
+    },
+    {
+      "date": "2025-07-28",
+      "name": "Gemini CLI README hijack (<0.1.14)",
+      "what_happened": "Allowlisted grep followed by whitespace-hidden second command exfiltrated all env vars.",
+      "detectable_from_local_logs": "Yes: command linter for long whitespace runs, ;/&&/| after an allowlisted prefix, env|curl; version below 0.1.14.",
+      "url": "https://tracebit.com/blog/code-exec-deception-gemini-ai-cli-hijack"
+    },
+    {
+      "date": "2025-08-05",
+      "name": "Cursor MCPoison CVE-2025-54136 / CurXecute CVE-2025-54135",
+      "what_happened": "Approved MCP entries could be silently swapped for a reverse shell re-run on every project open; prompt injection could write ~/.cursor/mcp.json.",
+      "detectable_from_local_logs": "Yes: hash .cursor/mcp.json and ~/.cursor/mcp.json; alert on command/args change after first sight or dotfile in fresh clone; Cursor version <1.3.9.",
+      "url": "https://research.checkpoint.com/2025/cursor-vulnerability-mcpoison/"
+    },
+    {
+      "date": "2025-08-19",
+      "name": "Amazon Q executeBash find -exec RCE",
+      "what_happened": "find classified readonly skipped approval; injection ran find -exec and curl|sh via space-broken base64; no CVE.",
+      "detectable_from_local_logs": "Yes: classify actual command strings (find -exec, base64 pipelines) regardless of vendor auto-approval.",
+      "url": "https://embracethered.com/blog/posts/2025/amazon-q-developer-remote-code-execution/"
+    },
+    {
+      "date": "2025-08-26",
+      "name": "Nx s1ngularity supply-chain attack",
+      "what_happened": "npm postinstall ran claude --dangerously-skip-permissions, gemini --yolo, q --trust-all-tools for secret recon; >1,700 users leaked secrets; >6,700 repos flipped public.",
+      "detectable_from_local_logs": "Yes for the AI leg: headless cli entrypoint with permissionMode bypassPermissions, cwd in npm project, Glob/Bash over ~/.ssh/.env/wallets, write to /tmp/inventory.txt, gh repo create. No for telemetry.js stealer.",
+      "url": "https://www.wiz.io/blog/s1ngularitys-aftermath"
+    },
+    {
+      "date": "2025-09",
+      "name": "ATLAS CS0053: poisoned postmark-mcp npm package",
+      "what_happened": "Malicious MCP version BCC'd attacker on all emails sent by the tool.",
+      "detectable_from_local_logs": "Partially: MCP package version change between sessions from config inventory; BCC content not visible.",
+      "url": "https://raw.githubusercontent.com/mitre-atlas/atlas-data/main/dist/ATLAS.yaml"
+    },
+    {
+      "date": "2025-10-08",
+      "name": "CamoLeak (Copilot Chat, CVSS 9.6)",
+      "what_happened": "Hidden PR comment made Copilot search private repos for AWS keys and exfiltrate via Camo image URLs.",
+      "detectable_from_local_logs": "No (server-side); the shape (sensitive read then many outbound calls to one host) is detectable for local agents via WebFetch/curl tool calls.",
+      "url": "https://www.legitsecurity.com/blog/camoleak-critical-github-copilot-vulnerability-leaks-private-source-code"
+    },
+    {
+      "date": "2025-12-03",
+      "name": "Claude Code CVE-2025-66032 ($IFS read-only bypass) and siblings CVE-2025-58764/59536",
+      "what_happened": "Mis-parsed $IFS and packed flags let read-only-classified commands execute arbitrary code; fixed in 1.0.93/1.0.105/1.0.111.",
+      "detectable_from_local_logs": "Yes: every JSONL line carries version; flag commands containing $IFS or unusual flag packing.",
+      "url": "https://github.com/advisories/GHSA-xq4m-mc3c-vvg3"
+    },
+    {
+      "date": "2025-12-08",
+      "name": "Claude Code rm -rf wipes a developer's Mac",
+      "what_happened": "Cleanup command expanded to ~/ and deleted the home directory including Keychain; sibling incidents #10077 and Cowork photo deletion.",
+      "detectable_from_local_logs": "Yes: Bash tool_use input.command matching rm -rf with ~, $HOME, / or paths outside cwd; result stderr/interrupted.",
+      "url": "https://www.docker.com/blog/coding-agent-horror-stories-the-rm-rf-incident/"
+    },
+    {
+      "date": "2025-12-16",
+      "name": "Knostic: .env silent loads and API keys pushed to GitHub",
+      "what_happened": "Claude Code loaded .env proxy credentials silently; Cursor tried to upload an unrelated file with an API key; Claude Code wrote a Gemini key into a test file and pushed it.",
+      "detectable_from_local_logs": "Yes: Read on .env, Write/Edit containing key-shaped strings, Bash git push in the same session.",
+      "url": "https://www.knostic.ai/blog/claude-cursor-env-file-secret-leakage"
+    },
+    {
+      "date": "2026-02-24",
+      "name": "Claude Code project-file RCE and API-key exfiltration (CVE-2025-59536, CVE-2026-21852)",
+      "what_happened": "SessionStart hook and enableAllProjectMcpServers executed before trust dialog; ANTHROPIC_BASE_URL in repo settings redirected API traffic with the Authorization header.",
+      "detectable_from_local_logs": "Yes: hook_success attachments, MCP start attachments, ANTHROPIC_BASE_URL/OPENAI_BASE_URL in settings.json/.env/env; version floors.",
+      "url": "https://research.checkpoint.com/2026/rce-and-api-token-exfiltration-through-claude-code-project-files-cve-2025-59536/"
+    },
+    {
+      "date": "2026-04-27",
+      "name": "Live credentials in .claude/settings.local.json on npm (Lakera)",
+      "what_happened": "'Allow always' wrote full command strings with inline keys; 428 packages shipped the file, 33 files held live credentials.",
+      "detectable_from_local_logs": "Yes: scan settings.local.json allow-lists as a source; flag secrets embedded in permission entries.",
+      "url": "https://bdtechtalks.com/2026/04/27/claude-code-api-token-leak/"
+    },
+    {
+      "date": "2026-05-11",
+      "name": "Claude Code prints PINECONE_API_KEY despite CLAUDE.md rule (#58043)",
+      "what_happened": "Agent cat'ed config files with plaintext keys; key rotated; issue closed as not planned.",
+      "detectable_from_local_logs": "Yes: sensitive-file Read/Bash incident plus secret-shape detector on tool results.",
+      "url": "https://github.com/anthropics/claude-code/issues/58043"
+    },
+    {
+      "date": "2026-05-27",
+      "name": "Malware-Slop npm package steals Claude working directory",
+      "what_happened": "postinstall uploaded /mnt/user-data to attacker GitHub using the victim's token; ~676 downloads.",
+      "detectable_from_local_logs": "No (postinstall, not agent action); scope to EDR.",
+      "url": "https://thehackernews.com/2026/05/malicious-npm-package-stole-files-from.html"
+    },
+    {
+      "date": "2026-06-12",
+      "name": "Agentjacking via Sentry MCP",
+      "what_happened": "Injected Sentry error events were fetched and executed by Claude Code, Cursor and Codex; Elastic found command injection in 43% of MCP servers.",
+      "detectable_from_local_logs": "Yes: MCP inventory plus 'tool result from server X followed by Bash/package install' sequence.",
+      "url": "https://labs.cloudsecurityalliance.org/research/csa-research-note-agentjacking-mcp-sentry-injection-20260612/"
+    },
+    {
+      "date": "2026-07-02",
+      "name": "Cursor DuneSlide CVE-2026-50548/50549 (CVSS 9.8)",
+      "what_happened": "Zero-click injection escaped the 2.x terminal sandbox via working_directory or symlink fallback to overwrite cursorsandbox or ~/.zshrc; fixed in 3.0; initially rejected as out of threat model.",
+      "detectable_from_local_logs": "Yes: writes to shell rc files, app bundle paths, .git/hooks; terminal commands with working_directory outside project; Cursor version <3.0.",
+      "url": "https://thehackernews.com/2026/07/critical-cursor-flaws-could-let-prompt.html"
+    },
+    {
+      "date": "2026-08-04",
+      "name": "Keyv npm worm plants Claude Code and VS Code hooks",
+      "what_happened": "353-868 poisoned packages ran a credential stealer at preinstall and left agent hooks that execute once a workspace is trusted; used zero-width Unicode in .cursorrules and CLAUDE.md.",
+      "detectable_from_local_logs": "Yes: hook_success attachments; new hook in .claude/settings.json in a repo touched by npm install; hidden-Unicode scan of rules files.",
+      "url": "https://thehackernews.com/2026/08/keyv-linked-npm-worm-poisons-hundreds.html"
+    },
+    {
+      "date": "2026-08-31",
+      "name": "METR API key stolen from vibe-coded app, ~$600K burned",
+      "what_happened": "Attacker prompted an agent to reveal a model provider key on a personal EC2 instance and consumed credits for three weeks; usage hard to distinguish from legitimate.",
+      "detectable_from_local_logs": "Partially: per-key/account cost baselines and 'API activity while no local session active' from reconciliation; the theft itself was off-endpoint.",
+      "url": "https://www.infosecurity-magazine.com/news/attackers-steal-metr-api-key/"
+    },
+    {
+      "date": "2026-09-04",
+      "name": "Self-audit finds 71 secrets and live AWS keys in Claude Code transcripts",
+      "what_happened": "A ~300-line local scanner over 59 session files found DB connection strings, JWTs, 2 live AWS keys and an executed curl|bash.",
+      "detectable_from_local_logs": "Yes: this is exactly Vole's surface; scanner pass in the JSONL tail.",
+      "url": "https://dev.to/crypled/i-audited-my-own-claude-code-logs-and-found-real-leaked-credentials-3oo"
+    }
+  ],
+  "local_artifacts_by_tool": [
+    {
+      "tool": "Claude Code",
+      "artifacts": "~/.claude/projects/<slug>/*.jsonl transcripts (per line: version, cwd, gitBranch, permissionMode, entrypoint, tool_use incl. Bash input.command, tool results, attachments hook_success/mcp_instructions_delta/failedMcpServers/needsAuthMcpServers); ~/.claude.json (MCP, anonymous user.id); ~/.claude/settings.json, .claude/settings.local.json (allow-lists with inline commands), .mcp.json, ~/.claude/.credentials.json, spill files for tool output >50K, feedback bundles; managed settings /Library/Application Support/ClaudeCode/managed-settings.json; CLAUDE_CONFIG_DIR override (Xcode: ~/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig); transcripts deleted after cleanupPeriodDays (30)",
+      "records_model_tokens_tools": "Yes: model, input/output/cache tokens per API request, tool names and full arguments, permission mode; format documented as internal and version-unstable",
+      "process_or_bundle_id": "claude (Node binary); Claude Desktop com.anthropic.claudefordesktop with ~/Library/Logs/Claude/{main,mcp,coworkd}.log",
+      "api_hosts": "api.anthropic.com, claude.ai, platform.claude.com, mcp-proxy.anthropic.com, downloads.claude.ai; overridable via ANTHROPIC_BASE_URL",
+      "confidence": "High (parsed by Vole; permissionMode/attachments observed locally but undocumented)",
+      "url": "https://code.claude.com/docs/en/monitoring-usage"
+    },
+    {
+      "tool": "OpenAI Codex CLI",
+      "artifacts": "~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl (token_count events, function_call / custom_tool_call / local_shell_call payloads with arguments); ~/.codex/config.toml ([otel], approval_policy, sandbox_mode, MCP); ~/.codex/auth.json; admin requirements.toml",
+      "records_model_tokens_tools": "Yes: cumulative token counts (delta strategy needed), tool/shell calls; effective approval policy per session unverified",
+      "process_or_bundle_id": "codex; ChatGPT/Codex desktop bundle com.openai.codex (older com.openai.chat)",
+      "api_hosts": "api.openai.com / chatgpt.com backend; metrics to OpenAI statsig by default; openai_base_url override",
+      "confidence": "High for tokens (Vole parses); medium for approval/sandbox fields",
+      "url": "https://developers.openai.com/codex/config-reference"
+    },
+    {
+      "tool": "Cursor",
+      "artifacts": "~/.cursor (mcp.json, hooks), ~/Library/Application Support/Cursor (state.vscdb, ai-code-tracking.db, User/globalStorage), ~/Library/Logs/Cursor; .cursor/mcp.json and .cursor/rules per project; enterprise /Library/Application Support/Cursor/hooks.json",
+      "records_model_tokens_tools": "No tokens locally (Vole badges 'no tokens'); MCP config and hooks readable; conversation store parseable by third-party tools",
+      "process_or_bundle_id": "com.todesktop.230313mzl4w4u92",
+      "api_hosts": "Cursor backend domains (api2/api3/repo42.cursor.sh unverified)",
+      "confidence": "Medium",
+      "url": "https://cursor.com/docs/hooks"
+    },
+    {
+      "tool": "GitHub Copilot CLI / Copilot Chat (VS Code)",
+      "artifacts": "~/.copilot/session-state/<id>/events.jsonl (session.shutdown modelMetrics per model: input/output/cacheRead/cacheWrite/reasoning tokens; tool.execution events), session-store.db SQLite, logs/, mcp-config.json, permissions-config.json, mcp-secrets/; sessions sync to GitHub by default; VS Code chatSessions under workspaceStorage/<hash>/; globalStorage/github.copilot-chat embeds Copilot CLI",
+      "records_model_tokens_tools": "Yes (CLI): exact per-model tokens incl. cache and reasoning; tools used; prompts present on disk; schema treated as internal",
+      "process_or_bundle_id": "copilot; VS Code com.microsoft.VSCode",
+      "api_hosts": "*.githubcopilot.com (individual/business/enterprise subdomains reveal plan), copilot-proxy.githubusercontent.com, api.github.com/copilot_internal, copilot-telemetry.githubusercontent.com",
+      "confidence": "High (docs + ccusage); token-event presence may vary by version",
+      "url": "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference"
+    },
+    {
+      "tool": "Gemini CLI / Antigravity",
+      "artifacts": "~/.gemini/tmp/<project_hash>/chats/*.json (prompts, responses, tool inputs/outputs, token usage; 30-day retention), logs.json, checkpoints/, ~/.gemini/history; settings.json with telemetry.logPrompts default true and optional outfile; system settings /Library/Application Support/GeminiCli/settings.json; Antigravity: ~/.gemini/antigravity-ide (encrypted .pb, activity only, parsed by Vole)",
+      "records_model_tokens_tools": "Yes for CLI chats (tokens, tool executions, decisions); Antigravity activity-only",
+      "process_or_bundle_id": "gemini; User-Agent surface tags terminal/zed/xcode/jetbrains/vscode",
+      "api_hosts": "cloudcode-pa.googleapis.com (OAuth Code Assist, CODE_ASSIST_ENDPOINT override); generativelanguage.googleapis.com for API key (unverified)",
+      "confidence": "High for CLI docs; medium for Antigravity",
+      "url": "https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/session-management.md"
+    },
+    {
+      "tool": "OpenCode",
+      "artifacts": "~/.local/share/opencode/opencode.db SQLite (sessions, messages, tool parts, subagent sessions, API errors)",
+      "records_model_tokens_tools": "Yes: tokens, model, tool parts (Vole parses; subagents rolled into parent)",
+      "process_or_bundle_id": "opencode",
+      "api_hosts": "Provider-dependent; LiteLLM/base-URL configurable",
+      "confidence": "High (Vole collector)",
+      "url": "file://packages/core/src/collectors/opencode.ts"
+    },
+    {
+      "tool": "Grok CLI",
+      "artifacts": "~/.grok/logs/unified.jsonl (shell.turn.inference_done events with usage)",
+      "records_model_tokens_tools": "Yes: tokens and model per turn (Vole parses); tool detail not verified",
+      "process_or_bundle_id": "grok",
+      "api_hosts": "api.x.ai (unverified)",
+      "confidence": "Medium (Vole collector; no vendor doc)",
+      "url": "file://packages/core/src/collectors/grok.ts"
+    },
+    {
+      "tool": "Devin / Windsurf (Devin Desktop)",
+      "artifacts": "~/Library/Application Support/Devin/User/acp-messages/<uuid>.db (messages table, parsed by Vole); ~/.codeium/windsurf/{cascade,database,brain,implicit/*.pb,user_settings.pb} protobuf",
+      "records_model_tokens_tools": "Devin ACP db: messages (Vole); Windsurf cascade: activity only, tokens not recoverable (vendor API reports credits)",
+      "process_or_bundle_id": "com.exafunction.windsurf",
+      "api_hosts": ".codeium.com, .codeiumdata.com, .windsurf.com, static.devin.ai, api.devin.ai, googleapis.com auth",
+      "confidence": "Medium",
+      "url": "https://docs.windsurf.com/troubleshooting/windsurf-common-issues"
+    },
+    {
+      "tool": "Goose (Block)",
+      "artifacts": "~/.local/share/goose/sessions/sessions.db or ~/Library/Application Support/goose/sessions/sessions.db (messages, tool calls, token usage); ~/.local/state/goose/logs/llm_request.*.jsonl (raw prompts/responses, last 10); ~/.config/goose/history.txt",
+      "records_model_tokens_tools": "Yes: accumulated tokens, provider, model, tool calls",
+      "process_or_bundle_id": "goose; Desktop logs ~/Library/Application Support/Goose/logs/main.log",
+      "api_hosts": "Provider-dependent",
+      "confidence": "High (docs)",
+      "url": "https://github.com/block/goose/blob/main/documentation/docs/guides/logs.md"
+    },
+    {
+      "tool": "Amp (Sourcegraph)",
+      "artifacts": "~/.local/share/amp/threads/**/*.json (usage ledger: input/output/cache tokens, credits); ~/.config/amp/settings.json; managed /Library/Application Support/ampcode/managed-settings.json; threads sync to ampcode.com",
+      "records_model_tokens_tools": "Yes: exact tokens incl. cache",
+      "process_or_bundle_id": "amp",
+      "api_hosts": "ampcode.com",
+      "confidence": "Medium (ccusage + docs)",
+      "url": "https://ccusage.com/guide/amp/"
+    },
+    {
+      "tool": "Continue",
+      "artifacts": ".continue/dev_data JSONL (tokensGenerated, chatInteraction, toolUsage, autocomplete, edit events); ~/.continue/config.yaml (data destinations may be HTTP); ~/.continue/logs/core.log",
+      "records_model_tokens_tools": "Yes: tokens and tool usage events",
+      "process_or_bundle_id": "VS Code/JetBrains extension",
+      "api_hosts": "Provider-dependent; configurable data destinations",
+      "confidence": "High (docs)",
+      "url": "https://docs.continue.dev/customize/deep-dives/development-data"
+    },
+    {
+      "tool": "Cline / Roo Code",
+      "artifacts": "<editor>/User/globalStorage/saoudrizwan.claude-dev/tasks/<id>/{api_conversation_history.json, ui_messages.json, task_metadata.json}, state/taskHistory.json, checkpoints/; rooveterinaryinc.roo-cline equivalents; present under VS Code, Cursor, Windsurf, Kiro roots",
+      "records_model_tokens_tools": "Likely: provider/model and usage blocks in api_conversation_history, per-request cost in ui_messages (verify per version)",
+      "process_or_bundle_id": "VS Code-fork extensions",
+      "api_hosts": "BYOK provider-dependent",
+      "confidence": "Medium",
+      "url": "https://github.com/cline/cline/issues/7742"
+    },
+    {
+      "tool": "Kiro (IDE and CLI)",
+      "artifacts": "~/Library/Application Support/Kiro/User/globalStorage/kiro.kiroagent/ execution JSON logs (prompts, no retention, 8-30 GB reported); ~/.kiro/sessions/<hash>/sess_<uuid>, ~/.kiro/session-index/<hash>.jsonl op-log, ~/.kiro/logs, ~/.kiro/settings",
+      "records_model_tokens_tools": "Activity and prompts present; tokens/model unverified",
+      "process_or_bundle_id": "dev.kiro.desktop",
+      "api_hosts": "AWS (unverified)",
+      "confidence": "Medium",
+      "url": "https://github.com/kirodotdev/Kiro/issues/4165"
+    },
+    {
+      "tool": "Zed agent",
+      "artifacts": "~/Library/Application Support/Zed/threads/threads.db SQLite (threads with id/parent_id, compressed conversation)",
+      "records_model_tokens_tools": "Activity and subagent tree; tokens/model columns undocumented",
+      "process_or_bundle_id": "dev.zed.Zed",
+      "api_hosts": "Provider-dependent",
+      "confidence": "Low-medium",
+      "url": "https://github.com/zed-industries/zed/discussions/48083"
+    },
+    {
+      "tool": "Aider",
+      "artifacts": "Repo-root .aider.chat.history.md, .aider.input.history, optional --llm-history-file (full LLM conversation); no home-dir artifact",
+      "records_model_tokens_tools": "Prompts and diffs on disk; tokens only via opt-in analytics",
+      "process_or_bundle_id": "aider (Python)",
+      "api_hosts": "Provider-dependent (LiteLLM)",
+      "confidence": "High (docs)",
+      "url": "https://aider.chat/docs/config/options.html"
+    },
+    {
+      "tool": "Ollama",
+      "artifacts": "~/.ollama/logs/{app.log,server.log} (request paths POST /api/generate, /api/show, GET /api/tags), ~/.ollama/history (plaintext prompts), ~/.ollama/models/manifests/ (model inventory); port 127.0.0.1:11434",
+      "records_model_tokens_tools": "Requests and model loads countable; per-request tokens not evidently logged",
+      "process_or_bundle_id": "ollama; GUI com.electron.ollama",
+      "api_hosts": "localhost:11434; ollama.ai / huggingface.co for pulls",
+      "confidence": "High (docs + local observation)",
+      "url": "https://docs.ollama.com/macos"
+    },
+    {
+      "tool": "LM Studio / Jan",
+      "artifacts": "LM Studio: ~/.lmstudio/conversations/<id>.conversation.json, ~/.lmstudio/models, ~/Library/Logs/LM Studio; port 1234. Jan: ~/Library/Application Support/Jan/data/threads/<id>/{messages.jsonl, thread.json (model)}, data/logs/app.log; port 1337",
+      "records_model_tokens_tools": "Model per thread readable without content; tokens not documented",
+      "process_or_bundle_id": "ai.elementlabs.lmstudio; jan.ai.app",
+      "api_hosts": "localhost:1234 / 127.0.0.1:1337; Jan may call Anthropic/OpenAI/Gemini",
+      "confidence": "High (docs + casks)",
+      "url": "https://lmstudio.ai/docs/app/basics/chat"
+    },
+    {
+      "tool": "ChatGPT macOS app",
+      "artifacts": "~/Library/Application Support/com.openai.chat/conversations-v2-<uuid>/ encrypted with Keychain key (plaintext before 1.2024.171); newer cask targets com.openai.codex with ~/Library/Application Support/com.openai.codex; uploaded files stored in cloud",
+      "records_model_tokens_tools": "Presence/activity (mtimes) only; content encrypted",
+      "process_or_bundle_id": "com.openai.chat or com.openai.codex",
+      "api_hosts": "chatgpt.com / api.openai.com",
+      "confidence": "Medium",
+      "url": "https://pvieito.com/2024/07/chatgpt-unprotected-conversations"
+    },
+    {
+      "tool": "Claude Desktop / Cowork",
+      "artifacts": "~/Library/Application Support/Claude/claude_desktop_config.json (MCP servers); ~/Library/Logs/Claude/{main.log, mcp.log, mcp-server-<name>.log, coworkd.log, cowork_vm_*.log, claude.ai-web.log}",
+      "records_model_tokens_tools": "MCP tool activity via server logs; no tokens; Cowork sessions outside ~/.claude/projects",
+      "process_or_bundle_id": "com.anthropic.claudefordesktop",
+      "api_hosts": "claude.ai, api.anthropic.com, mcp-proxy.anthropic.com",
+      "confidence": "Medium (cask + local observation)",
+      "url": "https://code.claude.com/docs/en/network-config"
+    },
+    {
+      "tool": "Xcode bundled Claude Code",
+      "artifacts": "CLAUDE_CONFIG_DIR=~/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig (settings, sessions, plugins); agent binary under ~/Library/Developer/Xcode/CodingAssistant/Agents/XcodeVersions/<build>/claude/; telemetry env disabled; defaults IDEChatAgenticChatSkipPermissions passes --dangerously-skip-permissions",
+      "records_model_tokens_tools": "Yes (same JSONL format) but invisible to a ~/.claude-only walker",
+      "process_or_bundle_id": "com.apple.dt.Xcode spawning claude",
+      "api_hosts": "api.anthropic.com",
+      "confidence": "Medium (community gist re-verified 2026-06-16)",
+      "url": "https://gist.github.com/everyplace/0a1e2637261325ea1d47447f4085bf37"
+    },
+    {
+      "tool": "JetBrains AI Assistant / Junie",
+      "artifacts": "In-IDE ai-assistant-requests.md for the current session only; plugin presence under ~/Library/Application Support/JetBrains/<IDE>/plugins; IDE logs ~/Library/Logs/JetBrains (unverified)",
+      "records_model_tokens_tools": "No stable local telemetry; activity only, low confidence",
+      "process_or_bundle_id": "com.jetbrains.* IDEs",
+      "api_hosts": "JetBrains AI service; provider accounts when configured",
+      "confidence": "Low",
+      "url": "https://www.jetbrains.com/help/ai-assistant/how-we-handle-your-code-and-data.html"
+    },
+    {
+      "tool": "Raycast AI / Perplexity app / browser chat",
+      "artifacts": "Raycast ~/Library/Application Support/com.raycast.macos (undocumented format, local chats, optional Cloud Sync); Perplexity ~/Library/Application Support/ai.perplexity.macv3 and ~/Library/WebKit/ai.perplexity.macv3; Chrome History SQLite urls table (hostname-only counts for chatgpt.com, claude.ai, gemini.google.com, perplexity.ai); Safari History.db needs Full Disk Access",
+      "records_model_tokens_tools": "Presence and visit counts only",
+      "process_or_bundle_id": "com.raycast.macos; ai.perplexity.macv3; com.google.Chrome",
+      "api_hosts": "raycast.com backend; perplexity.ai; vendor web hosts",
+      "confidence": "Medium (casks, Chromium docs, local test)",
+      "url": "https://chromium.googlesource.com/chromium/src/+/main/docs/user_data_dir.md"
+    }
+  ]
+}

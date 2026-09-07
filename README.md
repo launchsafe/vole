@@ -462,6 +462,8 @@ reading or sharing:
 | [EXTENDING.md](docs/EXTENDING.md) | Add a tool, a rule, a model rate, or a panel in the app |
 | [DECISIONS.md](docs/DECISIONS.md) | How it was built, and the five bugs that shaped it |
 | [ROADMAP.md](docs/ROADMAP.md) | Ranked next steps, plus good first issues |
+| [ENTERPRISE-ROADMAP.md](docs/ENTERPRISE-ROADMAP.md) | Where the product is going: 368 features in 8 tiers |
+| [MARKET.md](docs/MARKET.md) | Why companies buy this, and the 62-vendor competitive picture |
 
 Regenerate the PDF after editing any markdown with `pnpm docs:pdf`.
 

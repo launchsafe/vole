@@ -18,7 +18,8 @@
     "pr": "tsx packages/core/src/cli/pr.ts",
     "statusline": "tsx packages/core/src/cli/statusline.ts",
     "mcp": "tsx packages/core/src/cli/mcp.ts",
-    "digest": "tsx packages/core/src/cli/digest.ts"
+    "digest": "tsx packages/core/src/cli/digest.ts",
+    "parity": "packages/core/scripts/parity-check.sh"
   },
   "devDependencies": {
     "markdown-it": "15",

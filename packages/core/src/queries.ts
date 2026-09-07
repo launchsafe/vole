@@ -43,6 +43,8 @@ export interface ToolSummary {
   tokens: number | null;
   cost: number | null;
   confidence: Confidence;
+  /** Calls in this group that recorded no tokens — a mixed group renders as mixed. */
+  activityOnlyCalls: number;
 }
 
 export function getSummary(db: DB, range: Range, includeSeed: boolean): Summary {
@@ -77,7 +79,9 @@ export function getSummary(db: DB, range: Range, includeSeed: boolean): Summary 
                    ELSE COALESCE(SUM(CASE WHEN ${TOKEN_FILTER} THEN total_tokens END), 0)
               END AS tokens,
               SUM(cost_usd) AS cost,
-              MIN(confidence) AS confidence
+              CASE WHEN SUM(confidence != 'activity_only') = 0
+                   THEN 'activity_only' ELSE 'exact' END AS confidence,
+              SUM(CASE WHEN confidence = 'activity_only' THEN 1 ELSE 0 END) AS activityOnlyCalls
        FROM usage_events WHERE ts >= ?${seedClause}
        GROUP BY tool ORDER BY calls DESC`,
     )
@@ -117,6 +121,15 @@ const ZERO_BY_TOOL: Record<Tool, number> = {
   opencode: 0,
   grok: 0,
   devin: 0,
+  gemini: 0,
+  copilot_cli: 0,
+  goose: 0,
+  amp: 0,
+  continue: 0,
+  aider: 0,
+  vscode_chat: 0,
+  clines: 0,
+  ollama_local: 0,
 };
 
 /**
@@ -207,6 +220,7 @@ export function getBreakdown(
 
 export interface IncidentRow {
   id: number;
+  anomaly_key: string;
   rule: string;
   severity: string;
   tool: Tool;
@@ -216,8 +230,12 @@ export interface IncidentRow {
   window_end: number;
   title: string;
   detail: string;
+  observed: number;
+  baseline: number | null;
+  threshold: number | null;
   confidence: Confidence;
   source: string;
+  detected_at: number;
 }
 
 // ponytail: the dashboard counts what this returns, so the cap is the count's ceiling;
@@ -225,14 +243,131 @@ export interface IncidentRow {
 export function getAnomalies(db: DB, range: Range, includeSeed: boolean, limit = 500): IncidentRow[] {
   const from = rangeStart(range);
   const seedClause = includeSeed ? '' : " AND source = 'live'";
+  // v_incident_explained is the shared read-model view created by migration 7 —
+  // the shape lives in the store, and both readers (TS and Swift) select from it.
   return db
     .prepare(
-      `SELECT id, rule, severity, tool, session_id, model, window_start, window_end,
-              title, detail, confidence, source
-       FROM anomalies WHERE window_end >= ?${seedClause}
+      `SELECT * FROM v_incident_explained WHERE window_end >= ?${seedClause}
        ORDER BY window_start DESC LIMIT ?`,
     )
     .all(from, limit) as IncidentRow[];
+}
+
+// ── Token speed ───────────────────────────────────────────────────────────────
+
+export interface TokenSpeed {
+  /** Trailing-window average, tokens per minute. */
+  perMin: number;
+  /** The busiest single minute in the last 24h — the honest peak, not an instant. */
+  peakPerMin: number;
+  byTool: { tool: Tool; perMin: number }[];
+}
+
+/**
+ * Token speed: the trailing-window burn rate and the 24h peak minute. `now` is
+ * a parameter (not Date.now()) so the figure is testable and the two readers
+ * can be compared on the same instant.
+ */
+export function getTokenSpeed(db: DB, windowMs = 5 * 60_000, now = Date.now()): TokenSpeed {
+  const from = now - windowMs;
+  const rows = db
+    .prepare(
+      `SELECT tool, COALESCE(SUM(total_tokens), 0) AS t
+       FROM usage_events WHERE ts >= ? AND ts <= ? AND source = 'live' AND ${TOKEN_FILTER}
+       GROUP BY tool ORDER BY t DESC`,
+    )
+    .all(from, now) as { tool: Tool; t: number }[];
+  const minutes = windowMs / 60_000;
+  const byTool = rows.map((r) => ({ tool: r.tool, perMin: r.t / minutes }));
+  const peak = db
+    .prepare(
+      `SELECT COALESCE(MAX(c), 0) AS peak FROM (
+         SELECT SUM(total_tokens) AS c
+         FROM usage_events WHERE ts >= ? AND source = 'live' AND ${TOKEN_FILTER}
+         GROUP BY CAST(ts / 60000 AS INTEGER))`,
+    )
+    .get(now - 24 * 3600_000) as { peak: number };
+  return {
+    perMin: byTool.reduce((s, t) => s + t.perMin, 0),
+    peakPerMin: peak.peak ?? 0,
+    byTool: byTool.slice(0, 5),
+  };
+}
+
+// ── Generation speed (tok/s) ─────────────────────────────────────────────────
+
+export interface ModelSpeed {
+  tool: Tool;
+  model: string | null;
+  /** Output tokens per second, over rows that state a real duration. */
+  tokensPerSecond: number;
+  /** Median response duration in ms — the typical latency, not the mean (tails lie). */
+  medianDurationMs: number;
+  rows: number;
+  /** Share of this model's output tokens that carry a duration: the coverage. */
+  coverage: number;
+  /** How the durations were obtained — 'measured' from the source, or
+   * 'turn_scoped' estimated from gaps (a lower bound on true speed). */
+  kind: 'measured' | 'turn_scoped';
+}
+
+/**
+ * Generation speed: how fast each model actually produced tokens —
+ * SUM(output_tokens) / SUM(duration) over rows with a stated duration, per
+ * tool+model, with the coverage fraction printed beside every figure. Rows
+ * without a duration are excluded and counted, never guessed: a speed figure
+ * without its coverage is a benchmark, not a measurement.
+ */
+export function getModelSpeeds(db: DB, range: Range, includeSeed = false): ModelSpeed[] {
+  const from = rangeStart(range);
+  const seedClause = includeSeed ? '' : " AND source = 'live'";
+  const rows = db
+    .prepare(
+      `SELECT tool, model,
+              SUM(CASE WHEN duration_ms IS NOT NULL THEN output_tokens END) AS out_dur,
+              SUM(CASE WHEN duration_ms IS NULL THEN output_tokens END) AS out_nodur,
+              SUM(duration_ms) AS dur_ms,
+              COUNT(CASE WHEN duration_ms IS NOT NULL THEN 1 END) AS rows_dur
+       FROM usage_events WHERE ts >= ?${seedClause} AND confidence != 'activity_only'
+       GROUP BY tool, model HAVING out_dur > 0 AND dur_ms > 0
+       ORDER BY out_dur / dur_ms DESC`,
+    )
+    .all(from) as {
+    tool: Tool; model: string | null; out_dur: number | null; out_nodur: number | null;
+    dur_ms: number | null; rows_dur: number;
+  }[];
+  return rows.map((r) => {
+    const withDur = r.out_dur ?? 0;
+    const withoutDur = r.out_nodur ?? 0;
+    // Provenance: whichever kind contributed more duration decides the label.
+    const kindRow = db
+      .prepare(
+        `SELECT duration_kind, SUM(duration_ms) AS d FROM usage_events
+         WHERE ts >= ?${seedClause} AND tool = ? AND model IS ? AND duration_ms IS NOT NULL
+         GROUP BY duration_kind ORDER BY d DESC LIMIT 1`,
+      )
+      .get(from, r.tool, r.model) as { duration_kind: string | null } | undefined;
+    return {
+      tool: r.tool,
+      model: r.model,
+      tokensPerSecond: withDur / (r.dur_ms! / 1000),
+      medianDurationMs: median(
+        db.prepare(
+          `SELECT duration_ms FROM usage_events WHERE ts >= ?${seedClause} AND tool = ? AND model IS ? AND duration_ms IS NOT NULL`,
+        ).all(from, r.tool, r.model).map((x) => (x as { duration_ms: number }).duration_ms),
+      ),
+      rows: r.rows_dur,
+      coverage: withDur + withoutDur > 0 ? withDur / (withDur + withoutDur) : 0,
+      kind: kindRow?.duration_kind === 'measured' ? ('measured' as const) : ('turn_scoped' as const),
+    };
+  });
+}
+
+function median(values: number[]): number {
+  if (!values.length) return 0;
+  const s = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
 }
 
 // ── Live sessions ─────────────────────────────────────────────────────────────

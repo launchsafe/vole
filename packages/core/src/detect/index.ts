@@ -1,13 +1,30 @@
 import type { Anomaly, RateLimitObservation, UsageEvent } from '../types';
-import { detectBurnRate } from './burn-rate';
-import { detectLoops } from './loop';
+import { detectBillableBurn } from './burn-rate';
+import { detectRepeatLoops } from './loop';
 import { detectErrorStorms } from './error-storm';
 import { detectRateLimitPressure } from './rate-limit';
 import { detectContextPressure } from './context-pressure';
+import { detectReroutedModels } from './rerouted-model';
 
-export { detectBurnRate, detectLoops, detectErrorStorms, detectRateLimitPressure, detectContextPressure };
+export { detectBillableBurn, detectRepeatLoops, detectErrorStorms, detectRateLimitPressure, detectContextPressure, detectReroutedModels };
 export { contextOf, windowOf } from './context-pressure';
 export * from './util';
+
+/**
+ * The rule registry's identity: every rule id, in a stable order. Detection is
+ * insert-gated for cost, so a NEW rule would never see historical rows — the
+ * collector compares this list each pass and forces one full detect run when it
+ * changes (a rule epoch). This is the Tier 6 detection_epochs concept, scoped to
+ * what exists today.
+ */
+export const RULE_IDS = [
+  'billable_burn_spike',
+  'repeat_call_loop',
+  'error_storm',
+  'rate_limit_pressure',
+  'context_pressure',
+  'rerouted_model',
+] as const;
 
 /** Runs every rule. Pure: no DB access, so rules stay unit-testable in isolation. */
 export function detectAll(
@@ -16,11 +33,12 @@ export function detectAll(
   now: number = Date.now(),
 ): Anomaly[] {
   return [
-    ...detectBurnRate(events, now),
-    ...detectLoops(events, now),
+    ...detectBillableBurn(events, now),
+    ...detectRepeatLoops(events, now),
     ...detectErrorStorms(events, now),
     ...detectRateLimitPressure(rateLimits, now),
     ...detectContextPressure(events, now),
+    ...detectReroutedModels(events, now),
   ];
 }
 

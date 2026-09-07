@@ -5,13 +5,13 @@
  * carries protocol messages only.
  */
 import { createInterface } from 'node:readline';
-import { openDb } from '../db';
+import { openDbReadOnly } from '../db';
 import {
   getAnomalies, getBreakdown, getDigest, getLiveSessions, getSessionDetail, getSummary, getWhatIf,
   type BreakdownBy, type Range,
 } from '../queries';
 
-const db = openDb();
+const db = openDbReadOnly();
 const RANGE = { type: 'string', enum: ['24h', '7d', '30d', 'all'], description: 'Time range; default 24h' };
 const range = (a: Record<string, unknown>): Range =>
   (['24h', '7d', '30d', 'all'] as const).find((r) => r === a.range) ?? '24h';

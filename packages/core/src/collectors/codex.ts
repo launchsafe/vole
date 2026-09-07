@@ -1,8 +1,9 @@
 import { readdirSync, existsSync, statSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { paths } from '../paths';
-import type { DB } from '../db';
+import { getState, setState, type DB } from '../db';
 import { parseLine } from '../util/jsonl';
+import { contentOf, type Content } from '../content';
 import { computeCost } from '../pricing';
 import type { CollectorResult, RateLimitObservation, UsageEvent } from '../types';
 
@@ -69,27 +70,53 @@ function walkRollouts(dir: string, out: string[]): void {
   }
 }
 
-export function collectCodex(_db: DB): CollectorResult {
+export function collectCodex(db: DB): CollectorResult {
   const root = paths.codexSessions();
   const events: UsageEvent[] = [];
   const rateLimits: RateLimitObservation[] = [];
   const notes: string[] = [];
+  let filesScanned = 0;
+  let filesSkipped = 0;
 
   if (!existsSync(root)) {
-    return { tool: 'codex', events, filesScanned: 0, notes: [`No directory at ${root}`] };
+    return { tool: 'codex', events, filesScanned: 0, notes: [`No directory at ${root}`], sourceState: 'no_source' };
   }
 
   const files: string[] = [];
   walkRollouts(root, files);
 
   for (const filePath of files) {
-    let lines: string[];
+    // Scan cursor: rollout files are append-only, so an unchanged (size, mtime)
+    // pair means every line is already stored under its stable event_key. This is
+    // what keeps a 5-second poll from re-parsing 100 MB of rollouts forever.
+    let st;
     try {
-      lines = readFileSync(filePath, 'utf8').split('\n').filter((l) => l.length > 0);
+      st = statSync(filePath);
+    } catch (err) {
+      notes.push(`Could not stat ${filePath}: ${(err as Error).message}`);
+      continue;
+    }
+    const prev = getState(db, filePath);
+    if (prev && prev.last_offset === st.size && prev.last_mtime === Math.trunc(st.mtimeMs)) {
+      filesSkipped++;
+      continue;
+    }
+
+    let lines: Content[];
+    try {
+      // contentOf: the boundary crossing for full-file readers. The rollout line
+      // can be measured (hashOf/lengthOf, Tier 4/5) but never stored.
+      lines = readFileSync(filePath, 'utf8').split('\n').filter((l) => l.length > 0).map(contentOf);
     } catch (err) {
       notes.push(`Could not read ${filePath}: ${(err as Error).message}`);
       continue;
     }
+    filesScanned++;
+
+    // rollout-<timestamp>-<uuid>.jsonl: the uuid is this rollout's own identity,
+    // the one thing a sub-agent does NOT replay from its parent. Matched by shape
+    // at the stem's end — the timestamp's dashes make position-based slicing wrong.
+    const rolloutId = basename(filePath, '.jsonl').match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)?.[0] ?? null;
 
     let sessionId: string | null = null;
     let model: string | null = null;
@@ -99,9 +126,16 @@ export function collectCodex(_db: DB): CollectorResult {
     // next one, which is the meter reading that covers them.
     let pendingTools: string[] = [];
 
+    // Turn-scoped duration: the gap from the previous event in this rollout to
+    // the token_count that closed the turn. Includes queue time; the kind says so.
+    let prevEventTs: number | null = null;
     lines.forEach((line, index) => {
       const entry = parseLine<CodexLine>(line);
-      if (!entry) return;
+      if (!entry) {
+        return;
+      }
+      const anyTs = entry.timestamp ? Date.parse(entry.timestamp) : null;
+      const eventTs = entry.payload?.type === 'token_count' ? anyTs : null;
 
       if (entry.type === 'session_meta') {
         sessionId = entry.payload?.id ?? null;
@@ -140,6 +174,14 @@ export function collectCodex(_db: DB): CollectorResult {
       if (!total && !last) return;
       const tools = pendingTools.length ? pendingTools.join(',') : null;
       pendingTools = [];
+
+      // Agent identity (v2): sub-agent rollouts REPLAY the parent's session_meta,
+      // so sessionId alone cannot tell parent from child — every row of a spawned
+      // rollout used to look like the main thread. The rollout's own filename
+      // carries a uuid distinct from the session id; when they differ, this file IS
+      // a sub-agent and the uuid is its agent id (the spawn edge: this rollout, of
+      // that session).
+      const agentId = rolloutId && rolloutId !== sessionId ? rolloutId : null;
 
       // Meter delta: what this event consumed, per Codex's own running total.
       let delta: number;
@@ -193,8 +235,17 @@ export function collectCodex(_db: DB): CollectorResult {
         cache_read_tokens: cached,
       };
 
+      const duration =
+        eventTs !== null && prevEventTs !== null && eventTs > prevEventTs && eventTs - prevEventTs < 600_000
+          ? eventTs - prevEventTs
+          : null;
       events.push({
-        event_key: `codex:${sessionId ?? filePath}:${index}`,
+        // Keyed on the rollout file, never on sessionId: sub-agent rollout files
+        // replay the parent's session_meta, so a session id can appear in several
+        // files and rows from parent and child would collide on one key — silently
+        // losing whichever was inserted first. The file path is the source-native
+        // identity: unique per rollout, stable across re-reads.
+        event_key: `codex:${filePath}:${index}`,
         tool: 'codex',
         model,
         session_id: sessionId,
@@ -216,12 +267,21 @@ export function collectCodex(_db: DB): CollectorResult {
         source: 'live',
         raw_ref: `${filePath}#${index}`,
         tools,
-        agent_id: null,
+        agent_id: agentId,
         // Codex states its own window on every meter event — exact, no lookup needed.
         context_window: info?.model_context_window ?? null,
+        // Turn-scoped: the gap from the previous rollout event; a lower bound.
+        duration_ms: duration,
+        duration_kind: duration !== null ? ('turn_scoped' as const) : null,
       });
+      if (anyTs !== null) prevEventTs = anyTs;
     });
+
+    // Advance the cursor after a successful full read. Append-only files make this
+    // safe even if the store insert later fails: re-reading recomputes the same
+    // stable event_keys and the upsert no-ops.
+    setState(db, filePath, 'codex', st.size, Math.trunc(st.mtimeMs));
   }
 
-  return { tool: 'codex', events, filesScanned: files.length, notes, rateLimits };
+  return { tool: 'codex', events, filesScanned, notes, rateLimits };
 }

@@ -77,6 +77,7 @@ function push(over: Partial<UsageEvent> & { tool: Tool; ts: number }): void {
     tools: null,
     agent_id: null,
     context_window: null,
+      duration_ms: null, duration_kind: null,
     ...(over.confidence === 'activity_only'
       ? {
           input_tokens: null, output_tokens: null, cache_write_5m_tokens: null,
@@ -179,7 +180,7 @@ const all = db.prepare('SELECT * FROM usage_events ORDER BY ts').all() as UsageE
 // tagged 'seed' by construction — no key-substring guessing.
 const detected = detectBySource(all, { seed: seedRateLimits }, NOW);
 const seedAnomalies: Anomaly[] = detected.filter((a) => a.source === 'seed');
-const insertedAnomalies = insertAnomalies(db, seedAnomalies).length;
+const insertedAnomalies = insertAnomalies(db, seedAnomalies).inserted.length;
 
 console.log(`Seeded ${inserted} demo events (source='seed') across 30 days.`);
 console.log(`Detected ${insertedAnomalies} demo incidents using the real rules.`);

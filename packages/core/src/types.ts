@@ -6,7 +6,16 @@ export type Tool =
   | 'antigravity'
   | 'opencode'
   | 'grok'
-  | 'devin';
+  | 'devin'
+  | 'gemini'
+  | 'copilot_cli'
+  | 'goose'
+  | 'amp'
+  | 'continue'
+  | 'aider'
+  | 'vscode_chat'
+  | 'clines'
+  | 'ollama_local';
 
 /**
  * How much we actually know about a row's numbers. Only two states — there is no
@@ -56,14 +65,29 @@ export interface UsageEvent {
   agent_id: string | null;
   /** The model's context window as the tool itself reported it (Codex); NULL means "look it up". */
   context_window: number | null;
+  /**
+   * The response's own duration (ms), where the source states one — OpenCode's
+   * time.created → time.completed. NULL means the source carries no duration:
+   * an unknown, and generation-speed figures must say which rows they cover.
+   */
+  duration_ms: number | null;
+  /**
+   * Provenance of duration_ms: 'measured' = the source states the span;
+   * 'turn_scoped' = estimated from inter-event gaps (includes queue and
+   * permission time — the derived speed is a lower bound); NULL = unknown.
+   */
+  duration_kind: 'measured' | 'turn_scoped' | null;
 }
 
 export type AnomalyRule =
-  | 'burn_rate_spike'
-  | 'loop_suspected'
+  | 'billable_burn_spike'
+  | 'repeat_call_loop'
   | 'error_storm'
   | 'rate_limit_pressure'
-  | 'context_pressure';
+  | 'context_pressure'
+  | 'unsanctioned_surface'
+  | 'new_ai_surface'
+  | 'rerouted_model';
 
 export type Severity = 'info' | 'warn' | 'critical';
 
@@ -95,12 +119,23 @@ export interface RateLimitObservation {
   window_minutes: number;
 }
 
+/** What a collector found when it looked — the difference between "no tool installed", "ran fine", and "ran and failed". */
+export type SourceState = 'ok' | 'no_source' | 'error';
+
 export interface CollectorResult {
   tool: Tool;
   events: UsageEvent[];
   filesScanned: number;
   /** Non-fatal problems worth surfacing, e.g. a source directory that does not exist. */
   notes: string[];
+  /**
+   * Structured outcome of the look itself, so a screen can say "not installed"
+   * instead of guessing from note strings. `no_source` means the tool's artifacts
+   * do not exist on this machine — absence of evidence, never "zero usage".
+   */
+  sourceState?: SourceState;
+  /** Wall-clock cost of this collector's pass, filled in by collectAll. */
+  durationMs?: number;
   rateLimits?: RateLimitObservation[];
   /**
    * Persists read offsets. Called by the CLI only after `events` were stored, so a

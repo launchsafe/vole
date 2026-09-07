@@ -29,7 +29,7 @@ function ev(over: Partial<UsageEvent>): UsageEvent {
     cache_write_1h_tokens: 0, cache_read_tokens: 0, reasoning_tokens: 0,
     total_tokens: 100, cost_usd: 0.001, confidence: 'exact', is_error: 0,
     stop_reason: null, source: 'live', raw_ref: null, tools: null, agent_id: null,
-    context_window: null, ...over,
+    context_window: null, duration_ms: null, duration_kind: null, ...over,
   };
 }
 

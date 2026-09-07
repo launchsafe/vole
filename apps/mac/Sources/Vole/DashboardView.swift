@@ -3,8 +3,64 @@ import AppKit
 import Charts
 import ServiceManagement
 
-// MARK: - Incident-annotated timeline
+/// One chip per collector: green fresh, amber stale with its last-seen time, grey
+/// "no artifacts on this Mac", red error. The states come from the collector's own
+/// heartbeat rows, not from which files happen to have been touched.
+struct CoverageStrip: View {
+    let heartbeats: [CollectorHeartbeat]
 
+    var body: some View {
+        if heartbeats.isEmpty {
+            Label("No collector pass recorded yet", systemImage: "questionmark.circle")
+                .font(.caption).foregroundStyle(.secondary)
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(heartbeats) { hb in
+                        chip(hb)
+                    }
+                }
+                .padding(.vertical, 1)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func chip(_ hb: CollectorHeartbeat) -> some View {
+        let fresh = Date(timeIntervalSince1970: Double(hb.startedAt) / 1000)
+            .timeIntervalSinceNow > -120   // two poll cadences, generously
+        let state: CoverageState =
+            hb.sourceState == "error" ? .error :
+            hb.sourceState == "no_source" ? .absent :
+            fresh ? .fresh : .stale
+        HStack(spacing: 4) {
+            Circle().fill(state.color).frame(width: 7, height: 7)
+            Text(Labels.toolShort[hb.tool] ?? hb.tool)
+        }
+        .font(.caption)
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(state.color.opacity(0.12), in: Capsule())
+        .foregroundStyle(.primary)
+        .help(hb.sourceState == "no_source"
+              ? "No \(Labels.tool[hb.tool] ?? hb.tool) artifacts on this Mac (last looked \(Fmt.rel(hb.startedAt)))"
+              : "\(Labels.tool[hb.tool] ?? hb.tool): last pass \(Fmt.rel(hb.startedAt)), \(hb.durationMs)ms, \(hb.files) files, \(hb.parsed) parsed\(state.isStale ? " — STALE" : "")")
+    }
+
+    enum CoverageState {
+        case fresh, absent, error, stale
+        var color: Color {
+            switch self {
+            case .fresh: .green
+            case .absent: .secondary
+            case .error: .red
+            case .stale: .orange
+            }
+        }
+        var isStale: Bool { if case .stale = self { true } else { false } }
+    }
+}
+
+// MARK: - Incident-annotated timeline
 private struct Mark: Identifiable {
     let bucket: Int, severity: String, count: Int
     var id: Int { bucket }
@@ -27,6 +83,9 @@ struct TimelineChart: View {
     let incidents: [Incident]
     let bucketMs: Int
     @Binding var selectedDate: Date?
+    /// Fired when the user picks a bucket via the incident lane (not the bars):
+    /// the parent jumps to the Incidents list filtered to that bucket.
+    var onPickIncident: ((Int) -> Void)?
 
     private var unit: Calendar.Component { bucketMs == 3_600_000 ? .hour : .day }
     private var xLabelFormat: Date.FormatStyle {
@@ -40,11 +99,17 @@ struct TimelineChart: View {
 
     /// Tools with any tokens in the visible range, plus their range total, biggest
     /// first — drives the stack order, the shade ramp and the logo strip.
+    /// The domain is the DATA (whatever tools the store actually holds), never a
+    /// hard-coded list: a new collector's tool renders with a fallback label the
+    /// day it first writes a row, without an app change.
     private var toolTotals: [(tool: String, tokens: Int)] {
-        Labels.order
-            .map { t in (t, series.reduce(0) { $0 + ($1.tokensByTool[t] ?? 0) }) }
-            .filter { $0.1 > 0 }
-            .sorted { $0.1 > $1.1 }
+        var totals: [String: Int] = [:]
+        for p in series {
+            for (t, v) in p.tokensByTool where v > 0 {
+                totals[t, default: 0] += v
+            }
+        }
+        return totals.map { (tool: $0.key, tokens: $0.value) }.sorted { $0.tokens > $1.tokens }
     }
 
     // One brand colour per agent (see Pal.series) so a bar segment matches that tool's
@@ -71,6 +136,15 @@ struct TimelineChart: View {
                         .foregroundStyle(by: .value("Agent", Labels.tool[row.tool] ?? row.tool))
                 }
             }
+        }
+        // Incident marks, drawn at the plot base beneath the bars: one per bucket,
+        // in severity colour, sized by how many fired there. README promised these
+        // for a year while marks() fed only the hover count.
+        ForEach(incidentMarks) { m in
+            PointMark(x: .value("Time", Date(timeIntervalSince1970: Double(m.bucket + bucketMs / 2) / 1000), unit: unit),
+                      y: .value("Tokens", 0))
+                .foregroundStyle(Pal.severity(m.severity))
+                .symbolSize(CGFloat(30 + min(m.count, 4) * 25))
         }
     }
 
@@ -142,7 +216,47 @@ struct TimelineChart: View {
             .frame(height: 200)
             .padding(.top, 10)
 
+            incidentLane
+
             logoStrip
+        }
+    }
+
+    /// The explicit x-domain shared by the chart and the lane, so the lane's ticks
+    /// line up with the bars above them to the pixel.
+    private var xDomain: ClosedRange<Date> {
+        let lo = series.first?.date ?? .distantPast
+        let hi = series.last?.date ?? .distantFuture
+        return lo...hi
+    }
+
+    /// A thin incident lane under the plot: severity-coloured ticks on the same time
+    /// axis. Picking one jumps to the Incidents list filtered to that bucket.
+    @ViewBuilder
+    private var incidentLane: some View {
+        if !incidentMarks.isEmpty {
+            Chart(incidentMarks) { m in
+                PointMark(x: .value("Time", Date(timeIntervalSince1970: Double(m.bucket + bucketMs / 2) / 1000), unit: unit),
+                          y: .value("Incidents", 0))
+                    .foregroundStyle(Pal.severity(m.severity))
+                    .symbol(.circle)
+                    .symbolSize(CGFloat(40 + min(m.count, 4) * 20))
+            }
+            .chartXScale(domain: xDomain)
+            .chartYScale(domain: -1 ... 1)
+            .chartXAxis(.hidden)
+            .chartYAxis(.hidden)
+            .chartLegend(.hidden)
+            .frame(height: 18)
+            .chartXSelection(value: Binding(
+                get: { selectedDate },
+                set: { d in
+                    guard let d else { return }
+                    selectedDate = d
+                    onPickIncident?((Int(d.timeIntervalSince1970 * 1000) / bucketMs) * bucketMs)
+                }
+            ))
+            .help("Incidents in this range — click a mark to see them")
         }
     }
 
@@ -184,29 +298,111 @@ struct TimelineChart: View {
 
 enum SidebarGroup: String, CaseIterable, Identifiable {
     case monitor = "Monitor"
-    case app     = "App"
+    case risk     = "Risk"
+    case manage   = "Manage"
     var id: String { rawValue }
 }
 
 enum DashSection: String, CaseIterable, Identifiable {
     case dashboard = "Dashboard"
-    case incidents = "Incidents"
     case breakdown = "Breakdown"
+    case incidents = "Incidents"
+    case triage    = "Triage"
+    case shadowAI  = "Shadow AI"
+    case posture   = "Posture"
+    case exposure   = "Data Exposure"
+    case blast     = "Blast Radius"
+    case behaviour  = "Behaviour"
+    case people    = "People"
+    case privacy   = "Privacy"
     case settings  = "Settings"
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .dashboard: return "square.grid.2x2"
-        case .incidents: return "exclamationmark.triangle"
         case .breakdown: return "square.stack.3d.up"
+        case .incidents: return "exclamationmark.triangle"
+        case .triage:    return "checklist"
+        case .exposure:  return "shield.checkered"
+        case .shadowAI:  return "sparkle.magnifyingglass"
+        case .posture:   return "checkmark.shield"
+        case .blast:     return "circle.dashed"
+        case .behaviour: return "waveform.path"
+        case .people:    return "person.2"
+        case .privacy:   return "hand.raised"
         case .settings:  return "gearshape"
         }
     }
+    /// The backing table(s) this section needs. Probed once per launch: a section
+    /// whose table is absent (an older store, a collector that predates it) still
+    /// appears and names what is missing — never an empty list pretending to be a
+    /// finding. nil means the section needs nothing beyond the store itself.
+    var requires: [String]? {
+        switch self {
+        case .dashboard, .breakdown, .settings: return nil
+        case .incidents: return ["v_incident_explained"]
+        case .triage:    return ["finding_actions"]
+        case .shadowAI:  return ["ai_surfaces"]
+        case .posture:   return ["grants"]                    // Tier 6 collector
+        case .exposure: return ["secret_sightings"]          // Tier 4 ledger
+        case .blast:     return ["tool_calls"]                 // Tier 5 ledger
+        case .behaviour: return ["tool_calls"]
+        case .people:    return ["principals"]                 // Tier 3 identity
+        case .privacy:   return nil
+        }
+    }
+
+    /// The required tables this store does not have (probed against Store's set).
+    func missingTables(available: Set<String>) -> [String]? {
+        guard let needs = requires, !needs.isEmpty else { return nil }
+        let missing = needs.filter { !available.contains($0) }
+        return missing.isEmpty ? nil : missing
+    }
+
+    /// Which tier's collector writes the missing table, for the unavailable state.
+    var arrivesWith: String {
+        switch self {
+        case .posture: return "Tier 6 — the posture & supply-chain collectors"
+        case .exposure: return "Tier 4 — the DLP scanner"
+        case .blast, .behaviour: return "Tier 5 — the tool-call ledger"
+        case .people: return "Tier 3 — the identity seam"
+        default: return "a later collector version"
+        }
+    }
     var group: SidebarGroup {
-        self == .settings ? .app : .monitor
+        switch self {
+        case .dashboard, .breakdown: return .monitor
+        case .incidents, .triage, .shadowAI, .posture, .exposure, .blast, .behaviour: return .risk
+        case .people, .privacy, .settings: return .manage
+        }
     }
     static func inGroup(_ g: SidebarGroup) -> [DashSection] {
         allCases.filter { $0.group == g }
+    }
+
+    /// One COUNT per section, refreshed on the existing Store poll.
+    func badge(counts: SectionCounts) -> Int {
+        switch self {
+        case .incidents: return counts.incidents
+        case .triage: return counts.untriaged
+        case .shadowAI: return counts.surfaces
+        default: return 0
+        }
+    }
+}
+
+/// The per-section COUNTs, computed once per Store poll — never per render.
+@MainActor
+struct SectionCounts {
+    var incidents = 0
+    var untriaged = 0
+    var surfaces = 0
+    static func compute(_ store: Store) -> SectionCounts {        var c = SectionCounts()
+        c.incidents = store.allIncidents.count
+        let handled = Set(store.findingActions.filter { $0.action == "acknowledged" || $0.action == "muted" }.map(\.anomalyKey))
+        c.untriaged = store.allIncidents.filter { !handled.contains($0.anomalyKey) }.count
+        c.surfaces = store.aiSurfaces.count
+        return c
     }
 }
 
@@ -231,6 +427,9 @@ private struct NavIcon: View {
         case .incidents: img.symbolEffect(.wiggle, options: .nonRepeating, value: pulse)
         case .breakdown: img.symbolEffect(.bounce.up, options: .nonRepeating, value: pulse)
         case .settings:  img.symbolEffect(.rotate, options: .nonRepeating, value: pulse)
+        case .triage:    img.symbolEffect(.bounce, options: .nonRepeating, value: pulse)
+        case .shadowAI:  img.symbolEffect(.pulse, options: .nonRepeating, value: pulse)
+        case .posture, .exposure, .blast, .behaviour, .people, .privacy: img
         }
     }
 }
@@ -247,6 +446,9 @@ struct DashboardView: View {
     @State private var selectedDate: Date?
     @State private var expandedIncidents: Set<Int> = []
     @State private var expandedModels: Set<String> = []
+    /// Set by picking an incident mark on the timeline: the Incidents list shows
+    /// only that bucket until cleared.
+    @State private var incidentFilterBucket: Int?
     @AppStorage("vole.theme") private var theme = "system"
     @AppStorage("vole.menubar") private var menubar = "tokens"
     @AppStorage("vole.refresh") private var refreshSeconds = RefreshInterval.live.rawValue
@@ -263,7 +465,7 @@ struct DashboardView: View {
                     Section(g.rawValue) {
                         ForEach(DashSection.inGroup(g)) { s in
                             Label { Text(s.rawValue) } icon: { NavIcon(section: s, selected: nav == s) }
-                                .badge(s == .incidents ? store.allIncidents.count : 0)
+                                .badge(badge(for: s))
                                 .tag(s)
                         }
                     }
@@ -271,18 +473,31 @@ struct DashboardView: View {
             }
             .navigationTitle("Vole")
             .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
-        } detail: {
+        }         detail: {
             Group {
-                switch (nav, store.collectorStatus) {
-                case (.settings, _), (_, .live):
-                    detailPane
-                case (_, .noData):
-                    noDataView
-                case (_, .stale(let since)):
-                    VStack(spacing: 0) {
-                        StaleBanner(since: since)
-                            .padding([.horizontal, .top], 16).padding(.bottom, 2)
+                if store.storeIsFromTheFuture {
+                    futureStoreView
+                } else if let missing = nav.missingTables(available: store.availableTables) {
+                    // Capability probe: this section's backing table is absent —
+                    // the store predates it. Say so; never render an empty list
+                    // that reads as "we looked and found nothing".
+                    ContentUnavailableView {
+                        Label("\(nav.rawValue) Unavailable", systemImage: "questionmark.square.dashed")
+                    } description: {
+                        Text("This store has no \(missing.joined(separator: ", ")) — it is written by \(nav.arrivesWith), which this Vole does not include yet. The section appears with real figures the day that collector runs.")
+                    }
+                } else {
+                    switch (nav, store.collectorStatus) {
+                    case (.settings, _), (_, .live):
                         detailPane
+                    case (_, .noData):
+                        noDataView
+                    case (_, .stale(let since)):
+                        VStack(spacing: 0) {
+                            StaleBanner(since: since)
+                                .padding([.horizontal, .top], 16).padding(.bottom, 2)
+                            detailPane
+                        }
                     }
                 }
             }
@@ -292,17 +507,17 @@ struct DashboardView: View {
                 // .navigation groups with the system sidebar toggle, at the toolbar's
                 // leading edge — visible everywhere, not just Dashboard/Breakdown,
                 // since an available update isn't section-specific.
-                if updateChecker.updateAvailable, let url = updateChecker.releaseURL {
+                if updateChecker.updateAvailable {
                     ToolbarItem(placement: .navigation) {
                         Button {
-                            NSWorkspace.shared.open(url)
+                            updateChecker.installOrUpdate()
                         } label: {
                             Image(systemName: "arrow.down.circle")
                                 .overlay(alignment: .topTrailing) {
                                     Circle().fill(.red).frame(width: 6, height: 6)
                                 }
                         }
-                        .help("Update available\(updateChecker.latestVersion.map { " — v\($0)" } ?? "")")
+                        .help("Update available\(updateChecker.latestVersion.map { " — v\($0)" } ?? "") — click to install")
                     }
                 }
                 // The range filter drives the Dashboard timeline and Breakdown; the
@@ -326,17 +541,39 @@ struct DashboardView: View {
         .onDisappear { NSApp.setActivationPolicy(.accessory) }
     }
 
+    /// One COUNT per section, refreshed on the existing Store poll.
+    private func badge(for s: DashSection) -> Int {
+        s.badge(counts: sectionCounts)
+    }
+
+    private var sectionCounts: SectionCounts { SectionCounts.compute(store) }
+
     @ViewBuilder private var detailPane: some View {
         switch nav {
         case .dashboard: dashboardPane
         case .incidents: incidentsPane
         case .breakdown: breakdownPane
+        case .triage:    TriagePane(store: store)
+        case .shadowAI:  ShadowAIPane(store: store)
+        case .exposure:  DataExposurePane(store: store)
+        case .posture, .blast, .behaviour, .people: EmptyView()  // handled by the capability gate
+        case .privacy:   PrivacyPane(store: store)
         case .settings:  settingsPane
         }
     }
 
-    private var noDataView: some View {
-        // A bundled app runs its own collector — telling that user to run a pnpm
+    /// Version gate: the store was written by a newer Vole, and every figure this
+    /// app could render is suspect — rows may carry columns this reader predates.
+    /// A downgrade cannot un-write rows, only refuse to present them as truth.
+    private var futureStoreView: some View {
+        ContentUnavailableView {
+            Label("Store written by a newer Vole", systemImage: "exclamationmark.shield.fill")
+        } description: {
+            Text("This database is schema \(store.storeSchemaVersion); this app understands schema \(DB.knownSchemaVersion). Figures may be missing or wrong — update Vole before trusting anything it shows from this store.")
+        }
+    }
+
+    private var noDataView: some View {        // A bundled app runs its own collector — telling that user to run a pnpm
         // command would be asking them to do something they have no Node, no pnpm,
         // and no terminal to do. Only an unbundled dev build shows the command.
         let embedded = Collector.isEmbedded
@@ -369,8 +606,34 @@ struct DashboardView: View {
         Form {
             let s = store.summary
             Section {
+                CoverageStrip(heartbeats: store.heartbeats)
+            } footer: {
+                Text("One chip per collector, from its latest pass. Grey means the tool's artifacts do not exist on this Mac — absence, never zero usage.")
+            }
+            // Security first (#38): a security buyer's questions lead; cost follows.
+            Section {
+                let rerouted = store.allIncidents.filter { $0.rule == "rerouted_model" }.count
+                let gateways = store.aiSurfaces.filter { $0.kind == "gateway" }.count
+                let unsanctioned = store.aiSurfaces.filter { $0.sanctioned == false }.count
+                metricRow("AI Surfaces", "\(store.aiSurfaces.count)", "sparkle.magnifyingglass", .blue, prominent: true)
+                metricRow("Persistent Gateways", "\(gateways)", "arrow.triangle.branch", gateways > 0 ? .orange : .secondary)
+                metricRow("Unsanctioned", unsanctioned > 0 ? "\(unsanctioned)" : "—", "exclamationmark.shield", unsanctioned > 0 ? .red : .secondary)
+                metricRow("Rerouted Models", rerouted > 0 ? "\(rerouted)" : "—", "arrow.triangle.swap", rerouted > 0 ? .orange : .secondary)
+                metricRow("Active Incidents", "\(store.allIncidents.count)", "exclamationmark.triangle", .secondary)
+            } header: {
+                Text("Security")
+            } footer: {
+                Text("Counts on this Mac, from its own evidence — never a fleet posture.")
+            }
+            Section {
                 metricRow("Tokens", Fmt.compact(s.tokens), "circle.hexagongrid.fill", .blue, prominent: true)
                 metricRow("Equivalent Cost", Fmt.money(s.cost), "dollarsign", .green, prominent: true)
+                if let speed = store.tokenSpeed {
+                    metricRow("Burn Rate", "\(Fmt.compactDbl(speed.perMin))/min", "speedometer", .orange)
+                    metricRow("Peak Minute (24h)", "\(Fmt.compactDbl(speed.peakPerMin))/min", "chart.bar.fill", .secondary)
+                }
+            } header: {
+                Text("Activity")
             } footer: {
                 Text(s.hasActivityOnly
                      ? "Verbatim from tool logs. Sources that record no tokens are excluded."
@@ -385,16 +648,54 @@ struct DashboardView: View {
                           s.errors > 0 ? .red : .secondary)
             }
 
+            Section {
+                if store.modelSpeeds.isEmpty {
+                    Text("No model states a response duration in this range — speed needs rows with known durations (OpenCode does; it says so, and the rest are counted, not guessed.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(store.modelSpeeds.enumerated()), id: \.offset) { _, m in
+                        HStack(spacing: 10) {
+                            ToolIcon(tool: m.tool, size: 14)
+                            Text(m.model ?? "unknown model")
+                                .font(.callout).lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            Text(String(format: "%.1f tok/s", m.tokensPerSecond))
+                                .font(.callout.monospacedDigit()).fontWeight(.medium)
+                            Text(m.kind == "measured" ? "measured" : "est.")
+                                .font(.caption2)
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background((m.kind == "measured" ? Color.green : Color.orange).opacity(0.14), in: Capsule())
+                                .foregroundStyle(m.kind == "measured" ? Color.green : Color.orange)
+                                .help(m.kind == "measured"
+                                      ? "The source states the response span (OpenCode)." 
+                                      : "Estimated from turn gaps — includes queue and permission time, so this is a lower bound on true speed.")
+                            Text("\(Int(m.coverage * 100))%")
+                                .font(.caption2).monospacedDigit()
+                                .foregroundStyle(m.coverage >= 0.9 ? AnyShapeStyle(HierarchicalShapeStyle.secondary) : AnyShapeStyle(Color.orange))
+                                .help("Share of this model's output tokens whose response duration is known — the figure covers those rows only.")
+                        }
+                    }
+                }
+            } header: {
+                Text("Model Speed (generation)")
+            } footer: {
+                Text("Output tokens per second, measured over responses that state a real duration. Coverage is printed beside every figure: a speed without its coverage is a benchmark, not a measurement.")
+            }
+
             Section("Timeline") {
                 TimelineChart(series: store.series, incidents: store.incidents,
-                              bucketMs: store.range.bucketMs, selectedDate: $selectedDate)
+                              bucketMs: store.range.bucketMs, selectedDate: $selectedDate,
+                              onPickIncident: { bucket in
+                                  incidentFilterBucket = bucket
+                                  sectionRaw = DashSection.incidents.rawValue
+                              })
                     .padding(.vertical, 4)
             }
         }
         .formStyle(.grouped)
     }
 
-    private func metricRow(_ label: String, _ value: String, _ symbol: String,
+    func metricRow(_ label: String, _ value: String, _ symbol: String,
                            _ tint: Color, prominent: Bool = false) -> some View {
         LabeledContent {
             Text(value)
@@ -433,7 +734,7 @@ struct DashboardView: View {
         return d.formatted(.dateTime.month(.abbreviated).day())
     }
 
-    private func copy(_ s: String) {
+    func copy(_ s: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(s, forType: .string)
     }
@@ -443,6 +744,25 @@ struct DashboardView: View {
         if store.allIncidents.isEmpty {
             ContentUnavailableView("All Quiet", systemImage: "checkmark.circle",
                                    description: Text("No anomalies detected in this range."))
+        } else if let fb = incidentFilterBucket {
+            // Picked from the timeline's incident lane: this bucket only, with the
+            // way out visible at the top rather than a silent filter.
+            let items = store.allIncidents.filter { $0.bucket(store.range.bucketMs) == fb }
+            List {
+                Section {
+                    HStack {
+                        Label("Filtered to one timeline bucket", systemImage: "line.3.horizontal.decrease.circle")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Show all") { incidentFilterBucket = nil }
+                            .buttonStyle(.link).font(.caption)
+                    }
+                    .listRowBackground(Color.clear)
+                    ForEach(items) { i in incidentRow(i) }
+                }
+            }
+            .listStyle(.inset)
+            .defaultScrollAnchor(.top)
         } else {
             List {
                 ForEach(incidentsByDay, id: \.day) { group in
@@ -486,6 +806,23 @@ struct DashboardView: View {
             }
 
             if open {
+                // The figures that fired, machine-readable: principle 3 says an incident
+                // is explainable from real numbers, not just prose.
+                if i.baseline != nil || i.threshold != nil {
+                    HStack(spacing: 4) {
+                        Text("observed").font(.caption2).foregroundStyle(.tertiary)
+                        Text(Fmt.compactDbl(i.observed)).font(.caption2).monospacedDigit()
+                        if let b = i.baseline {
+                            Text("· baseline").font(.caption2).foregroundStyle(.tertiary)
+                            Text(Fmt.compactDbl(b)).font(.caption2).monospacedDigit()
+                        }
+                        if let t = i.threshold {
+                            Text("· threshold").font(.caption2).foregroundStyle(.tertiary)
+                            Text(Fmt.compactDbl(t)).font(.caption2).monospacedDigit()
+                        }
+                    }
+                    .padding(.leading, 28)
+                }
                 HStack(spacing: 14) {
                     if let sid = i.sessionID {
                         Label(sid.prefix(14), systemImage: "number")
@@ -494,6 +831,11 @@ struct DashboardView: View {
                     }
                     Text("\(Fmt.clock(i.windowStart))–\(Fmt.clock(i.windowEnd))")
                         .font(.caption2).monospacedDigit().foregroundStyle(.tertiary)
+                    Text(i.anomalyKey)
+                        .font(.system(.caption2, design: .monospaced)).foregroundStyle(.tertiary)
+                        .lineLimit(1).truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .help("Stable dedupe key — copyable for evidence")
                     Spacer()
                     Button("Show on Timeline") {
                         selectedDate = Date(timeIntervalSince1970:
@@ -528,11 +870,16 @@ struct DashboardView: View {
     // MARK: Breakdown
 
     private var breakdownByTool: [(tool: String, rows: [BreakdownRow])] {
+        // Grouped by the tools the DATA holds, ordered by that group's token total —
+        // an unlisted tool appears with a fallback label instead of disappearing.
         let grouped = Dictionary(grouping: store.breakdown, by: \.tool)
-        return Labels.order.compactMap { t in
-            guard let rows = grouped[t], !rows.isEmpty else { return nil }
-            return (t, rows.sorted { $0.tokensSort > $1.tokensSort })
-        }
+        return grouped
+            .map { (tool: $0.key, rows: $0.value.sorted { $0.tokensSort > $1.tokensSort }) }
+            .sorted { a, b in
+                let at = a.rows.compactMap(\.tokens).reduce(0, +)
+                let bt = b.rows.compactMap(\.tokens).reduce(0, +)
+                return at == bt ? a.tool < b.tool : at > bt
+            }
     }
 
     @ViewBuilder
@@ -657,6 +1004,43 @@ struct DashboardView: View {
         Form {
             Section { settingsHeader }
 
+            Section {
+                LabeledContent("Schema version") {
+                    Text(store.storeSchemaVersion == 0 ? "pre-ledger" : "v\(store.storeSchemaVersion)")
+                        .monospacedDigit()
+                        .foregroundStyle(store.storeIsFromTheFuture ? .red : .primary)
+                }
+                if store.storeIsFromTheFuture {
+                    Label("This store was written by a newer Vole — figures may be missing or wrong.",
+                          systemImage: "exclamationmark.shield.fill")
+                        .foregroundStyle(.red).font(.caption)
+                }
+                // The upgrade boundary, visible: a step with an unknown date means
+                // everything before it predates that capability, and charts of it
+                // must read "not recorded", never zero.
+                ForEach(store.migrationLedger) { row in
+                    HStack {
+                        Text("v\(row.version) · \(row.name)")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(row.appliedAt == nil ? "unknown (pre-ledger)" : Fmt.rel(row.appliedAt!))
+                            .font(.caption2).monospacedDigit().foregroundStyle(.tertiary)
+                    }
+                }
+            } header: {
+                Text("Store Schema")
+            } footer: {
+                Text("Figures from before a step's date do not include what that step added — read absence as 'not recorded then', never as zero.")
+            }
+
+            Section {
+                SoftwareUpdatePane(checker: updateChecker)
+            } header: {
+                Text("Software Update")
+            } footer: {
+                Text("Updates install only when the release publishes a checksummed archive — unverifiable code is never swapped into a running app.")
+            }
+
             Section("General") {
                 Picker("Appearance", selection: $theme) {
                     Text("System").tag("system")
@@ -668,6 +1052,7 @@ struct DashboardView: View {
                 Picker("Menu Bar Shows", selection: $menubar) {
                     Text("Token count").tag("tokens")
                     Text("Equivalent cost").tag("cost")
+                    Text("Token speed").tag("speed")
                     Text("Icon only").tag("icon")
                 }
             }

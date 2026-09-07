@@ -1,0 +1,812 @@
+{
+  "bugs_ranked": [
+    {
+      "file": "apps/mac/Sources/Vole/VoleApp.swift",
+      "line": 51,
+      "severity": "critical",
+      "kind": "correctness",
+      "description": "The swift-build-generated Bundle.module accessor (apps/mac/.build/.../resource_bundle_accessor.swift, verified) looks at Bundle.main.bundleURL/Vole_Vole.bundle then a hard-coded '<redacted-local-path>' and fatalErrors. bundle.sh:58 copies the bundle to Contents/Resources/, where it is never looked for. Every downloaded .dmg aborts in VoleApp.init before the menu-bar item appears; also hit at VoleApp.swift:103 and Theme.swift:110.",
+      "fix": "Add one helper in Theme.swift: `let resources: Bundle = Bundle(url: Bundle.main.resourceURL!.appendingPathComponent(\"Vole_Vole.bundle\")) ?? .module`; use it at VoleApp.swift:51/103 and Theme.swift:110. Gate releases on launching the .dmg in a fresh macOS user account."
+    },
+    {
+      "file": "packages/core/src/collectors/codex.ts",
+      "line": 197,
+      "severity": "critical",
+      "kind": "correctness",
+      "description": "event_key = `codex:${sessionId ?? filePath}:${index}`. Sub-agent rollouts replay the parent's session_meta as line 1, and L107 rebinds sessionId unconditionally, so parent and child files key meter events identically. Measured: one multi-agent session, 3 files, 41 token_count events, 28 rows stored; the upsert keeps the larger delta so a stored row can carry file B's tokens under file A's raw_ref. Violates principle 5.",
+      "fix": "Key on file identity plus a stable line id: `codex:${basename(filePath)}:${entry.ordinal ?? index}` (or token_usage_record.payload.response_id). Bind sessionId only from the first session_meta (`sessionId ??= ...`) and use the second / payload.parent_thread_id to set session_id=parent, agent_id=`${agent_nickname}:${own id}`. Add a two-file shared-id fixture to codex.test.ts."
+    },
+    {
+      "file": "apps/mac/Icon/build.mjs",
+      "line": 15,
+      "severity": "critical",
+      "kind": "robustness",
+      "description": "`sharp` is required via globSync over node_modules/.pnpm but is in no package.json and has 0 mentions in pnpm-lock.yaml (verified). bundle.sh:38 runs this script whenever the gitignored Icon/Vole.icns is missing, so `pnpm app:bundle` throws on every fresh clone. CI never runs bundle.sh.",
+      "fix": "`pnpm add -Dw sharp` and `import sharp from 'sharp'`; or commit Vole.icns and make regeneration opt-in (`--icon`)."
+    },
+    {
+      "file": "packages/core/src/cli/collect.ts",
+      "line": 39,
+      "severity": "high",
+      "kind": "correctness",
+      "description": "collector_state.last_scanned_at is the app's only liveness signal (DB.swift:244, Store.swift:133) but setState has exactly one caller, claude-code.ts:111 (578/578 state rows here are claude_code). A machine without ~/.claude/projects shows 'Setting up... a few seconds' (MenuPanel.swift:57, DashboardView.swift:342) forever while Codex/OpenCode/Grok/Devin rows accumulate; other collectors going quiet is invisible.",
+      "fix": "After `r.commit?.()` in runOnce stamp one heartbeat row per collector: `setState(db, `heartbeat:${r.tool}`, r.tool, 0, 0)`. No Swift change needed; fix ARCHITECTURE.md:241 and DEVELOPMENT.md:216."
+    },
+    {
+      "file": "packages/core/src/collectors/claude-code.ts",
+      "line": 150,
+      "severity": "high",
+      "kind": "correctness",
+      "description": "Claude Code writes one JSONL line per content block (thinking/text/each tool_use) under the same message.id with identical usage; keep() (L65-72) keeps one copy, so tool names on the other lines are lost. Live DB: 7,102 of 14,238 claude_code rows with stop_reason='tool_use' have tools NULL. Cannot heal across passes because db.ts:101 only rewrites when total_tokens strictly grows. claude-code.test.ts:15 hides it by putting every block in every copy.",
+      "fix": "In keep(), union tool names across all copies of the id before choosing the winner; relax db.ts INSERT_EVENT WHERE to also update when totals are equal and stored tools IS NULL (or excluded.tools is longer). Rewrite the test fixture as one block per line."
+    },
+    {
+      "file": "packages/core/src/detect/burn-rate.ts",
+      "line": 29,
+      "severity": "high",
+      "kind": "correctness",
+      "description": "Windows are scored on SUM(total_tokens), which for Claude Code is dominated by cache reads priced at 0.1x. On the live DB the rule fires on 14.8% of 10-min windows, is 188 of 244 stored incidents, and the median fired window is 99% cache_read_tokens. The headline incident type mostly reports 'context got large', not spend.",
+      "fix": "Score on SUM(cost_usd) when every row is priced, else on (total_tokens - cache_read_tokens); keep the raw total in detail. Same change at L34."
+    },
+    {
+      "file": "packages/core/src/detect/loop.ts",
+      "line": 34,
+      "severity": "high",
+      "kind": "correctness",
+      "description": "The only baseline is the session's own leave-one-out median bucket, so a session that spins at constant speed from turn 1 (CI `claude -p`, bash-retry loop) is its own baseline. Confirmed: 12 buckets x 40 calls, output 40 tokens, cache reads present -> 0 anomalies. Only accelerating loops are detectable, contradicting README 'runaway tool loops'.",
+      "fix": "Add an absolute-rate path independent of the baseline (fire at >= MIN_CALLS*3 = 45 calls/5 min with the same output/cache conditions), or baseline against the tool's cross-session median bucket. Add the 12x40 case to detect.test.ts."
+    },
+    {
+      "file": "packages/core/src/detect/util.ts",
+      "line": 56,
+      "severity": "high",
+      "kind": "performance",
+      "description": "medianExcluding copies+filters+sorts per call; burn-rate.ts:43 and loop.ts:34 call it once per window -> O(W^2 log W) per tool+model per poll, and collect.ts:56 re-runs every rule over the whole usage_events table every 5 s even when nothing was inserted. Measured: 2k windows 164 ms, 8k 2.4 s, 20k 15.6 s per poll (~1 year of daily use for one tool+model).",
+      "fix": "Sort once per group and derive each leave-one-out median in O(1) from the sorted array; in collect.ts skip detection when totalInserted === 0 and rateLimits are empty (keep first-pass behaviour)."
+    },
+    {
+      "file": "packages/core/src/db.ts",
+      "line": 137,
+      "severity": "high",
+      "kind": "correctness",
+      "description": "INSERT_ANOMALY is INSERT OR IGNORE with a stable anomaly_key, so severity/observed/detail are frozen at first sight while the window is still open (5-s polling) and baselines shift as history grows. A window first seen at 3.1x (warn) that ends at 8x stays warn; the desktop notification (collect.ts:69-73, Store.swift:151) fired once at warn. Breaks principle 3 ('real figures that triggered it').",
+      "fix": "`ON CONFLICT(anomaly_key) DO UPDATE SET severity=excluded.severity, observed=excluded.observed, baseline=excluded.baseline, threshold=excluded.threshold, detail=excluded.detail, detected_at=excluded.detected_at WHERE excluded.observed > anomalies.observed`, and have insertAnomalies also return escalated rows so collect.ts re-notifies."
+    },
+    {
+      "file": "apps/mac/Sources/Vole/UpdateChecker.swift",
+      "line": 27,
+      "severity": "high",
+      "kind": "privacy",
+      "description": "init() -> check() GETs https://api.github.com/repos/launchsafe/vole/releases on every app launch with no preference, no opt-out and no disclosure. README.md:22 ('no cloud APIs'), SECURITY.md:13 ('no network call this project makes on its own') and the Settings footer (DashboardView.swift:703 'Nothing leaves your machine') are all false. Violates principle 7.",
+      "fix": "Gate check() on `UserDefaults.standard.object(forKey: \"vole.checkForUpdates\") as? Bool ?? true`, add a Settings toggle, and add one sentence to README/SECURITY."
+    },
+    {
+      "file": "apps/mac/Sources/Vole/DashboardView.swift",
+      "line": 69,
+      "severity": "high",
+      "kind": "correctness",
+      "description": "BarMark uses `unit: .day` for 7d/30d/all, drawing each bar over the LOCAL day containing the bucket start, but buckets are UTC-midnight aligned (DB.swift ts/86400000). West of UTC every daily bar lands in the previous day's slot; hover snaps selectedBucket (L36) to a different UTC bucket and the callout at bucket+12h lands one slot right. Same for hourly bars in half-hour-offset zones.",
+      "fix": "`BarMark(xStart: .value(\"Time\", p.date), xEnd: .value(\"Time\", p.date.addingTimeInterval(Double(bucketMs)/1000)), y: ...)` and drop `unit:`; fuller fix is local-midnight daily bucketing in DB.swift and queries.ts."
+    },
+    {
+      "file": "packages/core/src/db.ts",
+      "line": 60,
+      "severity": "high",
+      "kind": "robustness",
+      "description": "openDb sets no busy_timeout (node:sqlite default 0, verified) and sqlite.ts:59 issues a deferred BEGIN. Two writers are an explicitly tolerated configuration (Collector.swift:10-12; a second collector was running against the same DB at audit time). Overlap yields immediate SQLITE_BUSY: the pass logs 'pass failed', and at startup the DDL in openDb can throw and exit the process (collect.ts:154 first runOnce is unguarded). DB.swift sets 2000 ms; the Node writer sets nothing.",
+      "fix": "`db.pragma('busy_timeout = 5000')` after db.ts:60; `BEGIN IMMEDIATE` in sqlite.ts transaction(); wrap the first runOnce in collect.ts in the same try/catch as the interval passes."
+    },
+    {
+      "file": "apps/mac/Sources/Vole/DashboardView.swift",
+      "line": 6,
+      "severity": "high",
+      "kind": "docs-mismatch",
+      "description": "File header, README.md:261-263 ('every incident pinned to the bucket where its rule fired') and apps/mac/README.md:53 describe an incident-annotated timeline; no mark is drawn. incidentMarks (L38) only feeds the hover-callout count and Mark.severity (L20-22) is dead. docs/images/dashboard.png shows zero marks with 25 incidents in the badge.",
+      "fix": "Add a PointMark per bucket at yMax*1.08 coloured by Pal.severity, or rewrite README L261-263, mac README L53 and the L6 comment to 'incident count in the hover callout'."
+    },
+    {
+      "file": "packages/core/scripts/build-sea.mjs",
+      "line": 49,
+      "severity": "high",
+      "kind": "robustness",
+      "description": "Copies whatever process.execPath is. A Homebrew node is dynamically linked to /opt/homebrew/opt/{icu4c,libuv,openssl@3,...}, so the shipped vole-collector dies with 'dyld: Library not loaded' on any Mac without those packages, after notarisation succeeds. Invisible here because the dev node (~/.hermes/node) links only /usr/lib; CI never builds the SEA.",
+      "fix": "After the copy run `otool -L` and fail if any linked path is outside /usr/lib or /System/Library; add a node >= 22.13 check; add `pnpm build:sea` + a smoke `--once` run to the macOS CI job."
+    },
+    {
+      "file": "packages/core/src/cli/verify.ts",
+      "line": 271,
+      "severity": "high",
+      "kind": "robustness",
+      "description": "claudeNotInLogs > 0 is a hard FAIL (L530), but Claude Code prunes transcripts after cleanupPeriodDays (default 30) and users delete project dirs. On any install older than 30 days rows whose transcript is gone can never be found, so verify fails permanently, contradicting README L423. Not yet hit here (install is 22 days old).",
+      "fix": "Treat a row whose raw_ref file no longer exists as 'source pruned' (separate counter, not a failure), or bound the check to rows with ts >= mtime of the oldest transcript."
+    },
+    {
+      "file": "packages/core/src/collectors/grok.ts",
+      "line": 50,
+      "severity": "high",
+      "kind": "docs-mismatch",
+      "description": "sessionMeta() reads ~/.grok/sessions/<enc>/<sid>/summary.json; the directory does not exist on this machine (ls ~/.grok shows projects/, logs/, no sessions/) and no summary.json exists anywhere under ~/.grok, so all 1,758 Grok rows have model NULL and project NULL with no note. README L128-133 promises both. The same unified log carries 'session created'.ctx.cwd and 'model changed'.ctx.model per sid.",
+      "fix": "In the same pass record ctx.cwd from msg==='session created' and ctx.model from 'model changed' / 'subagent spawn credentials'.effective_model per sid as a fallback; push a note when the sessions dir is absent; add a summary.json fixture to grok.test.ts."
+    },
+    {
+      "file": "docs/EXTENDING.md",
+      "line": 109,
+      "severity": "high",
+      "kind": "docs-mismatch",
+      "description": "The 'Adding a collector' UsageEvent literal omits tools, agent_id and context_window, all required by types.ts:50-58; anyone following Step 3 verbatim fails `pnpm typecheck` with three missing-property errors. Step 3 also calls setState inside the file loop (L130) instead of deferring via CollectorResult.commit, so a failed insert loses a batch forever.",
+      "fix": "Add `tools: null, agent_id: null, context_window: contextWindow(model)` to the literal; rewrite the state handling to the pending/commit pattern from claude-code.ts:101-113."
+    },
+    {
+      "file": "packages/core/src/collectors/opencode.ts",
+      "line": 76,
+      "severity": "high",
+      "kind": "performance",
+      "description": "Every 5 s poll opens a new connection and full-scans `message` (12,184 rows, json_extract per row) and `part` (46,584 rows) in a 507 MB WAL database, then JSON-parses every assistant payload; the upsert discards almost all of it. `_db` is ignored although time_updated columns and indexes exist.",
+      "fix": "Filter both queries with `time_updated > @since` using collector_state.last_mtime, or short-circuit when the db/-wal mtimes are unchanged."
+    },
+    {
+      "file": "packages/core/src/collectors/codex.ts",
+      "line": 88,
+      "severity": "medium",
+      "kind": "performance",
+      "description": "Every poll re-reads and JSON.parses every rollout ever written (100 MB across 66 files here, multi-KB base_instructions and encrypted reasoning per line). Header comment 'few and small' no longer holds for multi-agent Codex Desktop. Same pattern in grok.ts:100 (5 MB / 18K lines per poll) and devin.ts:64 (54 DBs).",
+      "fix": "Skip files whose size+mtime match collector_state (per-file keys make skipping lossless); grok via readNewLines + state; devin persist max(position) per DB."
+    },
+    {
+      "file": "packages/core/src/collectors/antigravity.ts",
+      "line": 63,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "event_key embeds Math.round(ts) where ts is the .pb blob mtime, rewritten every turn; each poll observing a new mtime inserts a new row, so 'calls' scale with the 5-s poll cadence (up to 240 rows for one 20-minute conversation). Contradicts README L115-116 and the file header. Violates principle 5.",
+      "fix": "Key on `antigravity:${conversationId}` (one row per conversation) or one row per artifact file `antigravity:${conversationId}:${artifactName}`."
+    },
+    {
+      "file": "packages/core/src/collectors/devin.ts",
+      "line": 88,
+      "severity": "medium",
+      "kind": "docs-mismatch",
+      "description": "model is hard-coded null and README L139-140 / header L13-15 say no model field exists, but every session DB's meta table carries info.configOptions[id='model'].currentValue (40/54 DBs here: swe-1-7-medium, glm-5-2-max-1m, claude-sonnet-5-medium). project is also NULL although tool_call payloads carry _meta['cognition.ai/cwd']. Devin is invisible to model breakdown, context lookup and `pnpm pr`.",
+      "fix": "One extra query per DB for meta.info; set model from configOptions and project from the first tool_call cwd; amend README L139 to 'no usage or token field'."
+    },
+    {
+      "file": "packages/core/src/util/jsonl.ts",
+      "line": 26,
+      "severity": "medium",
+      "kind": "robustness",
+      "description": "readSync's byte count is ignored over a Buffer.allocUnsafe buffer; if the file shrinks between statSync (L17) and readSync a short read leaves uninitialised memory that is decoded and split into 'lines', and any stray 0x0a advances newOffset past EOF. Also byte accounting happens on the decoded string (invalid UTF-8 -> U+FFFD shifts the offset into the next line, L32), and the entire unread tail is materialised (>512 MB throws and retries forever, L22). Affects claude-code, codex, grok.",
+      "fix": "`const n = readSync(fd, buf, 0, length, start)`; find the last 0x0a on `buf.subarray(0, n)` and compute newOffset from byte indexes; cap length at ~8 MB per call."
+    },
+    {
+      "file": "packages/core/src/collectors/codex.ts",
+      "line": 141,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "pendingTools is consumed and cleared before the duplicate-emission return at L163-165, so tool calls issued between a real meter reading and a duplicate re-emission are dropped. The parent rollout here repeats total_tokens=470301 three times while sub-agents were spawning, exactly when spawn/wait calls are issued.",
+      "fix": "Move `const tools = ...; pendingTools = []` to just before events.push, after the duplicate check; add a fixture with call() between two identical tc()."
+    },
+    {
+      "file": "packages/core/src/queries.ts",
+      "line": 80,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "byTool.confidence = MIN(confidence) relies on 'activity_only' < 'exact'; Grok stores exact inference_done rows plus activity_only failures, so the real summary returns {tool:'grok', tokens:168M, confidence:'activity_only'} — a real token figure wearing the 'no tokens' badge. DB.swift:180 has the same MIN().",
+      "fix": "`CASE WHEN SUM(confidence != 'activity_only') = 0 THEN 'activity_only' ELSE 'exact' END AS confidence` in both queries.ts and DB.swift."
+    },
+    {
+      "file": "packages/core/src/queries.ts",
+      "line": 56,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "SUM(cost_usd) (also L79, L294, L459, L615) silently drops NULL-cost rows: 3,533 exact rows / 740M tokens (qwen, glm, gpt-*, grok, <synthetic>) vanish from the $2,198 total and the figure renders as definite with no indicator. Per-row 'never 0' holds; the aggregate undercounts confidently. MenuPanel hero (MenuPanel.swift:190) shows it without a caption.",
+      "fix": "Add unpricedCalls/unpricedTokens (`SUM(CASE WHEN confidence != 'activity_only' AND cost_usd IS NULL ...)`) to Summary/ToolSummary/LiveSession/SessionDetail so callers can render 'partial'."
+    },
+    {
+      "file": "packages/core/src/queries.ts",
+      "line": 243,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "cacheTtlMs decides the TTL from the single latest main-thread row's cache_write_1h_tokens. Claude Code runs a 1h prefix cache and a 5m tail cache simultaneously (54 sessions with 1h writes here, mixed with 5m writes), so cache_expires_at flips between +5m and +60m depending on which prefix the last call happened to write. rewarm_cost (L340) always multiplies by write5m even when ttl is 1h.",
+      "fix": "Add MAX(cache_write_5m_tokens), MAX(cache_write_1h_tokens) to the per-session aggregate, report the earlier expiry (or both), and pick the multiplier by ttl."
+    },
+    {
+      "file": "packages/core/src/pricing.ts",
+      "line": 75,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "rateFor lacks the 'anthropic/' prefix strip and dot normalisation that contextWindow (L86-96) has, so OpenCode rows with model 'anthropic/claude-opus-4-7' resolve a window (cacheTtlMs opts them in, getCacheRewarm L516 selects them) but no rate: rewarm_cost is null and computeCost at queries.ts:532/586 returns null, contradicting the doc comment at queries.ts:500-502.",
+      "fix": "One `canonical(model)` helper (strip snapshot suffix, strip 'anthropic/', dots to dashes) used by both rateFor and contextWindow."
+    },
+    {
+      "file": "packages/core/src/queries.ts",
+      "line": 291,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "Session project/branch are derived three ways: getLiveSessions MAX(project) (alphabetically last cwd), getSessionDetail L452 first non-null row, getDigest L614 MAX. Claude Code records cwd per message; verified session 03db40c9 shows different projects in `pnpm top` vs vole_session.",
+      "fix": "Use the latest row's value everywhere (e?.project ?? r.project in getLiveSessions; last.project in getSessionDetail; MAX(ts)-correlated project in the digest)."
+    },
+    {
+      "file": "packages/core/src/queries.ts",
+      "line": 629,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "topProjects slices the first 5 rows of getBreakdown(by='project'), which are grouped by (tool, project, confidence); the same project appears twice (verified: LaunchSafe/platform under claude_code and opencode) and ranking is per-tool. MCP vole_digest advertises 'top projects'. Also busiestDay is the busiest hour for range 24h (L638, digest.ts:32).",
+      "fix": "Fold rows by project before slicing; rename busiestDay to busiestBucket and label by bucket size in digest.ts."
+    },
+    {
+      "file": "packages/core/src/queries.ts",
+      "line": 399,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "getSessionDetail filters on session_id only: no source clause (MCP vole_session returns seed sessions while every sibling tool passes includeSeed=false, breaking principle 6) and no tool clause (a session_id shared by two tools merges).",
+      "fix": "Accept opts { includeSeed?, tool? }; add `AND source='live'` (default) and optional `AND tool=?` to the SELECTs at L399 and L473."
+    },
+    {
+      "file": "packages/core/src/cli/mcp.ts",
+      "line": 85,
+      "severity": "medium",
+      "kind": "robustness",
+      "description": "`params = {}` default applies only to undefined; a request with `\"params\": null` (legal JSON-RPC) throws at params.protocolVersion/params.name, escapes handle(), and is caught at L121 as `{id: null, error: -32700}` — the client never gets a response for its id and hangs. Also serverInfo.version is hard-coded '0.1.0' (L94) vs package 0.1.4, and protocolVersion echoes whatever the client sent (L92).",
+      "fix": "`const params = req.params ?? {}`; try/catch around the switch replying `{id, error:{code:-32603}}`; import version from package.json; return the implemented protocol version."
+    },
+    {
+      "file": "packages/core/src/cli/mcp.ts",
+      "line": 19,
+      "severity": "medium",
+      "kind": "privacy",
+      "description": "Any agent that can spawn the server enumerates every session of every tool on the machine with absolute project paths, branch names, tool names and session ids (vole_live_sessions, vole_breakdown by project/branch, vole_session for any id). README markets 'an agent can ask what its OWN session has cost'; there is no scoping.",
+      "fix": "Add an opt-in scope (`--session=<id>` / VOLE_MCP_SESSION) restricting vole_session/vole_live_sessions and dropping project/git_branch from cross-session tools; document it."
+    },
+    {
+      "file": "packages/core/src/cli/statusline.ts",
+      "line": 16,
+      "severity": "medium",
+      "kind": "robustness",
+      "description": "`readFileSync(0)` blocks until EOF; with a non-TTY stdin that is never closed (VS Code task, launchd, nohup) and no --session, the process hangs forever instead of printing 'vole: no session'. Also openDb() (L28) is read-write: mkdir + DDL + ALTER TABLE on every status-bar refresh, and a read-only home yields a stack trace in the status bar. Same read-write open in top/pr/digest/mcp.",
+      "fix": "Read stdin asynchronously with a ~300 ms deadline; add `openDbReadonly()` in db.ts (readOnly, 'no data yet' when absent) and use it in all five readers."
+    },
+    {
+      "file": "packages/core/src/cli/pr.ts",
+      "line": 53,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "`project LIKE '<root>/%'` treats `_` and `%` in the repo path as wildcards: /Users/x/my_app matches rows from /Users/x/my-app/... and /Users/x/myXapp/..., so a sibling repo's spend lands in this PR's table. Same at L60. Also on the default branch with origin/HEAD set the window covers only usage since the last commit (L37), and a failed `git show` yields since=0 (L38).",
+      "fix": "`project LIKE ? ESCAPE '\\\\'` with `root.replace(/[\\\\%_]/g, '\\\\$&') + '/%'`; compare base without the origin/ prefix; treat a null merge-base time as null."
+    },
+    {
+      "file": "packages/core/src/cli/seed.ts",
+      "line": 173,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "Re-running `pnpm seed` without --purge is not idempotent as the header claims: event_keys are stable but ts derives from NOW (L41-42) and the upsert never rewrites identical-token rows, so the 30-day window stays anchored at the first run's date; meanwhile seedRateLimits (L166-171) use the new NOW and add two rate_limit_pressure incidents per re-run.",
+      "fix": "Call `purgeSeed(db)` (already imported) before inserting."
+    },
+    {
+      "file": "packages/core/src/detect/rate-limit.ts",
+      "line": 25,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "The first observation over 80 in an hour decides severity/observed; later worse readings are dropped by the `seen` set. Confirmed: 85% then 96% -> 'warn', observed 85. Only `primary` is read (README L340 says 'its quota'); `secondary` (weekly) and resets_at are dropped at codex.ts:56-58; observations are never persisted (types.ts:90, collect.ts:36).",
+      "fix": "Reduce to the max used_percent per (tool, session, hour) before emitting; extend the codex type to secondary/resets_at; persist observations in a table."
+    },
+    {
+      "file": "packages/core/src/detect/burn-rate.ts",
+      "line": 43,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "The baseline median includes tiny/partial windows (a stray single call, or the still-open current 10-min window on a 5-s poll). Probe: windows [30k, 800, 90k] report 5.8x against a 15,400 baseline (should be 3.0x) — pushing warn to critical spuriously. Also grouping is tool+model across all sessions but the anomaly blames evs[0].session_id (L58), so concurrent sessions/subagents are charged to one.",
+      "fix": "Exclude windows below MIN_TOKENS_IN_WINDOW from baseline candidates and require >= 3 remaining; evaluate the observed window per (tool, model, session) or set session_id null and list contributors in detail."
+    },
+    {
+      "file": "packages/core/src/detect/loop.ts",
+      "line": 22,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "Subagent fan-out looks like a loop: Claude Code Agent-tool and OpenCode child sessions share the parent's session_id (types.ts:51-56), so ten parallel read-only subagents produce 40+ small-output cache-read calls in 5 min -> warn/critical on a healthy session. Also the 'cache reads climb' second signal (doc L13-16, README L338) is implemented as `cacheRead > 0` (L42), which every Claude call satisfies.",
+      "fix": "Group by `${session_id}:${agent_id ?? 'main'}` or skip buckets with >1 distinct agent_id; compare the bucket's cache-read sum to the baseline bucket's (>1.5x) or reword doc/README."
+    },
+    {
+      "file": "packages/core/src/collectors/grok.ts",
+      "line": 104,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "exec_done with ctx.success === false (33 lines here) is attached as a plain tool name; the failure is lost, so error_storm cannot see Grok tool failures. Same class: OpenCode part.state.status='error' (89 rows) ignored at opencode.ts:145; Codex task_complete.error ignored (is_error always 0, codex.ts:214).",
+      "fix": "Surface tool-level failures: count failed tools per event (or a suffix in `tools`) until a tool_calls ledger with is_error exists; extend the OpenCode part query with a SUM of error statuses."
+    },
+    {
+      "file": "packages/core/src/collectors/opencode.ts",
+      "line": 143,
+      "severity": "medium",
+      "kind": "docs-mismatch",
+      "description": "cost_usd stores OpenCode's own figure (provider bill): github-copilot/claude-* rows sum to $575 while opencode/*, openrouter/*, ollama and self-hosted rows are $0; the same Claude model via Claude Code is list-priced. README L361 defines cost as 'equivalent API value at list price', so cross-tool cost KPIs mix two definitions and a subscription provider looks free.",
+      "fix": "Document the split, or compute list-price equivalent via computeCost(rateFor(modelID)) when the model resolves and keep OpenCode's figure alongside."
+    },
+    {
+      "file": "packages/core/src/cli/collect.ts",
+      "line": 13,
+      "severity": "medium",
+      "kind": "robustness",
+      "description": "`--interval=0`, `--interval=` or `--interval=abc` become setInterval(0)/setInterval(NaN) (~1 ms): the collector busy-loops re-reading the 500 MB opencode.db, every Codex rollout and the Grok log continuously. top.ts:10 (`--since=abc` -> NaN header) and pr.ts have the same unguarded Number() pattern.",
+      "fix": "`const s = Number(...); const intervalMs = Number.isFinite(s) && s >= 1 ? s * 1000 : 5000;` and a tiny shared flag() helper for the CLIs."
+    },
+    {
+      "file": "packages/core/src/cli/verify.ts",
+      "line": 146,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "openDb() is not read-only: with no database (fresh clone, wrong VOLE_DB) it creates ~/.vole/vole.db, runs DDL, and every counter is 0, so the script prints PASS and exits 0. Also Grok rows (789 exact) are never reconciled (L25) although README L156/397-405 claim every stored row is; RATES is a fixed copy so any ~/.vole/pricing.json override for a listed model makes verify FAIL (L187); walkRollouts statSync is unguarded (L352).",
+      "fix": "Guard on existsSync(paths.db()) and require reconciled > 0 for PASS; add a Grok section; treat override-defined models as unverified; reuse the guarded walker from claude-code.ts."
+    },
+    {
+      "file": "apps/mac/Sources/Vole/DB.swift",
+      "line": 204,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "timeseries() does not zero-fill quiet buckets, unlike queries.ts:155-161 which README L436 says it mirrors. MenuPanel.Sparkline (MenuPanel.swift:118) draws `points.suffix(24)` as evenly spaced bars, so a 24h range with six active hours shows six wide bars with the idle night erased; on 30d the oldest days are dropped silently. Also anomalies default limit 100 vs 500 (L223) and no Summary.truncated (L32).",
+      "fix": "After the query fill from floor(from/b)*b through floor(now/b)*b with empty TimePoints, same as the TS; default limit 500; port truncated."
+    },
+    {
+      "file": "apps/mac/Sources/Vole/DB.swift",
+      "line": 150,
+      "severity": "medium",
+      "kind": "robustness",
+      "description": "`while sqlite3_step(stmt) == SQLITE_ROW` swallows SQLITE_BUSY (after the 2-s timeout during a collector transaction), SQLITE_ERROR and SQLITE_IOERR; queries silently return partial rows, Store.refresh (Store.swift:101) assigns unconditionally, collectorLastSeen becomes nil and the UI flips to 'Setting up' / '-' for a poll. tryOpen (L128) also leaks the sqlite3 handle on failure, retried every 5 s while the DB is absent.",
+      "fix": "Capture the final rc, log sqlite3_errmsg and return false from run(); have Store.refresh keep prior values when any query failed; sqlite3_close_v2 after a failed open."
+    },
+    {
+      "file": "apps/mac/Sources/Vole/Collector.swift",
+      "line": 39,
+      "severity": "medium",
+      "kind": "robustness",
+      "description": "No terminationHandler and no relaunch: if vole-collector exits (DB lock, JIT-entitlement abort, EBADARCH on Intel, a thrown first pass) the app shows the stale banner forever with no log line; stdout/stderr go to /dev/null (L37) so every 'pass failed' diagnostic is lost. A crash orphans the collector; relaunches stack them (documented ponytail L49).",
+      "fix": "Add a terminationHandler that logs status and relaunches after 5 s unless stopping; redirect output to ~/.vole/collector.log; in collect.ts tick `if (process.ppid === 1) process.exit(0)`."
+    },
+    {
+      "file": "apps/mac/bundle.sh",
+      "line": 24,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "`VERSION=\"${VERSION:-0.1.0}\"` while package.json is 0.1.4: `pnpm app:bundle` (README L217) stamps CFBundleShortVersionString 0.1.0, Settings shows 'Version 0.1.0' again (the symptom commit 61d3dbc fixed), and UpdateChecker.isNewer('0.1.4','0.1.0') lights the update badge permanently for source builders. CFBundleVersion is never stamped (stays 1). Same hard-coded 0.1.0 in mcp.ts:94 and build-docs-pdf.mjs:228.",
+      "fix": "`VERSION=\"${VERSION:-$(node -p \"require('../../package.json').version\")}\"`; `plutil -replace` both version keys; read package.json in mcp.ts and build-docs-pdf.mjs."
+    },
+    {
+      "file": "apps/mac/bundle.sh",
+      "line": 43,
+      "severity": "medium",
+      "kind": "robustness",
+      "description": "No --arch flags and build-sea.mjs copies the builder's node (arm64), so releases are silently arm64-only: an Intel user gets a Gatekeeper-valid app whose collector fails Process.run with EBADARCH (stderr only) and sees 'Setting up' forever. README badge says 'macOS 26+' with no architecture. No SHA-256 is published; the embedding Node version is unrecorded; `spctl ... || true` (L114) makes the Gatekeeper check non-fatal.",
+      "fix": "Build universal (swift --arch arm64 --arch x86_64 + lipo'd Node) or assert arm64 and say 'Apple silicon only' in README and the release name; emit `shasum -a 256 $DMG`; drop `|| true`."
+    },
+    {
+      "file": "apps/mac/Sources/Vole/DashboardView.swift",
+      "line": 498,
+      "severity": "medium",
+      "kind": "correctness",
+      "description": "'Show on Timeline' sets selectedDate and switches to Dashboard, but the feed is `.all` while series/incidents are range-scoped; for any incident older than store.range (default 24h) nothing highlights, and selection (L57) requires pt.total > 0 so an error_storm bucket with only activity_only rows shows no callout. The button silently does nothing.",
+      "fix": "Before setting selectedDate: `store.range = DateRange.allCases.first { $0.startMs() <= i.windowStart } ?? .all`; drop the `pt.total > 0` guard."
+    },
+    {
+      "file": "apps/mac/Sources/Vole/DashboardView.swift",
+      "line": 44,
+      "severity": "medium",
+      "kind": "robustness",
+      "description": "toolTotals (L44) and breakdownByTool (L532) iterate Theme.Labels.order, a hard-coded seven-id allowlist; a new collector's tool id disappears from the stacked bars and the Breakdown pane while still inflating yMax, the callout total and KPI tokens. Latent today (Tool union is exactly these seven) but it is the first thing a new collector hits if EXTENDING Step 5 is missed.",
+      "fix": "Derive the list from data (`Set(series.flatMap { $0.tokensByTool.keys })`) and use Labels.order only for ordering."
+    },
+    {
+      "file": "apps/mac/Sources/Vole/DashboardView.swift",
+      "line": 666,
+      "severity": "medium",
+      "kind": "robustness",
+      "description": "Launch at Login is an @AppStorage bool never reconciled with SMAppService.mainApp.status; register() throws under `swift run` and when the user declines, the catch only NSLogs (L627), so the toggle stays ON while nothing is registered. Also Settings shows a hard-coded 'Verification: Every stored row reconciled' (L696) that nothing checked.",
+      "fix": "`.onAppear { launchAtLogin = SMAppService.mainApp.status == .enabled }` and reset the toggle in the catch; delete the Verification row or make it a caption about `pnpm verify`."
+    },
+    {
+      "file": "apps/mac/Sources/Vole/Store.swift",
+      "line": 163,
+      "severity": "low",
+      "kind": "robustness",
+      "description": "The notification high-water mark is a raw AUTOINCREMENT id persisted in UserDefaults; INSERT OR IGNORE burns ~243 ids per 5-s pass (MAX(id) ~10.2M for 244 rows). After the README-documented `rm ~/.vole/vole.db*` rebuild ids restart at 1 and no incident is ever notified again until ids catch up.",
+      "fix": "Reset the mark to 0 when maxID < lastNotifiedIncidentID; longer term key on anomaly_key or detected_at."
+    },
+    {
+      "file": "packages/core/src/collectors/claude-code.ts",
+      "line": 175,
+      "severity": "low",
+      "kind": "correctness",
+      "description": "is_error reflects only assistant lines with isApiErrorMessage; system/api_error retry lines (149 here, with retryAttempt/maxRetries) and 429 assistant lines with quotaLimits{status:'rejected', rateLimitType:'five_hour', resetsAt} (27 here) are dropped, so error_storm and rate_limit_pressure under-fire for the tool with the most spend. README L340 / DATA-SOURCES L187 claim only Codex self-reports quota.",
+      "fix": "Emit an activity_only is_error row keyed `claude_code:err:<uuid>` for system/api_error (the grok.ts pattern); push a RateLimitObservation with used_percent=100 when quotaLimits.status==='rejected'."
+    },
+    {
+      "file": "packages/core/src/collectors/claude-code.ts",
+      "line": 69,
+      "severity": "low",
+      "kind": "correctness",
+      "description": "Forked/resumed VS Code sessions copy history into a new session file, so the same message.id appears under 2-3 sessionIds (1,006 ids here). Spend is not double-counted, but session_id/project/git_branch come from whichever copy wins (readdir order in a pass, first-stored across passes since the upsert never rewrites them), so session drill-down and `pnpm pr` attribute shared history non-deterministically.",
+      "fix": "Deterministic tie-break in keep(): prefer the copy whose filePath contains entry.sessionId (the originating session file)."
+    },
+    {
+      "file": "packages/core/src/db.ts",
+      "line": 87,
+      "severity": "low",
+      "kind": "correctness",
+      "description": "The upsert SET list omits agent_id, model, session_id, project, git_branch, raw_ref, confidence, source, so a fuller later copy never refreshes them (README L486-488 implies growing rows are refreshed). A stored NULL total_tokens can never be upgraded (NULL comparison is falsy, verified changes=0). migrate() (L41) runs ALTER TABLE outside a transaction so two processes opening an old DB simultaneously can race on 'duplicate column'.",
+      "fix": "Add agent_id/raw_ref to the SET list; use `> COALESCE(usage_events.total_tokens, -1)`; wrap probe+ALTER in a transaction or ignore duplicate-column errors; adopt PRAGMA user_version."
+    },
+    {
+      "file": "packages/core/src/pricing.test.ts",
+      "line": 3,
+      "severity": "low",
+      "kind": "robustness",
+      "description": "pricing.ts builds its table at import from the real ~/.vole/pricing.json / $VOLE_PRICING; no test sets either before import (collector tests set VOLE_HOME_OVERRIDE inside test bodies, after import). A developer or CI runner with a personal override for claude-opus-5 or claude-sonnet-5 fails pricing.test.ts:13/15 and queries.test.ts:105/143/151 with no hint why.",
+      "fix": "Set `VOLE_PRICING=/nonexistent` in packages/core/package.json's test script, or lazy-load the pricing table."
+    },
+    {
+      "file": "packages/core/src/queries.test.ts",
+      "line": 43,
+      "severity": "low",
+      "kind": "robustness",
+      "description": "Every call in the file passes includeSeed=true while every production caller (mcp.ts, cli/digest.ts, top.ts, statusline.ts) passes false; the `\" AND source = 'live'\"` clause spliced into nine queries has zero coverage. Also detect.test.ts never imports detectAll/detectBySource, so the seed/live partition (principle 6) is untested.",
+      "fix": "One test inserting a seed row with 1e9 tokens plus a live row, asserting getSummary(db,'all',false) excludes it and hasSeed is true; one detectBySource test with identical events tagged live and seed."
+    },
+    {
+      "file": "package.json",
+      "line": 31,
+      "severity": "low",
+      "kind": "docs-mismatch",
+      "description": "engines.node '>=22' (README badge, CONTRIBUTING too) but sqlite.ts:10 imports node:sqlite, absent before 22.5 and flag-gated through 22.12; a user on 22.11 gets ERR_UNKNOWN_BUILTIN_MODULE. CI's floating `node-version: 22` can never observe it. tsx/typescript are also not declared in packages/core so `cd packages/core && npm test` fails.",
+      "fix": "`\"node\": \">=22.13\"` in package.json/README/CONTRIBUTING; add tsx and typescript to packages/core devDependencies."
+    },
+    {
+      "file": ".github/workflows/ci.yml",
+      "line": 32,
+      "severity": "low",
+      "kind": "robustness",
+      "description": "The macOS job comment says it needs Xcode 26 but nothing selects it (`macos-latest` floats); the job never builds the SEA, runs bundle.sh or launches the app, so the sharp regression, the resource-bundle crash and the SEA portability issue are all invisible to CI. Actions are pinned to mutable major tags; CONTRIBUTING.md:30 claims CI runs verify.",
+      "fix": "`runs-on: macos-26` + xcode-select; add `pnpm build:sea`, ad-hoc sign, `vole-collector --once` and `Vole --dump` steps; pin actions to SHAs; fix CONTRIBUTING."
+    },
+    {
+      "file": "packages/core/src/detect/context-pressure.ts",
+      "line": 10,
+      "severity": "low",
+      "kind": "correctness",
+      "description": "For Codex rollouts lacking last_token_usage, codex.ts:154-158 falls back to the cumulative meter for the breakdown, storing session-cumulative input/cached as the row's input_tokens/cache_read_tokens; contextOf then returns cumulative context. Masked only because those rows also lack a window; adding a Codex model to ~/.vole/pricing.json context_windows (the README-advertised path) yields false critical context_pressure.",
+      "fix": "In codex.ts null the breakdown fields when usage came from `total` rather than `last`."
+    },
+    {
+      "file": "scripts/build-docs-pdf.mjs",
+      "line": 50,
+      "severity": "low",
+      "kind": "docs-mismatch",
+      "description": "DATA_FLOW_SVG replaces the README mermaid with a hand-drawn diagram of the removed architecture ('4 tools', 'API routes / Next.js', 'poll every 3s'); cover says Version 0.1.0 and repository github.com/jayimf432/vole; committed PDF predates four doc commits.",
+      "fix": "Redraw the SVG to match README's mermaid (or render mermaid in headless Chrome); read version from package.json; fix the repo string; regenerate or stop committing the PDF."
+    },
+    {
+      "file": "docs/DATA-SOURCES.md",
+      "line": 13,
+      "severity": "low",
+      "kind": "docs-mismatch",
+      "description": "No OpenCode, Grok or Devin sections although all three collectors ship and EXTENDING.md:191 calls a DATA-SOURCES section mandatory; Claude subagent transcripts (78% of files here) are undocumented; <synthetic> Claude entries (all-zero usage, isApiErrorMessage) are stored as exact rows with 0 tokens (2,661 here) inflating calls/sessions/errors.",
+      "fix": "Add the three sections from the field lists in this map; document the nested layout; store <synthetic> entries as activity_only or skip them."
+    },
+    {
+      "file": "docs/DECISIONS.md",
+      "line": 115,
+      "severity": "low",
+      "kind": "docs-mismatch",
+      "description": "'Confidence is a three-value system' (also L21, ROADMAP.md:162 principle 2 'exact / estimated / activity_only', EXTENDING.md:70) contradicts types.ts:22, README L145, CONTRIBUTING L36. DECISIONS L258-259 ('only next dev exercised', 'not packaged for distribution'), L242 ('schema migrations not built'), L42/L159 ('INSERT OR IGNORE') and apps/mac/README.md:50/61 ('every 3s', 'Launch at login not done') are stale.",
+      "fix": "Retitle to two-value and fix principle 2 in ROADMAP to 'exact / activity_only'; delete or replace the stale limitations; describe the monotone upsert."
+    },
+    {
+      "file": "packages/core/src/types.ts",
+      "line": 90,
+      "severity": "low",
+      "kind": "correctness",
+      "description": "RateLimitObservation is transient: collect.ts feeds only this pass's observations to detect and Codex lines are read once, so a >80% reading that lands while the collector is down is never evaluated and no quota history exists for posture views. Codex rate_limits.{secondary, credits, plan_type, resets_at, rate_limit_reached_type} are dropped at codex.ts:56-58.",
+      "fix": "Add an observations table + insertObservations; have rate_limit_pressure read the latest per session; carry the extra fields on the type."
+    },
+    {
+      "file": "packages/core/src/paths.ts",
+      "line": 24,
+      "severity": "low",
+      "kind": "docs-mismatch",
+      "description": "Nine per-source env vars (VOLE_CLAUDE_PROJECTS, VOLE_CODEX_SESSIONS, VOLE_CURSOR_DB, VOLE_ANTIGRAVITY_*, VOLE_OPENCODE_DB, VOLE_GROK_LOG, VOLE_GROK_SESSIONS, VOLE_DEVIN_MESSAGES) are documented nowhere; only one home directory is ever resolved; an empty VOLE_HOME_OVERRIDE ('' from a launchd plist) is treated as set (L14, `??`).",
+      "fix": "Add an env-var table to DEVELOPMENT.md; use `||` and throw on an empty home; add `homes()` enumeration for fleet mode."
+    },
+    {
+      "file": "packages/core/src/collectors/cursor.ts",
+      "line": 60,
+      "severity": "low",
+      "kind": "correctness",
+      "description": "Assumes ai_code_hashes.timestamp/createdAt are epoch milliseconds (used as ts at L77); schema declares INTEGER with no unit. Unverifiable here (0 rows). filesScanned: 1 reported even when the query threw (L104).",
+      "fix": "Normalise defensively (`< 1e12 ? *1000`); set filesScanned from a scanned flag."
+    }
+  ],
+  "fields_available_but_ignored": [
+    {
+      "tool": "claude_code",
+      "field": "content[].tool_use.{id,input}",
+      "where": "claude-code.ts:150-151 (only .name kept)",
+      "enterprise_use": "Tool-call ledger keyed on tool_use.id; DLP scanning of commands/args"
+    },
+    {
+      "tool": "claude_code",
+      "field": "user line: message.content[].tool_result.{tool_use_id,is_error,content}, toolUseResult.{stdout,stderr,newString,oldString,filePath}",
+      "where": "claude-code.ts:93 (type !== 'assistant' skipped)",
+      "enterprise_use": "Tool-result error correlation (ROADMAP Tier 1), DLP on tool output, ledger status"
+    },
+    {
+      "tool": "claude_code",
+      "field": "quotaLimits{status:'rejected',resetsAt,rateLimitType,overageStatus,isUsingOverage}, apiErrorStatus (429/500), error",
+      "where": "claude-code.ts:132-183 toEvent",
+      "enterprise_use": "rate_limit_pressure for Claude Code; quota posture per user"
+    },
+    {
+      "tool": "claude_code",
+      "field": "system lines: api_error{retryAttempt,maxRetries,retryInMs}, model_refusal_fallback{originalModel,fallbackModel}, stop_hook_summary.hookInfos[].command, turn_duration, compact_boundary",
+      "where": "claude-code.ts:93",
+      "enterprise_use": "error_storm retry accounting; posture (hooks in use, refusal fallbacks); latency"
+    },
+    {
+      "tool": "claude_code",
+      "field": "permission-mode (bypassPermissions), mode, attachment.skill_listing / mcp_instructions_delta / agent_listing_delta",
+      "where": "claude-code.ts:93",
+      "enterprise_use": "Posture inventory: permission mode, skills/MCP servers/agents in use"
+    },
+    {
+      "tool": "claude_code",
+      "field": "version, entrypoint (cli|claude-vscode|claude-desktop|sdk-cli), userType, effort, requestId, uuid, isSidechain",
+      "where": "claude-code.ts:132-183",
+      "enterprise_use": "Client-version inventory; audit join key (requestId/uuid); stable provenance for export"
+    },
+    {
+      "tool": "claude_code",
+      "field": "cost-state{totalCostUSD, modelUsage[model]{inputTokens,outputTokens,cacheReadInputTokens,costUSD}}",
+      "where": "claude-code.ts:93",
+      "enterprise_use": "Independent cross-check of computeCost for verify (ROADMAP Tier 3)"
+    },
+    {
+      "tool": "claude_code",
+      "field": "bridge-session{ownerAccountUuid, ownerOrganizationUuid}",
+      "where": "claude-code.ts:93",
+      "enterprise_use": "Per-user / per-org attribution beyond OS username"
+    },
+    {
+      "tool": "claude_code",
+      "field": "usage.server_tool_use.{web_search_requests,web_fetch_requests}, service_tier, speed, inference_geo, iterations[]",
+      "where": "claude-code.ts:138-146",
+      "enterprise_use": "Billable server-tool ledger; posture (service tier, geo); per-iteration context accounting"
+    },
+    {
+      "tool": "claude_code",
+      "field": "attributionSkill / attributionMcpServer / attributionMcpTool / attributionPlugin / attributionAgent",
+      "where": "claude-code.ts:132-183",
+      "enterprise_use": "Cost attribution to skills/MCP servers/plugins; policy allow-lists"
+    },
+    {
+      "tool": "claude_code",
+      "field": "~/.claude/settings.json, settings.local.json, plugins/, <session>/subagents/agent-*.meta.json {agentType,spawnDepth}, workflows/*.json",
+      "where": "paths.ts (no accessor); claude-code.ts:117-130 walks only *.jsonl",
+      "enterprise_use": "Posture inventory of hooks/permissions/MCP config; subagent type per agent_id"
+    },
+    {
+      "tool": "codex",
+      "field": "session_meta.payload.git.{branch,commit_hash,repository_url}",
+      "where": "codex.ts:106-109 (git_branch hard-coded null at L202)",
+      "enterprise_use": "Exact branch/commit attribution for `pnpm pr`; repo inventory"
+    },
+    {
+      "tool": "codex",
+      "field": "turn_context.payload.{approval_policy ('never'), sandbox_policy.type ('danger-full-access'), permission_profile, workspace_roots, effort, collaboration_mode.settings.{model,reasoning_effort}, timezone}",
+      "where": "codex.ts:113-116",
+      "enterprise_use": "Posture inventory / policy engine (sandbox and approval posture per session); model fallback"
+    },
+    {
+      "tool": "codex",
+      "field": "session_meta.payload.{originator, cli_version, source (incl. subagent.thread_spawn{parent_thread_id,depth,agent_nickname}), thread_source, model_provider, parent_thread_id}",
+      "where": "codex.ts:106-109",
+      "enterprise_use": "Client-version inventory; subagent folding into parent (agent_id contract); attribution"
+    },
+    {
+      "tool": "codex",
+      "field": "token_count.rate_limits.{limit_id, limit_name, plan_type ('team'), primary.resets_at, secondary.{used_percent,window_minutes,resets_at}, credits.{has_credits,unlimited,balance}, spend_control_reached, rate_limit_reached_type}",
+      "where": "codex.ts:56-58 type, L126-134",
+      "enterprise_use": "Quota posture and budget policy; weekly-limit alerts; plan inventory"
+    },
+    {
+      "tool": "codex",
+      "field": "token_usage_record.payload.{response_id, turn_id, thread_id, usage, turn_token_usage, thread_token_usage}",
+      "where": "codex.ts:122 (only token_count read)",
+      "enterprise_use": "Stable per-response event_key; independent verify anchor"
+    },
+    {
+      "tool": "codex",
+      "field": "top-level ordinal; usage.cache_write_input_tokens; thread_settings_applied.thread_settings.model",
+      "where": "codex.ts:102 (index used), L204 (writes hard-coded 0), L114 (model only from turn_context)",
+      "enterprise_use": "Stable line id for keys/provenance; correct cache accounting; fills 46/83 NULL models"
+    },
+    {
+      "tool": "codex",
+      "field": "function_call.{call_id,arguments}, custom_tool_call.{call_id,input,status}, *_call_output.output, message.content[].text, task_complete.{error,duration_ms,time_to_first_token_ms}",
+      "where": "codex.ts:118-120",
+      "enterprise_use": "Tool-call ledger with ids/args/outputs; DLP; tool-failure error_storm; latency"
+    },
+    {
+      "tool": "opencode",
+      "field": "part.data for type=tool: callID, state.{status (89 'error'), input, output, error, metadata.exit, time.{start,end}, title}",
+      "where": "opencode.ts:85-91 (only json_extract '$.tool')",
+      "enterprise_use": "Complete tool-call ledger keyed on part.id/callID; tool-failure error counting; DLP on commands"
+    },
+    {
+      "tool": "opencode",
+      "field": "session.{permission, share_url, version, project_id, workspace_id, directory, title, model, cost, tokens_*}; workspace.branch; project.{worktree,vcs,sandboxes}; permission table",
+      "where": "opencode.ts:96-100 (only id,parent_id,agent)",
+      "enterprise_use": "Posture (permission mode, external sharing via share_url), git_branch, client version inventory, per-session cross-check"
+    },
+    {
+      "tool": "opencode",
+      "field": "message.data.{mode, agent, variant (reasoning effort), parentID, time.completed, finish='length', error.{name,data.message,isRetryable,metadata.url}}",
+      "where": "opencode.ts:104-146",
+      "enterprise_use": "Policy (agent/mode/effort per message), latency, error classification, self-hosted endpoint inventory"
+    },
+    {
+      "tool": "opencode",
+      "field": "account.{email,access_token,refresh_token}, account_state.{active_account_id,active_org_id}, credential.value, session_share.secret",
+      "where": "opencode.ts (never selected — keep it that way for tokens)",
+      "enterprise_use": "account.email / active_org_id for attribution only; tokens/credentials must stay out of scope"
+    },
+    {
+      "tool": "grok",
+      "field": "'session created'.ctx.cwd, 'model changed'.ctx.model, 'model catalog'.ctx.current_model_id",
+      "where": "grok.ts:102-104 (only shell.turn.* and exec_done msgs)",
+      "enterprise_use": "Fills model/project when ~/.grok/sessions is absent (1758/1758 NULL today)"
+    },
+    {
+      "tool": "grok",
+      "field": "paywall_check_result.ctx.{user_id, subscription_tier}; auth lines key_prefix/auth_mode",
+      "where": "grok.ts:102",
+      "enterprise_use": "Per-user attribution (a real user id); plan inventory"
+    },
+    {
+      "tool": "grok",
+      "field": "repo_state.upload.*.{repo_path,gcs_path,size_bytes}, trace.upload.decision.{telemetry_mode,uploads_enabled,data_collection_disabled}",
+      "where": "grok.ts:102",
+      "enterprise_use": "Posture: repository contents uploaded to xAI GCS; telemetry posture; policy flag per session"
+    },
+    {
+      "tool": "grok",
+      "field": "exec_done.ctx.{success,elapsed_ms}; inference_done.ctx.{attempts,loop_index,ttft_ms,model_elapsed_ms,tokens_per_sec}; inference_failed.ctx.{kind,is_retryable,message,sampler_request_id}",
+      "where": "grok.ts:104-136",
+      "enterprise_use": "Tool-failure counting; retry pressure; latency SLOs; error classification (403 spending-limit vs 5xx); key collision guard (loop_index)"
+    },
+    {
+      "tool": "grok",
+      "field": "'subagent spawn credentials'.ctx.{subagent_id, subagent_type, effective_model, context_window (500000), base_url, auth_type}",
+      "where": "grok.ts:115 (subagent sid stored as unrelated session)",
+      "enterprise_use": "Fold subagents into parent (agent_id); context_pressure for Grok; endpoint inventory"
+    },
+    {
+      "tool": "grok",
+      "field": "~/.grok/config.toml ([models].default, [ui].yolo, permission_mode, marketplace sources); projects/<enc>/{agent-tools,terminals}/*.txt",
+      "where": "paths.ts:44-46 (no accessor)",
+      "enterprise_use": "Posture (yolo/permission mode, default model); DLP on tool/terminal transcripts"
+    },
+    {
+      "tool": "cursor",
+      "field": "ai_code_hashes.{hash,source ('composer'|'tab'),fileExtension,fileName}",
+      "where": "cursor.ts:55-66",
+      "enterprise_use": "Code-provenance ledger; project attribution from fileName"
+    },
+    {
+      "tool": "cursor",
+      "field": "scored_commits.{commitHash,branchName,commitMessage,linesAdded,linesDeleted,composerLinesAdded,humanLinesAdded,v1AiPercentage,v2AiPercentage}",
+      "where": "cursor.ts (table never queried)",
+      "enterprise_use": "git_branch attribution; 'AI-written share' per commit for repo policy"
+    },
+    {
+      "tool": "cursor",
+      "field": "conversation_summaries.{title,tldr,model,mode}; tracked_file_content.content; ai_deleted_files",
+      "where": "cursor.ts (tables never queried)",
+      "enterprise_use": "Posture (agent vs ask mode); DLP on raw source content; model per conversation"
+    },
+    {
+      "tool": "antigravity",
+      "field": "brain/<id>/*.md artifact names and contents (task.md, plans, walkthroughs)",
+      "where": "antigravity.ts:48-49 (only count kept in raw_ref)",
+      "enterprise_use": "DLP on the only plaintext Antigravity leaves; project derivation"
+    },
+    {
+      "tool": "antigravity",
+      "field": "installation_id (stable device id), bin/ version, knowledge/, conversations/<id>.pb size/birthtime",
+      "where": "antigravity.ts:22-23 (paths), not read",
+      "enterprise_use": "Stable machine/install attribution; version inventory; stable 'started' timestamp for keys"
+    },
+    {
+      "tool": "devin",
+      "field": "meta.info.configOptions[id='model'].currentValue",
+      "where": "devin.ts:88 (model: null hard-coded)",
+      "enterprise_use": "Model breakdown, context lookup, per-model policy (40/54 DBs name a model)"
+    },
+    {
+      "tool": "devin",
+      "field": "meta.info.configOptions[id='mode'].currentValue ('bypass'|'accept-edits'), 'subagents', 'max-turn-requests', 'workspace-dirs', info.title",
+      "where": "devin.ts:64-70 (meta table never queried)",
+      "enterprise_use": "Posture inventory (auto-approve mode is a first-class risk signal); project attribution"
+    },
+    {
+      "tool": "devin",
+      "field": "messages kind='tool_call': content.{toolCallId,title,kind,status,rawInput,locations}, _meta['cognition.ai/inferenceToolName'], _meta['cognition.ai/cwd'], fastContext",
+      "where": "devin.ts:66 (kind='agent_message' only)",
+      "enterprise_use": "Tool-call ledger keyed on toolCallId; tools column (NULL today); project from cwd; DLP on rawInput"
+    },
+    {
+      "tool": "devin",
+      "field": "messages kind='user_message' content; agent_message text; Devin/User/settings.json, globalStorage",
+      "where": "devin.ts:66; paths.ts:49",
+      "enterprise_use": "DLP on prompts; Devin account identity for attribution"
+    },
+    {
+      "tool": "all",
+      "field": "usage_events.user, usage_events.machine, anomalies.user/machine (stamped by db.ts ORIGIN on every row)",
+      "where": "queries.ts, DB.swift, all CLIs — never selected, filtered or grouped",
+      "enterprise_use": "Per-user attribution is a query/view change on existing columns, once identity is made stable and configurable"
+    },
+    {
+      "tool": "all",
+      "field": "anomalies.observed, baseline, threshold, detected_at, anomaly_key",
+      "where": "queries.ts:230 IncidentRow; DB.swift:227",
+      "enterprise_use": "Principle 3 (explainable incidents), policy tuning UI, webhook payloads with stable ids"
+    },
+    {
+      "tool": "all",
+      "field": "usage_events.raw_ref, reasoning_tokens, event_key",
+      "where": "queries.ts SessionCall / DB.swift never expose",
+      "enterprise_use": "Provenance for export/sync (needs Claude line offset added); reasoning cost views"
+    },
+    {
+      "tool": "all",
+      "field": "CollectorResult.notes / filesScanned (which sources exist, failed, versions)",
+      "where": "collect.ts:50 (printed only under --verbose, never persisted)",
+      "enterprise_use": "Posture/health inventory: a `sources` table written per pass"
+    }
+  ],
+  "extension_points": [
+    "collectors/index.ts:21-29 REGISTRY — closed static list; export a register() (or pass an observer into run(db, observer)) so enterprise builds add sources and every raw entry can be inspected uniformly for DLP/ledger without editing parsers",
+    "Each collector's parse loop is the only place content exists: claude-code.ts:91-99 (entry before toEvent), codex.ts:118 (response_item before payload drop), opencode.ts:104 (message.data) and the part query at L85, devin.ts:71 (row loop), grok.ts:102 — add an onEntry(entry, filePath, lineIndex) hook there; DLP findings and a tool_calls table must be produced in the same pass, never derived from usage_events.tools",
+    "types.ts CollectorResult {events, notes, rateLimits, commit} — add toolCalls, observations, findings arrays; add a structured CollectorNote {code, path, message}",
+    "db.ts:19-35 origin()/ORIGIN and the spread at L129/L154 — the identity seam: replace OS username + DHCP hostname with a configured identity (VOLE_USER / ~/.vole/identity.json) plus a stable machine id (IOPlatformUUID), carry user/machine/org on UsageEvent so synced rows keep their origin",
+    "db.ts insertEvents/insertAnomalies — the single write path: add sibling insertToolCalls/insertObservations/insertFindings; a post-insert callback carrying rows actually changed is the natural webhook/outbox source; switch anomalies to upsert-on-greater-observed",
+    "schema.ts — add tool_calls(event_key, call_id, seq, name, args_hash, is_error, duration_ms), observations (rate limits, approval/sandbox policy, plan type, share_url, client version), findings (DLP), sources (per-collector heartbeat/version), sync_state; add PRAGMA user_version shared with DB.swift; add agent_id/project to anomalies",
+    "detect/index.ts:18-24 hard-coded rule list — make it an injectable rules: Rule[] with per-tool/team thresholds (today every threshold is a module const at burn-rate.ts:4-7, loop.ts:4-8, error-storm.ts:4-6, rate-limit.ts:4-5, context-pressure.ts:5-7); policy rules (unapproved tool/model/MCP server, share_url set, repo upload) are just more (events, now) => Anomaly[] functions; partition key must grow to (source, user, machine)",
+    "queries.ts seedClause (8 sites) + TOKEN_FILTER (6 sites) — factor a where({from, includeSeed, user, machine, tool, project}) builder returning {sql, params}; add 'user'|'machine' to BreakdownBy; add getEventsSince(db, afterId)/getAnomaliesSince id-cursor readers exposing user/machine/raw_ref/event_key for export",
+    "cli/collect.ts:36-60 results loop — persist a sources row per collector (heartbeat, filesScanned, notes, version), write an outbox of new events/anomalies for sync, generalise desktopNotify (L139) into webhook/exec hooks; L59 is where policy detectors run",
+    "cli/mcp.ts TOOLS array — add vole_tool_calls, vole_sources, vole_policy_check; add a session scope and user filter; the same array can be served over HTTP for a central read API",
+    "pricing.ts loadPricing (L40-48) — add an org-level override layer and dated rate ranges (honour effective_from); expose pricingVersion() for audit; per-provider cache multipliers",
+    "paths.ts — add homes(): {user, home}[] and make every accessor take a home for shared machines; add accessors for settings/plugins/MCP config files (posture); replace 12 env vars with an optional ~/.vole/config.json an MDM profile can set",
+    "apps/mac: Store.refresh() (Store.swift:101) is the only app-side change event (onNewIncidents seam); Collector.swift Process launch is where fleet env/flags (VOLE_DB, --interval, --no-egress) are passed; Settings pane (DashboardView.swift:640-710) hosts user picker / update kill-switch / export; DB.swift run() + id cursors are all an exporter needs; UserDefaults keys in com.launchsafe.vole (vole.theme, vole.menubar, vole.section, vole.refresh, vole.range, vole.loginItem, vole.lastNotifiedIncidentID) are the managed-preference surface",
+    "cli/verify.ts — wrap the body in export async function verify(opts) with --json output so reconciliation can run in CI and fleet health checks; add Grok section; reconcile Codex against token_usage_record.response_id",
+    "cli/seed.ts — any new table needs seed rows under source='seed' and a cascading purge; seed fake users/machines once insertEvents accepts an origin override",
+    "docs/EXTENDING.md recipes are the contract new collectors/rules follow — fix the UsageEvent literal and the commit pattern before enterprise contributors copy them"
+  ],
+  "constraints": [
+    "Idempotency contract: event_key is UNIQUE and must be stable across re-reads of the same data (schema.ts, CONTRIBUTING rule 2); re-running collect must never double-count. Keys must never embed poll-time values (antigravity mtime and codex line-index are the two existing violations, not precedents).",
+    "Upsert semantics (db.ts:87-101): a stored row is rewritten only when excluded.total_tokens is STRICTLY greater; the SET list refreshes token fields, cost, is_error, stop_reason, tools, context_window, ts only — never model, session_id, project, git_branch, agent_id, raw_ref, confidence, source. A NULL stored total can never be upgraded. Any 'enrich later' feature must either widen that WHERE/SET explicitly or make the first insert complete.",
+    "Anomalies are INSERT OR IGNORE on anomaly_key (db.ts:137); keys must be deterministic and must never include `now` (detect.test.ts:120). Changing verdict semantics requires an explicit upsert clause and a re-notify path.",
+    "Confidence is exactly two values by policy: 'exact' | 'activity_only' (types.ts:22). activity_only implies every token field and cost_usd is NULL (verify.ts:473 enforces it; queries TOKEN_FILTER relies on it). No 'estimated' tier may be introduced even though ROADMAP principle 2 mentions one.",
+    "Never invent a number: absent source fields are NULL, never 0; computeCost returns null for unknown models; the UI renders '—'. Aggregates that drop NULLs must expose an unpriced/unknown count alongside.",
+    "Seed and live never mix: collectors write source='live' only; seed.ts writes 'seed' only; detection is partitioned by source (detect/index.ts) and every production query appends AND source='live'; purge is DELETE WHERE source='seed'. New tables must carry a source column and the same partition/purge.",
+    "The database holds no content — only counts, ids, model names, tool names, cwd/file paths, raw_ref pointers. Prompts, tool arguments/results, file contents and credentials (OpenCode account/credential/session_share tables) must never be SELECTed into memory beyond the collector loop or stored; DLP scanning happens on the raw line in the collector.",
+    "Third-party stores are opened read-only (node:sqlite readOnly for opencode/cursor/devin; JSONL read via fs) and never modified; Vole writes only under ~/.vole (SECURITY.md).",
+    "CollectorResult.commit() must be called only after insertEvents succeeds (collect.ts:38-39, types.ts:105-109); offsets never advance past rows not stored. Rows with non-finite ts are dropped, never inserted.",
+    "Subagent contract (types.ts:51-56): child events carry the parent's session_id and their own agent_id; a session's spend is one tree. Codex and Grok currently violate it and must be brought in line, not the other way round.",
+    "node:sqlite named binding is strict: the object passed to stmt.run must contain exactly the SQL's parameters — extra keys, undefined and booleans throw and abort the whole batch (db.ts:129). is_error is 0|1; new columns require matching changes to INSERT column list, @params, UsageEvent type, schema.ts and migrate().",
+    "Schema evolution is add-nullable-column only via migrate()'s PRAGMA table_info probing (db.ts:41-53); no version stamp exists, and DB.swift assumes the newest columns are present. Drops/renames/backfills need a user_version scheme shared by both readers.",
+    "Read-model parity: every new query is written twice (queries.ts + DB.swift port) or the app cannot show it (EXTENDING.md 'Adding a panel'); DB.swift must stay a read-only consumer (READONLY open, no writes).",
+    "SEA bundling limits (build-sea.mjs): the collector must remain zero-runtime-dependency, CJS-bundleable, node: builtins only — no native modules, no dynamic require, no runtime file reads except pricing override and sources; pricing.json is frozen into the binary at build time; Node >= 22.13 required for node:sqlite; output inherits the builder's node (must be statically linked, arm64 today).",
+    "Every TypeScript file runs under tsx/esbuild per-file transpilation (no tsc emit): no const enum, type re-exports must use `export type`; verify.ts's top-level await requires ESM.",
+    "macOS app: Swift 5 language mode, macOS 26 floor (ToolbarSpacer), SwiftPM resources are reached only through Bundle.module (currently broken for .app layouts); Hardened Runtime + allow-jit entitlement is mandatory for the embedded Node in --release builds; the app cannot be sandboxed because the collector reads other apps' data directories.",
+    "Keep it local (principle 7): no scraping, no web-UI automation, no silent network calls — any egress (UpdateChecker today, future sync) needs disclosure and a preference/no-egress switch respected by every caller.",
+    "Pricing = equivalent API value at Anthropic list rates (pricing.json); OpenCode rows carry the provider's own figure; cost is never date-aware (effective_from unread). A cost roll-up must not mix definitions silently.",
+    "All time bucketing is UTC epoch-anchored integer math (util.ts bucketOf, queries.ts CAST, DB.swift ts/bucketMs) so keys are stable across machines; any local-time presentation must convert at the view, not change the keys.",
+    "pnpm verify must keep passing and must be extended for any new source with exact tokens (principle 4); RATES in verify.ts is a deliberate independent copy of pricing.json that must be mirrored by hand on every rate change."
+  ]
+}

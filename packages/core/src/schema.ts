@@ -29,7 +29,9 @@ CREATE TABLE IF NOT EXISTS usage_events (
   machine               TEXT,
   tools                 TEXT,
   agent_id              TEXT,
-  context_window        INTEGER
+  context_window        INTEGER,
+  duration_ms           INTEGER,
+  duration_kind         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ue_ts      ON usage_events(ts);
 CREATE INDEX IF NOT EXISTS idx_ue_tool_ts ON usage_events(tool, ts);
@@ -70,4 +72,24 @@ CREATE TABLE IF NOT EXISTS collector_state (
   last_mtime      INTEGER,
   last_scanned_at INTEGER
 );
+
+-- One row per collector per pass: the per-collector heartbeat. collector_state's
+-- last_scanned_at is per-FILE and only Claude Code writes it, so a Codex- or
+-- OpenCode-only Mac reads as "Setting up…" forever while rows accumulate. This
+-- table is written by the CLI for every collector on every pass, unconditionally —
+-- including passes that found nothing, which is exactly the fact a coverage
+-- screen needs ("we looked and there was nothing" vs "we never looked").
+CREATE TABLE IF NOT EXISTS collector_runs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tool        TEXT    NOT NULL,
+  started_at  INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  files       INTEGER NOT NULL,
+  parsed      INTEGER NOT NULL,
+  inserted    INTEGER NOT NULL,
+  source_state TEXT   NOT NULL DEFAULT 'ok',
+  ok          INTEGER NOT NULL DEFAULT 1,
+  notes       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cr_tool_started ON collector_runs(tool, started_at);
 `;

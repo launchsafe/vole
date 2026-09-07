@@ -1,7 +1,13 @@
 import { spawn } from 'node:child_process';
-import { openDb, insertEvents, insertAnomalies, repriceUnpriced } from '../db';
+import { writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import {
+  openDb, insertEvents, insertAnomalies, repriceUnpriced, recordCollectorRun,
+  scanDue, recordScan, drainInbox,
+} from '../db';
 import { collectAll } from '../collectors';
-import { detectBySource } from '../detect';
+import { detectBySource, RULE_IDS } from '../detect';
+import { SCANNERS } from '../scanners';
 import { paths } from '../paths';
 import type { Anomaly, RateLimitObservation, Tool, UsageEvent } from '../types';
 
@@ -27,6 +33,10 @@ function usd(n: number | null): string {
 
 function runOnce(): void {
   const started = Date.now();
+  // Triage writes from the app arrive as spool files; drain them first so the
+  // disposition ledger reflects user intent before this pass's rows land.
+  const applied = drainInbox(db);
+  if (applied > 0 && verbose) console.log(`  [inbox] applied ${applied} triage action(s)`);
   const results = collectAll(db);
 
   let totalFound = 0;
@@ -40,12 +50,30 @@ function runOnce(): void {
     totalFound += r.events.length;
     totalInserted += inserted;
 
+    // The heartbeat: one row per collector per pass, even when it found nothing —
+    // "we looked and there was nothing" is a fact a coverage screen must be able
+    // to state, and distinct from "we never looked".
+    const passEnd = Date.now();
+    recordCollectorRun(db, {
+      tool: r.tool,
+      started_at: passEnd - (r.durationMs ?? 0),
+      duration_ms: r.durationMs ?? 0,
+      files: r.filesScanned,
+      parsed: r.events.length,
+      inserted,
+      source_state: r.sourceState ?? 'ok',
+      ok: r.sourceState === 'error' ? 0 : 1,
+      notes: r.notes.length ? r.notes.join(' | ') : null,
+    });
+
     if (verbose) {
       const dupes = r.events.length - inserted;
       console.log(
         `  ${r.tool.padEnd(12)} files=${String(r.filesScanned).padStart(3)}  ` +
           `parsed=${String(r.events.length).padStart(5)}  new=${String(inserted).padStart(5)}  ` +
-          `dedup-skipped=${String(dupes).padStart(5)}`,
+          `dedup-skipped=${String(dupes).padStart(5)}  ${String(r.durationMs ?? 0).padStart(5)}ms` +
+          (r.sourceState === 'no_source' ? '  (no source on this machine)' : '') +
+          (r.sourceState === 'error' ? '  ERROR' : ''),
       );
       for (const note of r.notes) console.log(`      note: ${note}`);
     }
@@ -53,23 +81,70 @@ function runOnce(): void {
 
   // Rules need full history to establish a baseline, so they run over everything
   // stored, not just this poll's new rows. Stable anomaly_keys keep re-runs idempotent.
-  const all = db
-    .prepare('SELECT * FROM usage_events ORDER BY ts')
-    .all() as UsageEvent[];
-  const anomalies = detectBySource(all, { live: rateLimits }, Date.now());
-  const newAnomalies = insertAnomalies(db, anomalies);
+  // The pass is insert-gated: rules are pure functions of stored rows (plus live
+  // rate-limit observations), so a poll that stored nothing new cannot produce a
+  // new anomaly — and the full-table scan that detection costs is skipped entirely.
+  // ONE exception: a rule EPOCH. When the rule registry itself changes (a new
+  // rule ships), it must see the historical rows once, or it would silently wait
+  // for the next insert — the rerouted-model rule would have missed 2,540
+  // existing rows on the machine it was written for.
+  const rulesEpoch = RULE_IDS.join(',');
+  const lastEpoch = db
+    .prepare("SELECT notes FROM scan_state WHERE scanner = 'detection-rules'")
+    .get() as { notes: string | null } | undefined;
+  const epochChanged = lastEpoch?.notes !== rulesEpoch;
+  let anomalies: Anomaly[] = [];
+  let newAnomalies: Anomaly[] = [];
+  let escalatedAnomalies: Anomaly[] = [];
+  if (totalInserted > 0 || rateLimits.length > 0 || epochChanged) {
+    const all = db
+      .prepare('SELECT * FROM usage_events ORDER BY ts')
+      .all() as UsageEvent[];
+    anomalies = detectBySource(all, { live: rateLimits }, Date.now());
+    const written = insertAnomalies(db, anomalies);
+    newAnomalies = written.inserted;
+    escalatedAnomalies = written.escalated;
+    if (epochChanged) {
+      recordScan(db, 'detection-rules', 0, Date.now(), 0, true, rulesEpoch);
+    }
+  }
 
   const ms = Date.now() - started;
   console.log(
     `[${new Date().toISOString()}] parsed ${fmt(totalFound)} events, ` +
       `${fmt(totalInserted)} new · ${fmt(anomalies.length)} anomalies detected, ` +
-      `${fmt(newAnomalies.length)} new (${ms}ms)`,
+      `${fmt(newAnomalies.length)} new${escalatedAnomalies.length ? `, ${fmt(escalatedAnomalies.length)} escalated` : ''} (${ms}ms)`,
   );
+
+  // The scanner lane: gated by each scanner's own cadence, never the poll's.
+  // A check is one indexed read; a body runs at most once per cadence_ms.
+  for (const s of SCANNERS) {
+    if (!scanDue(db, s.name, s.cadenceMs)) continue;
+    const t0 = Date.now();
+    let ok = false;
+    let notes: string | null = null;
+    try {
+      const r = s.run();
+      ok = r.ok;
+      notes = r.notes ?? null;
+    } catch (err) {
+      ok = false;
+      notes = `scanner failed: ${(err as Error).message}`;
+    }
+    recordScan(db, s.name, s.cadenceMs, t0, Date.now() - t0, ok, notes);
+    if (verbose && notes) console.log(`  [scan] ${s.name}: ${notes}`);
+  }
 
   if (notify) {
     const cutoff = Date.now() - NOTIFY_WINDOW_MS;
+    // Inserted always notifies; an escalation (a severity that ROSE on a window
+    // the user was already told about) is the only update that re-notifies —
+    // a merely growing window must not page anyone twice.
     for (const a of newAnomalies) {
       if (a.source === 'live' && a.severity !== 'info' && a.window_end >= cutoff) desktopNotify(a);
+    }
+    for (const a of escalatedAnomalies) {
+      if (a.source === 'live' && a.severity !== 'info' && a.window_end >= cutoff) desktopNotify(a, true);
     }
   }
 
@@ -136,8 +211,8 @@ function printSummary(): void {
  * `osascript display notification` has no icon parameter and always shows Script
  * Editor's, never Vole's.
  */
-function desktopNotify(a: Anomaly): void {
-  const title = `Vole · ${a.severity.toUpperCase()}`;
+function desktopNotify(a: Anomaly, escalated = false): void {
+  const title = `Vole · ${a.severity.toUpperCase()}${escalated ? ' (escalated)' : ''}`;
   const body = a.title;
   const argv = process.platform === 'linux' ? ['notify-send', '-a', 'Vole', title, body] : null;
   if (!argv) return;
@@ -149,9 +224,31 @@ function desktopNotify(a: Anomaly): void {
 }
 
 console.log(`Vole collector → ${paths.db()}`);
+
+// Supervision pidfile (#12): the app's spawner reads this to avoid starting a
+// second embedded collector over a live one. Advisory only — a SIGKILLed process
+// leaves a stale file, which is why the reader verifies the recorded executable
+// path against the pid, never the file's mere existence. Written before the first
+// pass so a crash mid-start still leaves the fact of the attempt.
+try {
+  writeFileSync(
+    join(dirname(paths.db()), 'collector.pid'),
+    JSON.stringify({ pid: process.pid, startedAt: Date.now(), exe: process.execPath, argv: process.argv[1] ?? null }),
+  );
+} catch {
+  /* unwritable store dir — the app spawner falls back to spawning */
+}
+
 const repriced = repriceUnpriced(db);
 if (repriced > 0) console.log(`priced ${fmt(repriced)} stored rows whose model now has a rate`);
-runOnce();
+// The first pass must be guarded exactly like the polling passes: an unreadable
+// store or a locked file on startup otherwise exits the process before polling
+// ever begins, and the monitor is silently down.
+try {
+  runOnce();
+} catch (err) {
+  console.error(`[${new Date().toISOString()}] first pass failed: ${(err as Error).message}`);
+}
 
 if (!once) {
   console.log(`polling every ${intervalMs / 1000}s (ctrl-c to stop)${notify ? '' : ' · notifications off'}`);

@@ -1,69 +1,72 @@
 import type { Anomaly, UsageEvent } from '../types';
-import { bucketOf, groupBy, medianExcluding, withTokens, worstConfidence, fmt, shortId } from './util';
+import { bucketOf, groupBy, withTokens, worstConfidence, fmt, shortId } from './util';
 
 const WINDOW_MS = 5 * 60 * 1000;
-const MIN_CALLS = 15;
-const RATE_MULTIPLE = 3;
+/**
+ * Absolute call rate: this many calls in one 5-minute window is spinning, no matter
+ * what the session's own history looks like. The old relative rule compared a window
+ * against the session's leave-one-out median, so a session that loops at a constant
+ * rate from its first turn — a CI `claude -p`, a bash retry loop — was its own
+ * baseline and never fired.
+ */
+const ABS_CALLS_PER_WINDOW = 45;
 /** Output this small, repeatedly, means the agent is reacting rather than producing. */
 const FLAT_OUTPUT_TOKENS = 400;
 
 /**
- * Runaway-loop detection.
+ * Runaway-loop detection, absolute-rate path.
  *
- * Call frequency alone is a poor signal — a productive burst also looks fast. The
- * distinguishing signature of a stuck agent is high call volume where output stays flat
- * while cache reads climb: it keeps re-reading the same context and producing almost
- * nothing. Requiring both conditions is what separates "busy" from "spinning".
+ * A window fires when it holds at least ABS_CALLS_PER_WINDOW calls while average
+ * output stays flat — high volume with real output is a productive burst, not a
+ * spin. There is deliberately no baseline: the signature is the absolute rate, so a
+ * loop that starts with the session is caught from its first window.
+ *
+ * The group is (session_id, agent_id), so ten parallel read-only subagents sharing
+ * the parent's session_id no longer read as one spinning agent. The old
+ * `cache reads climb` signal is gone — it was implemented as `cacheRead > 0`,
+ * which every Claude Code call satisfies.
+ *
+ * Two further signatures (N identical (name, args_sha256) calls; A-B-A-B cycles of
+ * the same two calls) become possible once the tool_calls ledger exists; this rule
+ * is the rate leg of that family.
  */
-export function detectLoops(events: UsageEvent[], now: number): Anomaly[] {
+export function detectRepeatLoops(events: UsageEvent[], now: number): Anomaly[] {
   const out: Anomaly[] = [];
   const usable = withTokens(events).filter((e) => e.session_id);
 
-  for (const [sessionId, group] of groupBy(usable, (e) => e.session_id as string)) {
-    const windows = groupBy(group, (e) => String(bucketOf(e.ts, WINDOW_MS)));
-    const entries = [...windows.entries()];
-    if (entries.length < 2) continue;
-    const counts = entries.map(([, v]) => v.length);
+  for (const [key, group] of groupBy(usable, (e) => `${e.session_id}::${e.agent_id ?? 'main'}`)) {
+    const [sessionId = '', agentId = 'main'] = key.split('::');
 
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      if (!entry) continue;
-      const [bucketStr, evs] = entry;
-
-      // Baseline excludes this window, so a burst cannot mask itself.
-      const baseline = Math.max(1, medianExcluding(counts, i));
-      if (evs.length < MIN_CALLS) continue;
-      if (evs.length <= baseline * RATE_MULTIPLE) continue;
+    for (const [bucketStr, evs] of groupBy(group, (e) => String(bucketOf(e.ts, WINDOW_MS)))) {
+      if (evs.length < ABS_CALLS_PER_WINDOW) continue;
 
       const avgOutput = evs.reduce((s, e) => s + (e.output_tokens ?? 0), 0) / evs.length;
-      const cacheRead = evs.reduce((s, e) => s + (e.cache_read_tokens ?? 0), 0);
-      // The loop signature: lots of calls, almost no new output, heavy context re-reads.
+      // The loop signature: many calls, almost no new output.
       if (avgOutput > FLAT_OUTPUT_TOKENS) continue;
-      if (cacheRead <= 0) continue;
 
       const first = evs[0];
       if (!first) continue;
       const bucket = Number(bucketStr);
-      const multiple = evs.length / baseline;
 
       out.push({
-        anomaly_key: `loop_suspected:${first.tool}:${sessionId}:${bucket}`,
-        rule: 'loop_suspected',
-        severity: evs.length >= MIN_CALLS * 2 ? 'critical' : 'warn',
+        anomaly_key: `repeat_call_loop:${first.tool}:${sessionId}:${agentId}:${bucket}`,
+        rule: 'repeat_call_loop',
+        severity: evs.length >= ABS_CALLS_PER_WINDOW * 2 ? 'critical' : 'warn',
         tool: first.tool,
         session_id: sessionId,
         model: first.model,
         window_start: bucket,
         window_end: bucket + WINDOW_MS,
-        title: `Possible runaway loop in ${first.tool} session ${shortId(sessionId)}`,
+        title: `Runaway loop in ${first.tool} session ${shortId(sessionId)}`,
         detail:
-          `${evs.length} calls in 5 min (${multiple.toFixed(1)}x this session's normal ` +
-          `${baseline.toFixed(0)}) while average output stayed at ${fmt(avgOutput)} tokens ` +
-          `and ${fmt(cacheRead)} cached tokens were re-read. The agent appears to be ` +
-          `re-processing the same context without making progress.`,
+          `${evs.length} calls in 5 min while average output stayed at ${fmt(avgOutput)} tokens. ` +
+          `The threshold is absolute (${ABS_CALLS_PER_WINDOW} calls / 5 min), so a session spinning ` +
+          `at a constant rate from its first turn is caught. ` +
+          (agentId !== 'main' ? `Subagent ${shortId(agentId)}. ` : '') +
+          'The agent appears to be re-processing the same context without making progress.',
         observed: evs.length,
-        baseline,
-        threshold: baseline * RATE_MULTIPLE,
+        baseline: null,
+        threshold: ABS_CALLS_PER_WINDOW,
         confidence: worstConfidence(evs),
         source: first.source,
         detected_at: now,

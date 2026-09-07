@@ -2,14 +2,14 @@
  * `vole top` — the terminal view of what is running right now, htop-style.
  * Every column is read from the collector's database; nothing is estimated.
  */
-import { openDb } from '../db';
+import { openDbReadOnly } from '../db';
 import { getLiveSessions, type LiveSession } from '../queries';
 import { ago, compact, mmss, usd } from '../util/format';
 
 const args = process.argv.slice(2);
 const sinceMin = Number(args.find((a) => a.startsWith('--since='))?.split('=')[1] ?? 30);
 const once = args.includes('--once');
-const db = openDb();
+const db = openDbReadOnly();
 
 const pad = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s.padEnd(n));
 const rpad = (s: string, n: number) => s.padStart(n);

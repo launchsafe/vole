@@ -6,8 +6,10 @@ const TOOL: Record<string, string> = {
   opencode: 'OpenCode', grok: 'Grok', devin: 'Devin',
 };
 const RULE: Record<string, string> = {
-  burn_rate_spike: 'burn spikes', loop_suspected: 'runaway loops', error_storm: 'retry storms',
+  billable_burn_spike: 'burn spikes', repeat_call_loop: 'runaway loops', error_storm: 'retry storms',
   rate_limit_pressure: 'rate-limit warnings', context_pressure: 'context-pressure warnings',
+  unsanctioned_surface: 'unsanctioned AI surfaces', new_ai_surface: 'new AI surfaces',
+  rerouted_model: 'rerouted models',
 };
 const base = (p: string) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
 const day = (ts: number) => new Date(ts).toISOString().slice(0, 10);

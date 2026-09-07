@@ -56,7 +56,7 @@ export function collectOpencode(_db: DB): CollectorResult {
   const notes: string[] = [];
 
   if (!existsSync(dbPath)) {
-    return { tool: 'opencode', events, filesScanned: 0, notes: [`No OpenCode DB at ${dbPath}`] };
+    return { tool: 'opencode', events, filesScanned: 0, notes: [`No OpenCode DB at ${dbPath}`], sourceState: 'no_source' };;
   }
 
   let src: DB;
@@ -149,6 +149,19 @@ export function collectOpencode(_db: DB): CollectorResult {
         tools: toolsByMessage.get(r.id) ?? null,
         agent_id: child?.label ?? null,
         context_window: contextWindow(model),
+        // Generation speed's raw material: the message's own completed-created
+        // span. Only a REAL span is stored (positive, under 30 min); anything
+        // else stays NULL — an unknown, never a fabricated duration.
+        duration_ms:
+          d.time?.completed != null && d.time?.created != null &&
+          d.time.completed > d.time.created && d.time.completed - d.time.created < 1_800_000
+            ? d.time.completed - d.time.created
+            : null,
+        duration_kind:
+          d.time?.completed != null && d.time?.created != null &&
+          d.time.completed > d.time.created && d.time.completed - d.time.created < 1_800_000
+            ? ('measured' as const)
+            : null,
       });
     }
   } finally {

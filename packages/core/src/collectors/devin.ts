@@ -33,7 +33,7 @@ export function collectDevin(_db: DB): CollectorResult {
   const notes: string[] = [];
 
   if (!existsSync(dir)) {
-    return { tool: 'devin', events, filesScanned: 0, notes: [`No Devin data at ${dir}`] };
+    return { tool: 'devin', events, filesScanned: 0, notes: [`No Devin data at ${dir}`], sourceState: 'no_source' };;
   }
 
   let files: string[];
@@ -105,6 +105,7 @@ export function collectDevin(_db: DB): CollectorResult {
           tools: null,
           agent_id: null,
           context_window: null,
+      duration_ms: null, duration_kind: null,
           raw_ref: `${dbPath}#turn/${turn}`,
         });
       }

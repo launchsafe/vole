@@ -20,8 +20,22 @@ export const paths = {
   /** Per-installation pricing override merged over the built-in rate table. */
   pricingOverride: () => process.env.VOLE_PRICING ?? join(home(), '.vole', 'pricing.json'),
 
+  /**
+   * The sanctioned-surface declaration, in precedence order (later wins, the
+   * same precedence pricing.json already uses): an admin-owned machine policy
+   * first, a per-user declaration second. Absent everywhere = no policy, and
+   * 'unsanctioned' stays inert — it is a company decision, not a technical fact.
+   */
+  surfacePolicyPaths: (): string[] => [
+    '/Library/Application Support/Vole/surfaces.json',
+    join(home(), '.vole', 'policy', 'surfaces.json'),
+  ],
+
   /** Claude Code session transcripts: ~/.claude/projects/<slug>/<session-id>.jsonl */
   claudeCodeProjects: () => process.env.VOLE_CLAUDE_PROJECTS ?? join(home(), '.claude', 'projects'),
+
+  /** Gemini CLI home (stats + the prompt cache Vole deliberately never reads). */
+  geminiHome: () => process.env.VOLE_GEMINI_HOME ?? join(home(), '.gemini'),
 
   /** Codex rollouts: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl */
   codexSessions: () => process.env.VOLE_CODEX_SESSIONS ?? join(home(), '.codex', 'sessions'),

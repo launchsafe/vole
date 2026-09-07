@@ -21,22 +21,34 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 APP="build/Vole.app"
-VERSION="${VERSION:-0.1.0}"
+# Version defaults to the repo's own package.json — the app must never
+# misreport an older version than the code actually is.
+VERSION="${VERSION:-$(python3 -c 'import json;print(json.load(open("../../package.json"))["version"])')}"
 DMG="build/Vole-$VERSION.dmg"
 NOTARY_PROFILE="${NOTARY_PROFILE:-vole-notary}"
 RELEASE=false
 OPEN=false
+REGEN_ICON=false
 for a in "$@"; do
   case "$a" in
-    --release) RELEASE=true ;;
-    --open)    OPEN=true ;;
+    --release)    RELEASE=true ;;
+    --open)       OPEN=true ;;
+    --regen-icon) REGEN_ICON=true ;;
     *) echo "unknown flag: $a" >&2; exit 2 ;;
   esac
 done
 
-# 1. icon (regenerate if the source changed and sharp is available)
-if [ ! -f Icon/Vole.icns ] || [ Icon/build.mjs -nt Icon/Vole.icns ]; then
+# 1. icon — prebuilt and committed. Regeneration is explicit (--regen-icon), never
+#    automatic: it needs sharp, which is not a lockfile dependency, and a fresh
+#    clone (or CI, or a release pipeline) must be able to bundle without it.
+if [ "$REGEN_ICON" = true ]; then
   node Icon/build.mjs --emit
+fi
+if [ ! -f Icon/Vole.icns ]; then
+  echo "Icon/Vole.icns is missing. It is committed prebuilt — restore it with" >&2
+  echo "  git checkout -- apps/mac/Icon/Vole.icns" >&2
+  echo "or regenerate deliberately (needs sharp): node Icon/build.mjs --emit" >&2
+  exit 1
 fi
 
 # 2. release binary
@@ -96,6 +108,13 @@ ditto -c -k --keepParent "$APP" "$ZIP"
 xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
 xcrun stapler staple "$APP"
 rm -f "$ZIP"
+
+# 5b. the auto-update pair: the zip the in-app updater installs, plus its
+#     published sha256 — no checksum, no silent install, by design.
+ZIP_UPD="$APP.zip"
+ditto -c -k --keepParent "$APP" "$ZIP_UPD"
+shasum -a 256 "$ZIP_UPD" | awk '{print $1"  "FILENAME}' > "$ZIP_UPD.sha256"
+echo "auto-update pair: $ZIP_UPD + $ZIP_UPD.sha256 — upload BOTH as release assets"
 
 # 6. drag-to-Applications disk image, containing the already-stapled app
 STAGE="build/dmg"
