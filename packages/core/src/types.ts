@@ -102,7 +102,12 @@ export type AnomalyRule =
   | 'scope_drift'
   | 'install_after_ingress'
   | 'unattended_run'
-  | 'context_edges';
+  | 'context_edges'
+  | 'subagent_inherited_bypass'
+  | 'cross_scope_read_then_publish'
+  | 'vcs_action'
+  | 'fetch_ingress'
+  | 'human_interrupt';
 
 export type Severity = 'info' | 'warn' | 'critical';
 

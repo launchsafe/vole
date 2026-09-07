@@ -449,6 +449,58 @@ export const MIGRATIONS: Migration[] = [
       return 0;
     },
   },
+  {
+    version: 19,
+    name: 'tier5-tier6-tier7-completion',
+    kind: 'ddl',
+    // autonomy_intervals: posture as a timeline. session_identity: the binding
+    // between a session and its principal, with evidence rank. suppression: turn
+    // a rule off centrally, keep counting what it hid. content_packs: versioned
+    // detector packs with checksums. export_seq: the change cursor.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS autonomy_intervals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          agent_id TEXT,
+          started_at INTEGER NOT NULL,
+          ended_at INTEGER NOT NULL,
+          calls INTEGER NOT NULL,
+          denied INTEGER NOT NULL DEFAULT 0,
+          errors INTEGER NOT NULL DEFAULT 0,
+          UNIQUE (session_id, agent_id, started_at)
+        );
+        CREATE TABLE IF NOT EXISTS session_identity (
+          session_id TEXT PRIMARY KEY,
+          principal_key TEXT,
+          device_key TEXT,
+          binding_evidence TEXT NOT NULL DEFAULT 'inferred',
+          first_seen INTEGER NOT NULL,
+          last_seen INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS suppression (
+          rule TEXT PRIMARY KEY,
+          reason TEXT,
+          suppressed_at INTEGER NOT NULL,
+          hidden_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS content_packs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          checksum TEXT NOT NULL,
+          loaded_at INTEGER NOT NULL,
+          UNIQUE (kind, version)
+        );
+        CREATE TABLE IF NOT EXISTS export_seq (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          exported_at INTEGER NOT NULL,
+          last_anomaly_id INTEGER NOT NULL DEFAULT 0,
+          last_event_ts INTEGER NOT NULL DEFAULT 0
+        );`);
+      return 0;
+    },
+  },
 ]
 ;
 

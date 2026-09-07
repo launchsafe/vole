@@ -178,6 +178,12 @@ if (CONTENT_ARGS.includes('--content')) {
     principals: ['id', 'principal_key', 'display', 'first_seen', 'last_seen'],
     devices: ['id', 'device_key', 'hostname', 'first_seen', 'last_seen'],
     grants: ['id', 'grant_key', 'agent', 'source_file', 'kind', 'entry', 'first_seen', 'last_seen'],
+    autonomy_intervals: ['id', 'session_id', 'agent_id', 'started_at', 'ended_at', 'calls', 'denied', 'errors'],
+    session_identity: ['session_id', 'principal_key', 'device_key', 'binding_evidence', 'first_seen', 'last_seen'],
+    suppression: ['rule', 'reason', 'suppressed_at', 'hidden_count'],
+    content_packs: ['id', 'kind', 'version', 'checksum', 'loaded_at'],
+    export_seq: ['id', 'exported_at', 'last_anomaly_id', 'last_event_ts'],
+    network_calls: ['id', 'caller', 'destination', 'purpose', 'ts'],
   };
 
   const findings: string[] = [];

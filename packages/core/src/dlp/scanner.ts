@@ -3,6 +3,7 @@ import { openDb, insertAnomalies } from '../db';
 import type { Scanner } from '../db';
 import { enumerateSinks, scanSink } from './sinks';
 import { toFingerprint, classifyStatus, packIdentity } from './engine';
+import { builtinDlpPack, registerPack } from '../packs';
 
 /**
  * The DLP scanner: rides the cadence lane (10-minute cadence — a scan is

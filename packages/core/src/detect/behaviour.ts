@@ -503,6 +503,213 @@ function detectContextEdges(db: DB, now: number): Anomaly[] {
   return out;
 }
 
+/** subagent_inherited_bypass: a headless session's subagents inherit autonomy. */
+function detectSubagentBypass(db: DB, now: number): Anomaly[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT tc.session_id, tc.agent_id
+       FROM tool_calls tc
+       JOIN tool_calls h ON h.session_id = tc.session_id
+         AND h.shape LIKE '%dangerously-skip-permissions%'
+       WHERE tc.agent_id IS NOT NULL AND tc.agent_id != 'main'`,
+    )
+    .all() as { session_id: string; agent_id: string }[];
+  return rows.map((r) => ({
+    anomaly_key: `subagent_inherited_bypass:${r.session_id}:${r.agent_id}`,
+    rule: 'subagent_inherited_bypass' as const,
+    severity: 'warn' as const,
+    tool: 'claude_code' as const,
+    session_id: r.session_id,
+    model: null,
+    window_start: now,
+    window_end: now,
+    title: `Subagent inherited bypass: ${r.agent_id.slice(0, 12)}`,
+    detail: `A session launched with permissions skipped, and subagent ${r.agent_id.slice(0, 12)} ran within it — the bypass propagated down the agent tree by construction.`,
+    observed: 1,
+    baseline: null,
+    threshold: null,
+    confidence: 'exact' as const,
+    source: 'live' as const,
+    detected_at: now,
+  }));
+}
+
+/** cross_scope_read_then_publish: sensitive read followed by remote execution. */
+function detectCrossScope(db: DB, now: number): Anomaly[] {
+  const rows = db
+    .prepare(
+      `SELECT s.session_id, s.ts AS read_ts, r.ts AS pub_ts, r.shape AS pub_shape
+       FROM tool_calls s
+       JOIN tool_calls r ON r.session_id = s.session_id
+         AND r.ts > s.ts AND r.ts - s.ts < 1800000
+         AND (r.shape LIKE 'ssh%' OR r.shape LIKE 'scp%' OR r.shape LIKE 'curl%')
+       WHERE s.shape LIKE '%[sensitive%'
+       ORDER BY s.ts DESC LIMIT 50`,
+    )
+    .all() as { session_id: string; read_ts: number; pub_ts: number; pub_shape: string }[];
+  const seen = new Set<string>();
+  const out: Anomaly[] = [];
+  for (const r of rows) {
+    const key = `cross_scope:${r.session_id}:${Math.floor(r.read_ts / 3600000)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      anomaly_key: key,
+      rule: 'cross_scope_read_then_publish',
+      severity: 'critical',
+      tool: 'claude_code' as const,
+      session_id: r.session_id,
+      model: null,
+      window_start: r.read_ts,
+      window_end: r.pub_ts,
+      title: 'Sensitive read then remote execution',
+      detail: `A sensitive-path read was followed within 30 min by a remote command (${r.pub_shape}) in the same session — data may have left the laptop. Shapes only; nothing typed is stored.`,
+      observed: r.pub_ts - r.read_ts,
+      baseline: null,
+      threshold: null,
+      confidence: 'exact',
+      source: 'live',
+      detected_at: now,
+    });
+  }
+  return out;
+}
+
+/** vcs_action: git operations that change state (push/reset/clean). */
+function detectVcsActions(db: DB, now: number): Anomaly[] {
+  const rows = db
+    .prepare(
+      `SELECT tool_call_key, tool, session_id, shape, ts FROM tool_calls
+       WHERE shape LIKE 'git push%' OR shape LIKE 'git reset%' OR shape LIKE 'git clean%'
+       ORDER BY ts DESC LIMIT 100`,
+    )
+    .all() as (CallRow & { shape: string })[];
+  const seen = new Set<string>();
+  const out: Anomaly[] = [];
+  for (const r of rows) {
+    const key = `vcs_action:${r.session_id}:${Math.floor(r.ts / 3600000)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      anomaly_key: key,
+      rule: 'vcs_action',
+      severity: 'info',
+      tool: r.tool as Anomaly['tool'],
+      session_id: r.session_id,
+      model: null,
+      window_start: r.ts,
+      window_end: r.ts,
+      title: `State-changing git: ${r.shape}`,
+      detail: `A ${r.shape} ran — repository state changed (pushed, reset or cleaned). Session ${r.session_id?.slice(0, 8) ?? 'unknown'}.`,
+      observed: 1,
+      baseline: null,
+      threshold: null,
+      confidence: 'exact',
+      source: 'live',
+      detected_at: now,
+    });
+  }
+  return out;
+}
+
+/** fetch_ingress: bytes entering the session from the web. */
+function detectFetchIngress(db: DB, now: number): Anomaly[] {
+  const rows = db
+    .prepare(
+      `SELECT session_id, COUNT(*) AS n, MIN(ts) AS lo, MAX(ts) AS hi
+       FROM tool_calls WHERE shape LIKE 'curl%' OR name IN ('WebFetch', 'Fetch')
+       GROUP BY session_id HAVING n >= 1`,
+    )
+    .all() as { session_id: string | null; n: number; lo: number; hi: number }[];
+  const out: Anomaly[] = [];
+  for (const r of rows) {
+    if (!r.session_id) continue;
+    out.push({
+      anomaly_key: `fetch_ingress:${r.session_id}`,
+      rule: 'fetch_ingress',
+      severity: 'info',
+      tool: 'claude_code' as const,
+      session_id: r.session_id,
+      model: null,
+      window_start: r.lo,
+      window_end: r.hi,
+      title: `Web ingress: ${r.n} fetch(es) entered the session`,
+      detail: `${r.n} web fetch(es) brought untrusted bytes into the agent's context — the prompt-injection surface. URLs are never stored; the shape is the fact.`,
+      observed: r.n,
+      baseline: null,
+      threshold: null,
+      confidence: 'exact',
+      source: 'live',
+      detected_at: now,
+    });
+  }
+  return out;
+}
+
+/** human-interrupt ledger: AskUserQuestion pauses — where the human was in the loop. */
+function detectHumanInterrupts(db: DB, now: number): Anomaly[] {
+  const rows = db
+    .prepare(
+      `SELECT session_id, COUNT(*) AS n, MIN(ts) AS lo, MAX(ts) AS hi FROM tool_calls
+       WHERE name IN ('AskUserQuestion', 'AskUser', 'request_human_input')
+       GROUP BY session_id`,
+    )
+    .all() as { session_id: string | null; n: number; lo: number; hi: number }[];
+  const out: Anomaly[] = [];
+  for (const r of rows) {
+    if (!r.session_id) continue;
+    out.push({
+      anomaly_key: `human_interrupt:${r.session_id}`,
+      rule: 'human_interrupt',
+      severity: 'info',
+      tool: 'claude_code' as const,
+      session_id: r.session_id,
+      model: null,
+      window_start: r.lo,
+      window_end: r.hi,
+      title: `Human in the loop: ${r.n} interruption(s)`,
+      detail: `${r.n} AskUserQuestion pauses in this session — the human was consulted. This is the evidence that separates supervised from unattended work.`,
+      observed: r.n,
+      baseline: null,
+      threshold: null,
+      confidence: 'exact',
+      source: 'live',
+      detected_at: now,
+    });
+  }
+  return out;
+}
+
+/** The autonomy intervals table: posture as a timeline, filled from the ledger. */
+export function buildAutonomyIntervals(db: DB): number {
+  db.exec('DELETE FROM autonomy_intervals');
+  const rows = db
+    .prepare(
+      `INSERT INTO autonomy_intervals (session_id, agent_id, started_at, ended_at, calls, denied, errors)
+       SELECT session_id, COALESCE(agent_id, 'main'), MIN(ts), MAX(ts), COUNT(*),
+              SUM(CASE WHEN status = 'denied' THEN 1 ELSE 0 END),
+              SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END)
+       FROM tool_calls WHERE session_id IS NOT NULL
+       GROUP BY session_id, COALESCE(agent_id, 'main')`,
+    )
+    .run();
+  return rows.changes;
+}
+
+/** session_identity: bind sessions to principals, with evidence rank. */
+export function buildSessionIdentity(db: DB, principalKey: string, deviceKey: string): number {
+  const now = Date.now();
+  const upsert = db.prepare(`
+    INSERT INTO session_identity (session_id, principal_key, device_key, binding_evidence, first_seen, last_seen)
+    VALUES (?, ?, ?, 'store_origin', ?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET last_seen = excluded.last_seen`);
+  const sessions = db
+    .prepare("SELECT DISTINCT session_id FROM usage_events WHERE session_id IS NOT NULL AND source = 'live' LIMIT 2000")
+    .all() as { session_id: string }[];
+  for (const s of sessions) upsert.run(s.session_id, principalKey, deviceKey, now, now);
+  return sessions.length;
+}
+
 /** The registry: run every ledger rule. */
 export function detectLedgerRules(db: DB, now = Date.now()): Anomaly[] {
   return [
@@ -520,5 +727,10 @@ export function detectLedgerRules(db: DB, now = Date.now()): Anomaly[] {
     ...detectInstallAfterIngress(db, now),
     ...detectUnattendedRuns(db, now),
     ...detectContextEdges(db, now),
+    ...detectSubagentBypass(db, now),
+    ...detectCrossScope(db, now),
+    ...detectVcsActions(db, now),
+    ...detectFetchIngress(db, now),
+    ...detectHumanInterrupts(db, now),
   ];
 }

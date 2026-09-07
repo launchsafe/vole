@@ -260,7 +260,7 @@ final class DB {
     /// depends on the two agreeing about what "current" means. The read-model
     /// parity check asserts this against the fixture store (always at the TS head),
     /// so a forgotten bump fails CI instead of shipping a gate that blocks users.
-    static let knownSchemaVersion = 18
+    static let knownSchemaVersion = 19
 
     private var handle: OpaquePointer?
     let path: String

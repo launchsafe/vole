@@ -8,10 +8,10 @@ import {
 } from '../db';
 import { collectAll } from '../collectors';
 import { detectBySource, RULE_IDS } from '../detect';
-import { detectLedgerRules } from '../detect/behaviour';
+import { detectLedgerRules, buildAutonomyIntervals, buildSessionIdentity } from '../detect/behaviour';
 import { SCANNERS } from '../scanners';
 import { insertToolCalls } from '../toolcalls/bind';
-import { recordIdentity, sweepGrants } from '../identity';
+import { recordIdentity, sweepGrants, principalKey, deviceKey } from '../identity';
 import { paths } from '../paths';
 import type { Anomaly, RateLimitObservation, Tool, UsageEvent } from '../types';
 
@@ -119,7 +119,25 @@ function runOnce(): void {
     anomalies = detectBySource(all, { live: rateLimits }, Date.now());
     // The ledger rules read the store directly — they run in the same pass.
     anomalies.push(...detectLedgerRules(db, Date.now()));
+    // The suppression register: a rule turned off centrally keeps counting what
+    // it hid, and its anomalies are withheld rather than deleted.
+    const suppressed = new Set(
+      (db.prepare('SELECT rule FROM suppression').all() as { rule: string }[]).map((r) => r.rule),
+    );
+    if (suppressed.size > 0) {
+      const hidden = anomalies.filter((a) => suppressed.has(a.rule));
+      for (const rule of suppressed) {
+        if (hidden.some((h) => h.rule === rule)) {
+          db.prepare('UPDATE suppression SET hidden_count = hidden_count + ? WHERE rule = ?')
+            .run(hidden.filter((h) => h.rule === rule).length, rule);
+        }
+      }
+      anomalies = anomalies.filter((a) => !suppressed.has(a.rule));
+    }
     const written = insertAnomalies(db, anomalies);
+    // The autonomy timeline + session identity: structures rebuilt per pass.
+    buildAutonomyIntervals(db);
+    buildSessionIdentity(db, principalKey(userInfo().username), deviceKey());
     newAnomalies = written.inserted;
     escalatedAnomalies = written.escalated;
     if (epochChanged) {
