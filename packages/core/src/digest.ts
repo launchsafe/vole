@@ -21,6 +21,10 @@ const RULE: Record<string, string> = {
   cross_scope_read_then_publish: 'cross-scope publishes', vcs_action: 'state-changing git',
   fetch_ingress: 'web ingress', human_interrupt: 'human interrupts',
   hidden_unicode_instruction: 'hidden-unicode instructions', mcp_endpoint_alias: 'MCP aliases',
+  agent_pushed_data_off_device: 'data pushed off-device', remote_privileged_exec: 'privileged remote exec',
+  destructive_schema_change: 'destructive schema changes', paged_bulk_read: 'bulk reads',
+  daily_exposure_rollup: 'autonomy days', tool_first_seen: 'new tool surfaces',
+  posture_escalated: 'posture escalations',
 };
 const base = (p: string) => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
 const day = (ts: number) => new Date(ts).toISOString().slice(0, 10);

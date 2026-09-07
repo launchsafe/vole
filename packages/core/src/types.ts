@@ -109,7 +109,14 @@ export type AnomalyRule =
   | 'fetch_ingress'
   | 'human_interrupt'
   | 'hidden_unicode_instruction'
-  | 'mcp_endpoint_alias';
+  | 'mcp_endpoint_alias'
+  | 'agent_pushed_data_off_device'
+  | 'remote_privileged_exec'
+  | 'destructive_schema_change'
+  | 'paged_bulk_read'
+  | 'daily_exposure_rollup'
+  | 'tool_first_seen'
+  | 'posture_escalated';
 
 export type Severity = 'info' | 'warn' | 'critical';
 

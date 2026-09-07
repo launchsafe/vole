@@ -8,7 +8,7 @@ import {
 } from '../db';
 import { collectAll } from '../collectors';
 import { detectBySource, RULE_IDS } from '../detect';
-import { detectLedgerRules, buildAutonomyIntervals, buildSessionIdentity } from '../detect/behaviour';
+import { detectLedgerRules, buildAutonomyIntervals, buildSessionIdentity, LEDGER_RULE_IDS } from '../detect/behaviour';
 import { SCANNERS } from '../scanners';
 import { insertToolCalls } from '../toolcalls/bind';
 import { recordIdentity, sweepGrants, principalKey, deviceKey } from '../identity';
@@ -104,7 +104,7 @@ function runOnce(): void {
   // rule ships), it must see the historical rows once, or it would silently wait
   // for the next insert — the rerouted-model rule would have missed 2,540
   // existing rows on the machine it was written for.
-  const rulesEpoch = RULE_IDS.join(',');
+  const rulesEpoch = RULE_IDS.join(',') + ';' + LEDGER_RULE_IDS.join(',');
   const lastEpoch = db
     .prepare("SELECT notes FROM scan_state WHERE scanner = 'detection-rules'")
     .get() as { notes: string | null } | undefined;

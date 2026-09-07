@@ -710,9 +710,260 @@ export function buildSessionIdentity(db: DB, principalKey: string, deviceKey: st
   return sessions.length;
 }
 
+/** agent_pushed_data_off_device: scp/rsync/cp into a remote or unmonitored context. */
+function detectPushedData(db: DB, now: number): Anomaly[] {
+  const rows = db
+    .prepare(
+      `SELECT tool_call_key, tool, session_id, shape, ts FROM tool_calls
+       WHERE shape LIKE 'scp%' OR shape LIKE 'rsync%'
+       ORDER BY ts DESC LIMIT 50`,
+    )
+    .all() as (CallRow & { shape: string })[];
+  const seen = new Set<string>();
+  const out: Anomaly[] = [];
+  for (const r of rows) {
+    const key = `agent_pushed:${r.session_id}:${Math.floor(r.ts / 3600000)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      anomaly_key: key,
+      rule: 'agent_pushed_data_off_device',
+      severity: 'warn',
+      tool: r.tool as Anomaly['tool'],
+      session_id: r.session_id,
+      model: null,
+      window_start: r.ts,
+      window_end: r.ts,
+      title: `Data pushed off device: ${r.shape}`,
+      detail: `A ${r.shape} command ran — files left this laptop. The shape is the fact; the file names are never stored.`,
+      observed: 1,
+      baseline: null,
+      threshold: null,
+      confidence: 'exact',
+      source: 'live',
+      detected_at: now,
+    });
+  }
+  return out;
+}
+
+/** remote_privileged_exec: ssh + sudo/docker/kubectl — privileged remote code. */
+function detectPrivilegedRemote(db: DB, now: number): Anomaly[] {
+  const rows = db
+    .prepare(
+      `SELECT tool_call_key, tool, session_id, shape, ts FROM tool_calls
+       WHERE (shape LIKE 'ssh%sudo%' OR shape LIKE 'docker exec%' OR shape LIKE 'kubectl exec%')
+       ORDER BY ts DESC LIMIT 50`,
+    )
+    .all() as (CallRow & { shape: string })[];
+  return rows.map((r) => ({
+    anomaly_key: `remote_privileged_exec:${r.tool_call_key}`,
+    rule: 'remote_privileged_exec' as const,
+    severity: 'critical' as const,
+    tool: r.tool as Anomaly['tool'],
+    session_id: r.session_id,
+    model: null,
+    window_start: r.ts,
+    window_end: r.ts,
+    title: `Privileged remote execution: ${r.shape}`,
+    detail: `A ${r.shape} command ran — code executed on another system with elevated rights. Session ${r.session_id?.slice(0, 8) ?? 'unknown'}.`,
+    observed: 1,
+    baseline: null,
+    threshold: null,
+    confidence: 'exact' as const,
+    source: 'live' as const,
+    detected_at: now,
+  }));
+}
+
+/** destructive_schema_change: DROP TABLE / TRUNCATE / DELETE FROM in database commands. */
+function detectSchemaChange(db: DB, now: number): Anomaly[] {
+  const rows = db
+    .prepare(
+      `SELECT tool_call_key, tool, session_id, shape, ts FROM tool_calls
+       WHERE shape LIKE 'psql -c%' AND (
+         instr(lower(COALESCE(shape, '')), 'drop') > 0 OR
+         instr(lower(COALESCE(shape, '')), 'truncate') > 0
+       ) OR name = 'execute_sql' AND shape IS NOT NULL
+       ORDER BY ts DESC LIMIT 20`,
+    )
+    .all() as (CallRow & { shape: string })[];
+  return rows.map((r) => ({
+    anomaly_key: `destructive_schema_change:${r.tool_call_key}`,
+    rule: 'destructive_schema_change' as const,
+    severity: 'critical' as const,
+    tool: r.tool as Anomaly['tool'],
+    session_id: r.session_id,
+    model: null,
+    window_start: r.ts,
+    window_end: r.ts,
+    title: `Destructive database change: ${r.shape}`,
+    detail: `A database command with schema-destructive potential ran. The shape is recorded; the SQL text is never stored.`,
+    observed: 1,
+    baseline: null,
+    threshold: null,
+    confidence: 'exact' as const,
+    source: 'live' as const,
+    detected_at: now,
+  }));
+}
+
+/** paged_bulk_read: the agent read a directory wholesale. */
+function detectPagedBulkRead(db: DB, now: number): Anomaly[] {
+  const rows = db
+    .prepare(
+      `SELECT session_id, COUNT(*) AS n, MIN(ts) AS lo, MAX(ts) AS hi
+       FROM tool_calls WHERE name IN ('Read', 'Glob', 'Grep', 'read_file')
+         AND ts > ?
+       GROUP BY session_id HAVING n >= 30`,
+    )
+    .all(now - 24 * 3600_000) as { session_id: string | null; n: number; lo: number; hi: number }[];
+  return rows.filter((r) => r.session_id).map((r) => ({
+    anomaly_key: `paged_bulk_read:${r.session_id}`,
+    rule: 'paged_bulk_read' as const,
+    severity: 'info' as const,
+    tool: 'claude_code' as const,
+    session_id: r.session_id,
+    model: null,
+    window_start: r.lo,
+    window_end: r.hi,
+    title: `Bulk read: ${r.n} file accesses in one session`,
+    detail: `${r.n} read/glob/grep calls in 24h — the agent read a large surface. Not inherently wrong, but the per-call view cannot see it; only the ledger can.`,
+    observed: r.n,
+    baseline: null,
+    threshold: 30,
+    confidence: 'exact' as const,
+    source: 'live' as const,
+    detected_at: now,
+  }));
+}
+
+/** daily exposure rollup: the autonomy clock — unattended minutes per day. */
+function detectDailyExposure(db: DB, now: number): Anomaly[] {
+  const rows = db
+    .prepare(
+      `SELECT session_id, agent_id, started_at, ended_at, calls FROM autonomy_intervals
+       WHERE ended_at - started_at > 300000`,
+    )
+    .all() as { session_id: string; agent_id: string | null; started_at: number; ended_at: number; calls: number }[];
+  const byDay = new Map<string, number>();
+  for (const r of rows) {
+    const day = Math.floor(r.started_at / 86400000);
+    byDay.set(String(day), (byDay.get(String(day)) ?? 0) + (r.ended_at - r.started_at));
+  }
+  const out: Anomaly[] = [];
+  for (const [day, ms] of byDay) {
+    if (ms < 600000) continue; // ≥10 min of agent-run time
+    out.push({
+      anomaly_key: `daily_exposure:${day}`,
+      rule: 'daily_exposure_rollup',
+      severity: 'info',
+      tool: 'claude_code' as const,
+      session_id: null,
+      model: null,
+      window_start: Number(day) * 86400000,
+      window_end: Number(day) * 86400000 + 86400000,
+      title: `Agent autonomy: ${Math.round(ms / 60000)} min on this day`,
+      detail: `Across all sessions, agents ran for ${Math.round(ms / 60000)} minutes of active tool time — the autonomy clock. Human presence is not implied by activity; only AskUserQuestion pauses are.`,
+      observed: ms,
+      baseline: null,
+      threshold: 600000,
+      confidence: 'exact',
+      source: 'live',
+      detected_at: now,
+    });
+  }
+  return out;
+}
+
+/** tool_first_seen: a tool name appears for the first time — the MCP dimension. */
+function detectToolFirstSeen(db: DB, now: number): Anomaly[] {
+  const rows = db
+    .prepare(
+      `SELECT name, MIN(ts) AS first FROM tool_calls GROUP BY name
+       HAVING first > ?`,
+    )
+    .all(now - 7 * 24 * 3600_000) as { name: string; first: number }[];
+  return rows.map((r) => ({
+    anomaly_key: `tool_first_seen:${r.name}`,
+    rule: 'tool_first_seen' as const,
+    severity: 'info' as const,
+    tool: 'claude_code' as const,
+    session_id: null,
+    model: null,
+    window_start: r.first,
+    window_end: r.first,
+    title: `New tool surface: ${r.name}`,
+    detail: `The ledger's first sighting of "${r.name}" was ${new Date(r.first).toISOString()}. A tool nobody has used before is a capability that just appeared.`,
+    observed: 1,
+    baseline: null,
+    threshold: null,
+    confidence: 'exact' as const,
+    source: 'live' as const,
+    detected_at: now,
+  }));
+}
+
+/** posture_escalated: within a session, authority moved from gated to bypass. */
+function detectPostureEscalated(db: DB, now: number): Anomaly[] {
+  const rows = db
+    .prepare(
+      `SELECT d.session_id, d.ts AS denied_ts, h.ts AS bypass_ts
+       FROM tool_calls d
+       JOIN tool_calls h ON h.session_id = d.session_id
+         AND h.shape LIKE '%dangerously-skip-permissions%'
+         AND h.ts > d.ts
+       WHERE d.status = 'denied' ORDER BY d.ts LIMIT 20`,
+    )
+    .all() as { session_id: string; denied_ts: number; bypass_ts: number }[];
+  const seen = new Set<string>();
+  const out: Anomaly[] = [];
+  for (const r of rows) {
+    const key = `posture_escalated:${r.session_id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      anomaly_key: key,
+      rule: 'posture_escalated',
+      severity: 'critical',
+      tool: 'claude_code' as const,
+      session_id: r.session_id,
+      model: null,
+      window_start: r.denied_ts,
+      window_end: r.bypass_ts,
+      title: 'Posture escalated within session',
+      detail: `A call was denied, then the session launched with --dangerously-skip-permissions — the guardrails came off mid-session. The strongest bypass signal the ledger can produce.`,
+      observed: r.bypass_ts - r.denied_ts,
+      baseline: null,
+      threshold: null,
+      confidence: 'exact',
+      source: 'live',
+      detected_at: now,
+    });
+  }
+  return out;
+}
+
 /** The registry: run every ledger rule. */
+export const LEDGER_RULE_IDS = [
+  'denied_then_achieved', 'denial_then_reshape', 'remote_execution', 'remote_privileged_exec',
+  'destructive_command', 'destructive_schema_change', 'tool_failure_storm', 'stuck_tool_call',
+  'headless_bypass_launch', 'sensitive_read_unasked', 'agent_wrote_persistence',
+  'agent_self_authorised', 'scope_drift', 'remote_database', 'install_after_ingress',
+  'unattended_run', 'context_edges', 'subagent_inherited_bypass', 'cross_scope_read_then_publish',
+  'vcs_action', 'fetch_ingress', 'human_interrupt', 'agent_pushed_data_off_device',
+  'paged_bulk_read', 'daily_exposure_rollup', 'tool_first_seen', 'posture_escalated',
+] as const;
+
 export function detectLedgerRules(db: DB, now = Date.now()): Anomaly[] {
   return [
+    ...detectToolFirstSeen(db, now),
+    ...detectPostureEscalated(db, now),
+    ...detectPushedData(db, now),
+    ...detectPrivilegedRemote(db, now),
+    ...detectSchemaChange(db, now),
+    ...detectPagedBulkRead(db, now),
+    ...detectDailyExposure(db, now),
     ...detectDeniedThenAchieved(db, now),
     ...detectShapeRules(db, now),
     ...detectFailureStorms(db, now),
