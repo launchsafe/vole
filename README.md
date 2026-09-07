@@ -4,7 +4,7 @@
 
 # Vole
 
-**Local-first usage, cost and reliability monitor for AI coding agents.**
+**Local-first usage, cost and security monitor for AI coding agents.**
 
 [![CI](https://github.com/launchsafe/vole/actions/workflows/ci.yml/badge.svg)](https://github.com/launchsafe/vole/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -14,12 +14,17 @@
 </div>
 
 Vole reads the logs your AI coding tools already write to disk, normalises them into one
-schema, and surfaces both spend and *misbehaviour* — runaway tool loops, token-burn spikes, retry
-storms, rate-limit pressure.
+schema, and surfaces both spend and *misbehaviour* — runaway tool loops, billable burn
+spikes, retry storms, rate-limit pressure — plus the security picture: which AI surfaces
+exist on this machine (including the ones nobody provisioned), whether a gateway is
+rerouting a sanctioned agent to a different model, and what credentials are sitting in
+the agents' own at-rest sinks.
 
 It is a monitoring tool, not a cost tracker: the incident feed is the point.
 
-Everything runs locally. No scraping, no cloud APIs, no logging into any web UI.
+Everything runs locally. No scraping, no cloud APIs, no logging into any web UI. No
+prompt or tool content is ever stored — the content boundary is a branded type, and
+`pnpm verify --content` checks the claim against the actual database.
 
 ```bash
 git clone https://github.com/launchsafe/vole && cd vole && pnpm install
@@ -27,8 +32,10 @@ pnpm collect     # parse the logs, keep polling
 pnpm app         # the menu-bar app
 ```
 
-Supports **Claude Code**, **Codex CLI**, **OpenCode**, **Grok CLI**, **Cursor**, **Devin** and
-**Antigravity**. Full setup, requirements and demo data in [Quick start](#quick-start).
+Supports **Claude Code**, **Codex CLI**, **OpenCode**, **Grok CLI**, **Cursor**, **Devin**,
+**Antigravity**, **Gemini CLI**, **Copilot CLI**, **Aider**, **Goose**, **Amp**, **Continue**,
+**VS Code chat / Cline / Roo / Kilo** and **Ollama**. Full setup, requirements and demo data in
+[Quick start](#quick-start).
 
 ![The Vole dashboard: token/cost KPIs and a 30-day incident-annotated timeline stacked by tool](docs/images/dashboard.png)
 
@@ -79,6 +86,9 @@ and Vole never papers over the difference.
 | **Devin** | `~/Library/Application Support/Devin/User/acp-messages/*.db` | **None recorded** | none | `no tokens` |
 | **Cursor** | `~/.cursor/ai-tracking/ai-code-tracking.db` | **None recorded** | none | `no tokens` |
 | **Antigravity** | `~/.gemini/antigravity-ide/brain/<id>/` | **None recorded** | none | `no tokens` |
+| **Gemini CLI** | `~/.gemini/tmp/<session>/stats.json` (cumulative meter) | **Exact** | *unavailable* | `exact` |
+| **Copilot CLI** | `~/.copilot/sessions/**.jsonl` (`session.shutdown modelMetrics`) | **Exact** | *unavailable* | `exact` |
+| **Aider / Goose / Amp / Continue / VS Code chat / Cline / Kilo / Ollama** | each tool's own session/task artifacts | **None recorded** | none | `no tokens` |
 
 ### Why each one is what it is
 
@@ -224,6 +234,16 @@ stops it on quit; `pnpm app` (`swift run`, unbundled) has no binary to embed, so
 whatever `pnpm collect` (above) is writing. Details, packaging and the `--dump` headless check are
 in [apps/mac/README.md](apps/mac/README.md).
 
+### Updating
+
+The app updates itself. When a release publishes a checksummed archive, the red-dot toolbar icon
+and Settings → Software Update offer a one-click install: download, **verify the published
+SHA-256**, validate the payload is really Vole at the advertised version, swap the running bundle
+in place, and relaunch. A release without a checksum never silent-installs — the button falls back
+to opening the release page, because unverifiable code is not swapped into a running app. For
+private-repo distribution, store a GitHub token as `vole-github-token` in the login keychain
+(`security add-generic-password -s vole-github-token -a vole -w <token>`).
+
 ### Demo data
 
 Real logs are sparse and never trigger the error-storm or rate-limit rules, so a demo on live data
@@ -259,12 +279,54 @@ different states and the app never confuses them.
 ### The dashboard window
 
 The signature element is the **incident-annotated timeline**: tokens stacked per tool in each
-tool's brand colour, with every incident pinned to the bucket where its rule fired, so a spike and
-its cause are one glance rather than a chart and a list to correlate by hand. Around it: the KPI
-row (tokens, equivalent value, calls, sessions, cache hit, errors), the incident feed grouped by
-day with the exact figures that fired each rule, and a sortable breakdown per tool and model with
-the confidence badge on every row. Light and dark follow the system or a setting; the palette is
-the system one, so it tracks the user's accent and contrast preferences.
+tool's brand colour, with every incident pinned to the bucket where its rule fired (severity-coloured
+marks at the plot base, plus a clickable incident lane beneath that jumps to the filtered incident
+list), so a spike and its cause are one glance rather than a chart and a list to correlate by hand.
+Quiet days render as zero buckets, never as missing ones. Around it: the security-first KPI row
+(AI surfaces, gateways, unsanctioned, rerouted models), the activity row (tokens, equivalent value,
+burn rate, peak minute), the incident feed grouped by day with the exact figures that fired each
+rule, per-tool model generation speeds with their provenance, and a sortable breakdown per tool and
+model with the confidence badge on every row. Light and dark follow the system or a setting; the
+palette is the system one, so it tracks the user's accent and contrast preferences.
+
+Navigation is three groups — **Monitor** (Dashboard, Breakdown), **Risk** (Incidents, Triage,
+Shadow AI, Data Exposure, Posture, Blast Radius, Behaviour) and **Manage** (People, Privacy,
+Settings) — where every section names its data: a section whose backing table is absent (a later
+tier's collector) renders an honest "written by Tier N" state rather than an empty list.
+
+### The security screens
+
+**Shadow AI** — the census of every AI surface on this machine: installed apps (with signing
+Team IDs), persistent launchd gateways, CLIs, ghost apps that ran here and were deleted, local
+model runtimes with listening ports, the OS's own AI settings, browser AI-host visit counts,
+editor and browser extensions, and provider credentials (names and shapes only, never values).
+Each row carries an evidence ladder — present / ran here / configured / listening — and states
+"inventory, never spend". With a `~/.vole/policy/surfaces.json` declaration, rows gain
+sanctioned/unsanctioned verdicts and an `unsanctioned_surface` rule fires; with no policy loaded,
+the rule is inert by design — "unsanctioned" is a company decision, not a technical fact.
+
+**Data Exposure** — the secret-sighting ledger: a versioned detector pack (AWS, OpenAI, Anthropic,
+GitHub, private keys, entropy-with-stopwords) scanned out-of-path over the agents' own at-rest
+sinks (Claude's shell snapshots and file history, Codex thread history, Copilot sessions, Devin
+payloads). Sightings store a Keychain-keyed HMAC fingerprint and a byte offset — **never the
+value**: the just-in-time evidence viewer re-reads the file at view time, so "no content stored"
+survives a secret scanner living inside the product. Coverage denominators print beside every
+figure.
+
+**Triage** — the incidents screen the app never had: a queue with multi-select
+acknowledge/mute/escalate, written through a spool directory (`~/.vole/inbox`) that the collector
+drains — the app never writes the store, keeping the single-writer discipline. Mutes expire.
+
+**Privacy Center** — the field dictionary (every table and column, from `PRAGMA` — the complete
+answer to "what is stored on this machine"), the no-content claim, and the store facts.
+
+### Model generation speeds
+
+Per-model tokens/second, computed from response durations with per-figure provenance: OpenCode
+states real spans (`measured`); Claude Code, Codex and Grok are estimated from turn gaps
+(`turn_scoped` — a lower bound, since gaps include queue time). Every figure prints its coverage:
+the share of that model's output tokens whose duration is known. A speed without its coverage
+is a benchmark, not a measurement.
 
 ### Beyond the window
 
@@ -334,11 +396,19 @@ own row so the dashboard can render an incident feed.
 
 | Rule | Fires when |
 |---|---|
-| `burn_rate_spike` | A 10-min window exceeds **3×** the median window for that same tool+model (min 20K tokens) |
-| `loop_suspected` | ≥15 calls in 5 min at >3× the session's own rate, **while output stays flat and cache reads climb** |
+| `billable_burn_spike` | A 10-min window costs >**3×** that session's typical window — scored on `cost_usd` where priced, else uncached tokens; cache-read-only spikes never fire |
+| `repeat_call_loop` | ≥**45 calls** in 5 min while output stays flat — an absolute rate, so a session spinning at a constant speed from its first turn is caught (the old relative-median rule missed it by construction) |
 | `error_storm` | >20% error ratio over 15 min, with ≥5 errors |
 | `rate_limit_pressure` | Codex reports >80% of its quota consumed (the only tool that self-reports this) |
 | `context_pressure` | A call carried ≥80% of the model's context window (≥95% critical); once per session per hour |
+| `rerouted_model` | A Claude Code row was answered by a non-Anthropic model id — read straight from the stored model column, with the CCR hex-alias decoded (a "claude-ccr-h7177…" id that decodes to the qwen model actually serving) |
+| `unsanctioned_surface` | A census surface is not in the loaded policy declaration — **inert when no policy is loaded** |
+| `new_ai_surface` | A surface first seen within the last 24h |
+| `coverage_degraded` | A source root that exists can no longer be read — a permission fact, not an absence fact |
+| `foreign_root` | Usage recorded with a cwd that does not exist on this filesystem — the transcript came from another machine |
+
+Rules are also **epoch-aware**: when the rule registry changes, every new rule sees the
+historical rows once, instead of silently waiting for the next insert.
 
 `context_pressure` uses the window the tool reports (Codex) or the published one for first-party
 model ids in `pricing.json`. An OpenCode `provider/model` id resolves only for the `anthropic`
@@ -390,8 +460,11 @@ Code entry type representing a message with no billed API call.
 ## Verifying it works
 
 ```bash
-pnpm test     # unit tests: rules, queries, bucketing, confidence invariants
-pnpm verify   # reconciles every stored row against its own source record
+pnpm test               # unit tests: rules, queries, bucketing, confidence invariants
+pnpm verify             # reconciles every stored row against its own source record
+pnpm verify --content   # the no-content claim, checked against the actual database
+pnpm verify --surfaces  # the inventory/usage firewall: surface rows never trace to usage
+pnpm parity             # the two readers (TS and Swift) must answer identically
 ```
 
 `pnpm verify` is the important one. It:
@@ -402,8 +475,19 @@ pnpm verify   # reconciles every stored row against its own source record
   is live, so a total-vs-total check can neither prove nor disprove correctness;
 - anchors Codex on the source's own **cumulative meter**: a stored total must equal the meter
   delta, and breakdown fields must be NULL (not 0) where the source never split the meter;
+- **fails on an empty store** and opens read-only — a vacuous PASS can never happen;
+- reports pruned sources (Claude deletes transcripts after ~30 days) as a horizon, not a failure;
 - checks every `activity_only` row is NULL in all token and cost fields;
 - reports the live duplication factor.
+
+`pnpm verify --content` turns "we never store prompts" from a promise into a check: every table
+and column must be in a reviewed allowlist, and every free-text value must match its writer's
+shape — a pasted prompt cannot hide in a triage note.
+
+`pnpm parity` builds a deterministic fixture store, runs both independent readers (TypeScript
+`queries.ts` and Swift `DB.swift`) against it, and diffs the JSON — the same drift-catching
+contract CI enforces on every push, including the schema-version handshake between the collector
+and the app.
 
 Expected output (one section per source):
 
@@ -427,14 +511,22 @@ If that final line ever changes, something is genuinely wrong.
 ## Architecture
 
 ```
-packages/core     types · SQLite schema + DAL · pricing · collectors · rules · queries · CLIs · MCP
+packages/core     types · SQLite schema + migrations · pricing · collectors · scanners · DLP ·
+                   rules · queries · CLIs · MCP · policy
 apps/mac          SwiftUI menu-bar app + dashboard window, reading the same SQLite file read-only
 ```
 
 `packages/core` is plain TypeScript with no UI imports — that is what lets the collector, the
 seeder, the verifier, the CLIs and the MCP server share one implementation. The app has no
 Node runtime: `DB.swift` ports the read models from `queries.ts` onto the SQLite3 C API that ships
-with macOS, so the two agree by construction on the same file.
+with macOS, and `pnpm parity` + CI enforce that the two agree on every push.
+
+Schema changes go through a **numbered, ledgered migration path** (`schema_migrations`, currently
+v14): an older binary refuses to write a newer store loudly instead of silently NULLing columns it
+does not know, and the app renders a version-gate banner rather than guessing. Expensive discovery
+work (the AI-surface census, the DLP scan engine) runs on a **scanner cadence lane** — every
+5–10 minutes, never inside the 5-second poll — and the collector supervises itself with a
+verified pidfile so crashed launches cannot accumulate.
 
 ```mermaid
 flowchart LR
@@ -480,17 +572,21 @@ Regenerate the PDF after editing any markdown with `pnpm docs:pdf`.
 - **Antigravity timing is approximate** — file mtimes, not real timestamps, so its events cluster
   rather than spread across a session.
 - **`pnpm app:bundle` ad-hoc signs.** `bundle.sh --release` signs with a Developer ID, notarises
-  and produces a `.dmg` — see [apps/mac/README.md](apps/mac/README.md#package).
-- **Live sessions, session drill-down, digest and what-if are not drawn in the app yet.** They are
-  complete in core and available through `pnpm top`, `pnpm digest` and the MCP server.
-- Cursor and Antigravity coverage is **deliberately shallow** because the data genuinely is not
+  and produces a `.dmg` plus the checksummed auto-update pair — see
+  [apps/mac/README.md](apps/mac/README.md#package).
+- **Generation speeds for Claude Code, Codex and Grok are turn-scoped estimates** — the gap from
+  input to completed response, which includes queue time, so they are lower bounds on true
+  streaming speed. OpenCode rows are measured. Every figure prints which it is.
+- **Cursor and Antigravity coverage is **deliberately shallow** because the data genuinely is not
   there. That is documented rather than disguised.
-- **Databases collected before tool names, agent ids and context windows existed** keep those
-  columns NULL on old rows (the upsert only rewrites a row when its tokens grow). The database is
-  disposable: `rm ~/.vole/vole.db*` and `pnpm collect:once` rebuilds it from the logs.
 - **Context windows are known only for first-party model ids** listed in `pricing.json`
   (`context_windows`) or reported by the tool itself (Codex). Local and proxied models show a
   context size but no window, and never trip `context_pressure`.
+- **The enterprise tiers are in progress.** 111 of the 368 roadmap features are built (all
+  blockers, Tier 1, Tier 2 and Tier 4); identity (Tier 3), the tool-call ledger (Tier 5), posture
+  (Tier 6), SIEM export (Tier 7) and fleet (Tier 8) are the remaining direction — see
+  [ENTERPRISE-ROADMAP.md](docs/ENTERPRISE-ROADMAP.md). Sections whose backing tables do not
+  exist yet say so in the app instead of showing empty lists.
 
 ---
 
