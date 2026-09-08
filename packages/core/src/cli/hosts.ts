@@ -38,7 +38,7 @@ const edition =
   hosts.length <= FREE_TIER_HOSTS ? 'Core (free tier)' : hosts.length <= 100 ? 'Enterprise' : 'Fleet';
 
 console.log('Vole active agent hosts');
-console.log('──────────────────────────────');
+console.log('────────────────────────────');
 console.log(`  range                 last ${n}${m?.[2] ?? 'd'}`);
 console.log(`  active hosts          ${hosts.length}`);
 console.log(`  free tier             ${FREE_TIER_HOSTS} hosts`);

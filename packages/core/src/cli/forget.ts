@@ -44,7 +44,7 @@ if (flag('--decommission') !== undefined) {
   }
   const receipt = decommission(db, principal, out, { setBy: 'vole decommission' });
   console.log('Device decommission — seal / attest / erase');
-  console.log('─────────────────────────────────────────────');
+  console.log('─────────────────────────────────────────');
   console.log(`  SEAL    archive ${out}`);
   for (const r of receipt.seal.rows_exported) console.log(`          ${r.table.padEnd(16)} ${r.rows} row(s) (deny-by-default encoder)`);
   console.log(`          freeze manifest: ${receipt.seal.freeze_manifest_rows} row(s)`);

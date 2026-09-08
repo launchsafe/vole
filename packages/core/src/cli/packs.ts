@@ -29,10 +29,10 @@ function main(): void {
   const db = openDb();
 
   if (args[0] === '--preflight') {
-    const file = args[1]!;
+    const file = args[1];
     if (!file) usage();
     const allowUnsigned = args.includes('--allow-unsigned');
-    const budget = args.includes('--budget') ? parseInt(args[args.indexOf('--budget') + 1] ?? '', 10) : undefined;
+    const budget = args.includes('--budget') ? parseInt(args[args.indexOf('--budget') + 1], 10) : undefined;
     const r = preflightPack(db, file, { allowUnsigned, budgetBytes: budget });
     if (r.refusal) {
       console.log(`REFUSED: ${r.refusal}`);

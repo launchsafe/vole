@@ -67,7 +67,7 @@ function record(view: string): void {
 const TOOLS: { name: string; description: string; inputSchema: object; run: (a: Record<string, unknown>) => unknown }[] = [
   {
     name: 'vole_summary',
-    description: 'Totals for a range across every AI coding tool on this machine: calls, exact tokens, equivalent cost, sessions, cache hit ratio, errors, truncated calls, per-tool split.',
+    description: 'Totals for a range across every AI coding tool on this machine: calls, exact tokens, cost, sessions, cache hit ratio, errors, truncated calls, per-tool split.',
     inputSchema: { type: 'object', properties: { range: RANGE } },
     run: (a) => {
       record('vole_summary');

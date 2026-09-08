@@ -67,8 +67,7 @@ function main(): void {
     console.log(`store     : ${rows.principals.length} principal(s), ${rows.originUnknown.calls} row(s) with origin unknown`);
     console.log('tools:');
     for (const t of model.tools) {
-      // tool is NULL on session_identity rows created before any tool was stamped.
-      console.log(`  ${(t.tool ?? 'unknown').padEnd(12)} class=${t.account_class} plan=${t.plan} org=${t.org_id} binding=${t.binding_evidence}`);
+      console.log(`  ${t.tool.padEnd(12)} class=${t.account_class} plan=${t.plan} org=${t.org_id} binding=${t.binding_evidence}`);
     }
     if (model.tools.length === 0) console.log('  (no session identity rows yet)');
     const conflicts = detectPrincipalConflicts(db);

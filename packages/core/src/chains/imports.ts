@@ -124,7 +124,7 @@ export function collectContextImports(db: DB, now = Date.now()): { rows: number;
     const eventKey = `codex:import:${r.content_sha256}`;
     const isNew = !seen.get(eventKey);
     let sourceBytes: number | null = null;
-    let present: 0 | 1 = 0;
+    let present = 0;
     try {
       const st = statSync(r.source_path);
       sourceBytes = st.size;

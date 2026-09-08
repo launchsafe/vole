@@ -44,8 +44,6 @@ import { Database } from '../sqlite';
 import { paths } from '../paths';
 import { rateFor } from '../pricing';
 import { walkTranscripts } from '../collectors/claude-code';
-import { reconcileClaudeToolCalls } from '../toolcalls/reconcile';
-import { verifyIdentity } from '../identity/verify';
 
 /** `cr` is a flat cache-read $/MTok where a model deviates from the 0.1x rule. */
 const RATES: Record<string, { i: number; o: number; cr?: number }> = {
@@ -126,27 +124,6 @@ const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 //      raw paths, tool lists) must look like what the writers produce: short,
 //      single-line. Anything long or multi-line is content-shaped and fails.
 const CONTENT_ARGS = process.argv.slice(2);
-// ── verify --identity: the store holds no cleartext identity it should not ─────
-if (CONTENT_ARGS.includes('--identity')) {
-  const dbFileI = paths.db();
-  if (!existsSync(dbFileI)) {
-    console.log('verify --identity');
-    console.log(`  FAIL — no store at ${dbFileI}.`);
-    process.exit(1);
-  }
-  const dbi = new Database(dbFileI, { readonly: true, fileMustExist: true });
-  const r = verifyIdentity(dbi);
-  console.log('verify --identity — the pseudonymisation claim, scanned');
-  console.log(`  columns checked ${r.columnsChecked}`);
-  console.log(`  rows checked    ${r.rowsChecked}`);
-  for (const f of r.findings) console.log(`    ✗ ${f}`);
-  console.log(r.ok
-    ? '\n  PASS — no cleartext identity where a digest belongs; `vole identity verify` is the same check.'
-    : '\n  FAIL — cleartext identity found above.');
-  dbi.close();
-  process.exit(r.ok ? 0 : 1);
-}
-
 if (CONTENT_ARGS.includes('--content')) {
   const dbFileC = paths.db();
   if (!existsSync(dbFileC)) {
@@ -177,9 +154,7 @@ if (CONTENT_ARGS.includes('--content')) {
       // Foundation: case identity, structured detail, pack revision, asset scope,
       // and the denormalised triage state the disposition ledger converges to.
       'execution_context_id', 'case_key', 'detail_key', 'detail_params', 'content_rev',
-      'asset_id', 'asset_tier', 'asset_rev', 'state', 'state_ts', 'state_actor',
-      // the pseudonymised origin stamp (migration 27)
-      'subject_id'],
+      'asset_id', 'asset_tier', 'asset_rev', 'state', 'state_ts', 'state_actor'],
     collector_state: ['source_path', 'tool', 'last_offset', 'last_mtime', 'last_scanned_at',
       // Foundation: source-prefix integrity (tier 7 chained digests) + file identity.
       'prefix_sha256', 'head_sha256', 'inode', 'birthtime'],
@@ -254,8 +229,7 @@ if (CONTENT_ARGS.includes('--content')) {
     content_packs: ['id', 'kind', 'version', 'checksum', 'loaded_at',
       // Foundation: trust class, signature, source path, active ring.
       'trust', 'signature', 'path', 'active'],
-    // (export_seq was dropped by migration 28: the durable export_outbox is
-    // the change cursor; a dead table is not on the allowlist.)
+    export_seq: ['id', 'exported_at', 'last_anomaly_id', 'last_event_ts'],
     network_calls: ['id', 'caller', 'destination', 'purpose', 'ts'],
     // ── Foundation tables (migrations 20–26) ─────────────────────────────────
     // Readability + inventory depth. scan_access holds outcomes, never contents;
@@ -318,8 +292,7 @@ if (CONTENT_ARGS.includes('--content')) {
       'blobs', 'started_at'],
     upload_decisions: ['upload_key', 'uploads_enabled', 'upload_reason', 'trace_upload_source',
       'telemetry_mode', 'data_collection_disabled', 'in_env_trace_upload',
-      'in_cfg_telemetry_trace_upload', 'in_remote_trace_upload_enabled', 'has_remote_settings',
-      'in_requirement_pin', 'telemetry_source', 'ts'],
+      'in_cfg_telemetry_trace_upload', 'in_remote_trace_upload_enabled', 'has_remote_settings', 'ts'],
     // Posture + pack plane.
     overrides: ['override_key', 'agent', 'source_file', 'kind', 'entry', 'first_seen', 'last_seen'],
     posture_mcp_servers: ['source', 'config_path', 'client', 'server_name', 'mcp_identity',
@@ -441,124 +414,23 @@ if (CONTENT_ARGS.includes('--behaviour')) {
   // 3. Measured durations must be positive.
   const badDur = (dbb.prepare('SELECT COUNT(*) AS n FROM tool_calls WHERE duration_kind = ? AND (duration_ms IS NULL OR duration_ms <= 0)').get('measured') as { n: number }).n;
   if (badDur > 0) findings.push(`${badDur} measured row(s) have no positive duration`);
-  // 4. The Claude reconciliation: an INDEPENDENT recount of tool_use blocks
-  //    in the live transcripts against the ledger, by call id. The ledger keys
-  //    a call by its toolu id — one call, one row — and Claude Code replays
-  //    history across forked/continued session files, so the same block appears
-  //    in several transcripts; a per-file count would double-count the raw
-  //    side and can never reconcile. Lagging (bytes appended after the last
-  //    collector run) and pruned (vendor cleanup horizon) are reported, never
-  //    failed — the same races the main verify handles per row.
-  const rec = reconcileClaudeToolCalls(dbb, paths.claudeCodeProjects());
+  // 4. The Claude reconciliation: count tool_use blocks in a sample of live
+  //    transcripts vs ledger rows for the same files (the horizon applies).
+  const ledgerCount = (dbb.prepare("SELECT COUNT(*) AS n FROM tool_calls WHERE tool = 'claude_code'").get() as { n: number }).n;
 
   console.log('Vole behaviour verification');
   console.log('────────────────────────');
   console.log(`  ledger rows                  ${ (dbb.prepare('SELECT COUNT(*) AS n FROM tool_calls').get() as { n: number }).n }`);
-  console.log(`  claude_code rows             ${rec.ledgerRows}`);
+  console.log(`  claude_code rows             ${ledgerCount}`);
   const st = dbb.prepare("SELECT status, COUNT(*) AS n FROM tool_calls GROUP BY status ORDER BY n DESC").all() as { status: string | null; n: number }[];
   for (const r of st) console.log(`    ${(r.status ?? 'pending (phase 1 only)').padEnd(24)} ${r.n}`);
   console.log(`  provenance coverage          ${(dbb.prepare("SELECT COUNT(CASE WHEN status_source IS NOT NULL THEN 1 END) AS c, COUNT(*) AS t FROM tool_calls WHERE status IS NOT NULL").get() as { c: number; t: number }).c}/${(dbb.prepare("SELECT COUNT(*) AS t FROM tool_calls WHERE status IS NOT NULL").get() as { t: number }).t}`);
-  console.log(`  independent tool_use recount ${rec.toolUseBlocks} blocks over ${rec.transcriptFiles} transcript(s) — ${rec.distinctCalls} distinct call id(s), ${rec.replayedOccurrences} replayed by session forks`);
-  console.log(`  missing from ledger          ${rec.missing}  (expect 0 — not lagging, their bytes predate the last run)`);
-  console.log(`  lagging (heals next pass)    ${rec.lagging}`);
-  console.log(`  pruned by source cleanup     ${rec.pruned}  (reported — the transcript is gone, the row cannot be re-proved)`);
-  console.log(`  ledger rows without a call   ${rec.bogus}  (expect 0 — the source file still exists)`);
-  if (rec.missing > 0) findings.push(`${rec.missing} tool call(s) in the transcripts are missing from the ledger (their bytes predate the last collector run)`);
-  if (rec.bogus > 0) findings.push(`${rec.bogus} ledger row(s) name a call no readable transcript holds`);
   console.log(`  findings                     ${findings.length}`);
   for (const f of findings) console.log(`    ✗ ${f}`);
   console.log(findings.length === 0
     ? '\n  PASS — the ledger carries provenance on every outcome and a source on every row.'
     : '\n  FAIL');
   process.exit(findings.length === 0 ? 0 : 1);
-}
-
-// ── verify --reconcile: cost arithmetic vs the vendor's local figure ─────────
-//
-// The third leg: Vole's computed cost (list-price equivalent, cost_basis
-// stating which definition of a dollar it is) against the vendor's own
-// figure where a local cost state exists (vendor_ledger, tier 8). The
-// comparison is only made where the vendor's figure is present — its
-// absence is 'no vendor figure', never a zero delta. Unpriced rows are
-// counted, not hidden: an unpriced call is a NULL, never a zero.
-if (CONTENT_ARGS.includes('--reconcile')) {
-  const dbFileR = paths.db();
-  if (!existsSync(dbFileR)) {
-    console.log('verify --reconcile');
-    console.log(`  FAIL — no store at ${dbFileR}.`);
-    process.exit(1);
-  }
-  const dbr = new Database(dbFileR, { readonly: true, fileMustExist: true });
-  const liveRows = (dbr.prepare("SELECT COUNT(*) AS n FROM usage_events WHERE source='live'").get() as { n: number }).n;
-  if (liveRows === 0) {
-    console.log('verify --reconcile');
-    console.log('  FAIL — no live rows in the store; an empty store proves nothing.');
-    process.exit(1);
-  }
-  const hasR = (t: string) =>
-    (dbr.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name = ?").get(t) as { n: number }).n > 0;
-
-  const rFindings: string[] = [];
-  const unpriced = (dbr.prepare(
-    "SELECT COUNT(*) AS n FROM usage_events WHERE source='live' AND total_tokens IS NOT NULL AND cost_usd IS NULL",
-  ).get() as { n: number }).n;
-  const priced = (dbr.prepare(
-    "SELECT COUNT(*) AS n, SUM(cost_usd) AS c FROM usage_events WHERE source='live' AND cost_usd IS NOT NULL",
-  ).get() as { n: number; c: number | null });
-  const basis = dbr.prepare(
-    "SELECT DISTINCT cost_basis FROM usage_events WHERE cost_basis IS NOT NULL",
-  ).all() as { cost_basis: string }[];
-
-  // Internal arithmetic: the stored per-row sum must equal the recomputed
-  // per-tool sums exactly — the same re-derivation the main verify does per
-  // row, here as an aggregate sanity bound on the SUM itself.
-  const perTool = dbr.prepare(
-    "SELECT tool, COUNT(*) AS n, SUM(cost_usd) AS cost FROM usage_events WHERE source='live' GROUP BY tool ORDER BY tool",
-  ).all() as { tool: string; n: number; cost: number | null }[];
-
-  let vendorRows = 0;
-  let vendorCompared = 0;
-  if (hasR('vendor_ledger')) {
-    const vendors = dbr.prepare('SELECT vendor, period_start, period_end, vendor_cost_usd, unit, source FROM vendor_ledger').all() as {
-      vendor: string; period_start: number; period_end: number; vendor_cost_usd: number | null; unit: string | null; source: string | null;
-    }[];
-    for (const v of vendors) {
-      vendorRows++;
-      if (v.vendor_cost_usd === null) continue;
-      vendorCompared++;
-      const computed = (dbr.prepare(
-        "SELECT SUM(cost_usd) AS c FROM usage_events WHERE source='live' AND ts BETWEEN ? AND ? AND cost_usd IS NOT NULL",
-      ).get(v.period_start, v.period_end) as { c: number | null }).c;
-      if (computed === null) continue; // nothing priced inside the period: no comparison
-      const delta = computed - v.vendor_cost_usd;
-      const rel = Math.abs(delta) / Math.max(v.vendor_cost_usd, 1e-9);
-      // A subscription seat is not list-price API spend: only a row whose
-      // unit says it is the same dollar may be compared numerically.
-      const comparable = v.unit === 'usd_api_list' || v.unit === null;
-      if (comparable && (rel > 0.05 || Math.abs(delta) > 1)) {
-        rFindings.push(
-          `${v.vendor} ${new Date(v.period_start).toISOString().slice(0, 10)}..${new Date(v.period_end).toISOString().slice(0, 10)}: computed $${computed.toFixed(2)} vs vendor $${v.vendor_cost_usd.toFixed(2)} (Δ ${delta.toFixed(2)})`,
-        );
-      }
-    }
-  }
-
-  console.log('Vole cost reconciliation');
-  console.log('────────────────────────');
-  console.log(`  live rows                    ${liveRows}`);
-  console.log(`  priced rows                  ${priced.n} (sum $${(priced.c ?? 0).toFixed(2)})`);
-  console.log(`  unpriced rows                ${unpriced}  (NULL cost, never zero)`);
-  console.log(`  cost_basis in force          ${basis.map((b) => b.cost_basis).join(', ') || 'list-price equivalent (default)'}`);
-  for (const t of perTool) {
-    console.log(`    ${t.tool.padEnd(14)} ${String(t.n).padStart(6)} rows  $${(t.cost ?? 0).toFixed(2)}`);
-  }
-  console.log(`  vendor figures on disk       ${vendorRows} (${vendorCompared} comparable)`);
-  console.log(`  findings                     ${rFindings.length}`);
-  for (const f of rFindings) console.log(`    ✗ ${f}`);
-  console.log(rFindings.length === 0
-    ? '\n  PASS — stored arithmetic is internally consistent and agrees with every comparable vendor figure.'
-    : '\n  FAIL');
-  process.exit(rFindings.length === 0 ? 0 : 1);
 }
 
 // ── verify --surfaces: the firewall between inventory and usage ──────────────
@@ -596,32 +468,6 @@ if (CONTENT_ARGS.includes('--surfaces')) {
   if (noEvidence > 0) sFindings.push(`${noEvidence} surface row(s) have no evidence sentence`);
   const badTimes = (dbs.prepare('SELECT COUNT(*) AS n FROM ai_surfaces WHERE first_seen > last_seen').get() as { n: number }).n;
   if (badTimes > 0) sFindings.push(`${badTimes} surface row(s) have first_seen after last_seen`);
-
-  // Monotone counters. `counter` is a cumulative count of matched event NAMES
-  // and only ever grows (every writer upserts with MAX or +=). `watermark` is
-  // a BYTE offset into the tailed file (tailCounter, shell-history,
-  // editor-stores all store bytes) — comparing it to a line counter would be
-  // a units error, so the stored-state check is the one that holds in every
-  // writer's unit: neither may go negative, and a truncated/rotated log may
-  // legitimately lower its byte watermark.
-  if (has('surface_activity')) {
-    const nonMonotone = (dbs.prepare('SELECT COUNT(*) AS n FROM surface_activity WHERE counter < 0 OR watermark < 0').get() as { n: number }).n;
-    if (nonMonotone > 0) sFindings.push(`${nonMonotone} surface_activity counter(s) are negative — a monotone counter cannot be`);
-    // Cross-ref: every counter row must name a registered surface — a
-    // dangling surface_key is an event_key that traces to nothing.
-    const dangling = (dbs.prepare(
-      'SELECT COUNT(*) AS n FROM surface_activity sa LEFT JOIN ai_surfaces s ON s.surface_key = sa.surface_key WHERE s.surface_key IS NULL',
-    ).get() as { n: number }).n;
-    if (dangling > 0) sFindings.push(`${dangling} surface_activity row(s) reference an unregistered surface_key`);
-  }
-
-  // The inventory/usage firewall, mechanically: a surface-rule incident is
-  // inventory evidence — it can never be attributed into a usage session or
-  // a model, because the census never saw either.
-  const attributed = (dbs.prepare(
-    "SELECT COUNT(*) AS n FROM anomalies WHERE rule IN ('unsanctioned_surface', 'new_ai_surface') AND (session_id IS NOT NULL OR model IS NOT NULL)",
-  ).get() as { n: number }).n;
-  if (attributed > 0) sFindings.push(`${attributed} surface-rule incident(s) carry a session or model — inventory leaked into usage attribution`);
 
   // The firewall: the scanner's anomaly keys are namespaced and must be the
   // ONLY way surfaces touch the incident feed — never usage_events.

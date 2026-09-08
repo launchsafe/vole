@@ -44,8 +44,7 @@ const NON_GOALS = [
  */
 const DECLARED_SITES = [
   // The update check + update download: disclosed, reader-side (apps/mac).
-  // The VOLE_NO_EGRESS guard is wired into UpdateChecker.swift's egress()
-  // choke point — the Swift twin of src/egress.ts.
+  // Fails until the VOLE_NO_EGRESS guard is wired into UpdateChecker.swift.
   { file: /apps\/mac\/.*UpdateChecker\.swift$/, guard: 'VOLE_NO_EGRESS', why: 'version check and update download on launch (disclosed)' },
 ];
 
@@ -57,7 +56,7 @@ const NET_API = [
   /\bXMLHttpRequest\b/,
   /new\s+WebSocket\b/,
   /\bnet\.connect\b/,
-  /\.connect\(\s*['"`]\d/,
+  \.connect\(\s*['"`]\d/,
   /exec(?:File)?Sync\(\s*['"`](?:curl|wget)/,
   /spawn(?:Sync)?\(\s*['"`](?:curl|wget)/,
   /\bURLSession\b/,
@@ -73,14 +72,6 @@ function codeOnly(text) {
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1')
     .replace(/(["'`])((?:\\.|(?!\1)[\s\S])*?)\1/g, '$1$1');
-}
-
-/** Strips comments but KEEPS string literals — the guard check's normal form:
- *  a kill-switch env var can only appear as a string literal in Swift, so
- *  blanking literals (codeOnly) would erase the very token being checked for.
- *  Comments still do not count: a commented-out guard guards nothing. */
-function noComments(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
 function listFiles(root, exts, out = []) {
@@ -126,9 +117,8 @@ check('single-choke-point', (failures) => {
     const rel = relative(repo, f);
     const declared = DECLARED_SITES.find((d) => d.file.test(rel));
     if (declared) {
-      // Declared: the kill-switch guard must be present in the file's code —
-      // strings intact (env var names are string literals), comments stripped.
-      if (declared.guard && !noComments(readFileSync(f, 'utf8')).includes(declared.guard)) {
+      // Declared: the kill-switch guard must be present in the file's code.
+      if (declared.guard && !codeOnly(readFileSync(f, 'utf8')).includes(declared.guard)) {
         failures.push(
           `${rel}: declared egress site (${declared.why}) but the ${declared.guard} guard is absent — the call is un-guarded`,
         );

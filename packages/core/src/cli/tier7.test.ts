@@ -166,21 +166,19 @@ test('the support bundle carries the shape of the store, never its rows, and pas
   db.prepare(
     'INSERT INTO collector_runs (tool, started_at, duration_ms, files, parsed, inserted, source_state, ok) VALUES (?, ?, ?, 0, 0, 0, ?, 1)',
   ).run('claude_code', 1, 5, 'ok');
-  const b = supportBundle(db) as { store: Record<string, unknown>; versions: Record<string, unknown> };
+  const b = supportBundle(db);
   const json = JSON.stringify(b);
   // No rows: the bundle never embeds an anomaly or usage row.
   assert.equal(json.includes('remote_execution'), false);
   assert.match(JSON.stringify(b.store), /quick_check/);
-  assert.ok(String(b.store.sqlite_schema_sha256).length === 64);
-  // Migration 28 (DROP TABLE export_seq) frees a page on a fresh store: the
-  // freelist is a fact about drops, not a leak — future writes reuse the page.
-  assert.ok((b.store.freelist_count as number) <= 1, `freelist ${b.store.freelist_count}`);
+  assert.ok(b.store.sqlite_schema_sha256.length === 64);
+  assert.equal(b.store.freelist_count, 0);
   assert.equal(b.versions.node, process.version);
   // The self-check: no local identifiers anywhere in the bundle.
   assert.equal(reIdentificationScan(b, localIdentifiers()).length, 0);
 });
 
-// ── the incident evidence bundle ──────────────────────────────────────────────
+// ── the incident evidence bundle ──────────────────────────────────────────
 
 test('the incident bundle: the figures that fired, window evidence, byte-offset provenance, custody', () => {
   insertAnomalies(db, [anomaly({ anomaly_key: 'live:remote_execution:claude_code:tc-1', rule: 'remote_execution', severity: 'critical' })]);

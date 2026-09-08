@@ -20,14 +20,14 @@ import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import type { DB } from '../db';
 import { openDbReadOnly } from '../db';
-import { localIdentifiers, reIdentificationScan, redactIdentifiers } from './support';
+import { localIdentifiers, reIdentificationScan } from './support';
 import { exportJson } from './export';
 import { custodyFigures, custodySentence, deriveEvidenceGaps, collectWitnessTimestamps } from '../triage/custody';
 
-// ── A dependency-free ZIP writer (stored entries) ──────────────────────────────
+// ── A dependency-free ZIP writer (stored entries) ──────────────────────────
 // No new npm packages, by convention. Stored (uncompressed) entries keep the
 // writer ~40 lines; bundle payloads are JSON, which gzips well but does not
-// need to.
+// need to be.
 
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
@@ -41,7 +41,7 @@ const CRC_TABLE = (() => {
 
 function crc32(buf: Buffer): number {
   let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]!) & 0xff]! ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff]! ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 
@@ -97,7 +97,7 @@ export function makeZip(files: { name: string; data: Buffer }[]): Buffer {
   return Buffer.concat([...chunks, cdBuf, eocd]);
 }
 
-// ── The pre-export field preview ─────────────────────────────────────────────
+// ── The pre-export field preview ─────────────────────────────────────────
 
 export interface PreviewField {
   table: string;
@@ -135,7 +135,7 @@ export function incidentPreviewFields(): PreviewField[] {
   ];
 }
 
-// ── The incident evidence bundle ─────────────────────────────────────────────
+// ── The incident evidence bundle ─────────────────────────────────────────
 
 /** Claude Code's cleanup horizon, read from the tool's own settings; default 30d. */
 function cleanupHorizonDays(): number {
@@ -283,7 +283,7 @@ export function incidentBundle(db: DB, anomaly_key: string, now: number = Date.n
     custody: { figures, sentence: custodySentence(figures) },
     manifest: {
       columns: incidentPreviewFields(),
-      note: 'deny-by-default: only listed fields ride; raw_ref carries <path>#<byte offset> provenance marked verifiable or expired against the cleanup horizon; keys and shape strings are composed with home-dir paths and local identifiers redacted (deterministic, so dedupe keys stay comparable)',
+      note: 'deny-by-default: only listed fields ride; raw_ref carries <path>#<byte offset> provenance marked verifiable or expired against the cleanup horizon',
     },
   };
 }
@@ -312,7 +312,7 @@ export function incidentMarkdown(b: IncidentBundle): string {
   return lines.join('\n');
 }
 
-// ── CLI ───────────────────────────────────────────────────────────────────────
+// ── CLI ───────────────────────────────────────────────────────────────────
 
 function fail(msg: string): never {
   console.error(`bundle: FAIL — ${msg}`);
@@ -331,10 +331,7 @@ function main(): void {
   const ids = localIdentifiers();
 
   if (incidentKey) {
-    // Composition-time redaction: keys and shape strings that embed the home
-    // dir or the local username never ride. The scan below stays strict — if
-    // anything unredacted survived, the bundle fails closed, not quietly.
-    const bundle = redactIdentifiers(incidentBundle(db, incidentKey), ids);
+    const bundle = incidentBundle(db, incidentKey);
     db.close();
     if (!bundle) fail(`no anomaly with key ${incidentKey} in this store`);
     const hits = reIdentificationScan(bundle, ids);
@@ -371,9 +368,7 @@ function main(): void {
     bundle_version: 1,
     generated_at: new Date().toISOString(),
     custody_sentence: custodySentence(figures),
-    // Redacted at composition: anomaly/case keys and tool-call shapes that
-    // embed /Users/<name> paths are replaced before the payload is rendered.
-    contents: { export: redactIdentifiers(JSON.parse(exportJson()), ids) },
+    contents: { export: JSON.parse(exportJson()) },
     chain_of_evidence: {
       store_schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
       packs: db.prepare('SELECT kind, version, checksum FROM content_packs').all(),
