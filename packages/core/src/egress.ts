@@ -105,8 +105,9 @@ export interface EgressInventoryEntry {
  * The declared inventory: every network-adjacent call site that exists in the
  * shipped product. scripts/check-egress.mjs fails CI when a network API call
  * appears in the tree that is neither routed through egress() nor listed here.
- * Two rows today — the update check (disclosed, reader-side guard pending
- * wiring) and the reconcile adapter (opt-in, dry-run offline, enabler-gated).
+ * Two rows today — the update check (disclosed, reader-side guard wired in
+ * UpdateChecker.swift egress()) and the reconcile adapter (opt-in, dry-run
+ * offline, enabler-gated).
  */
 export function egressInventory(): EgressInventoryEntry[] {
   return [

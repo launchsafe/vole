@@ -173,6 +173,15 @@ export function upsertLever(
 export function bumpCounter(
   db: DB, surfaceKey: string, kind: string, add: number, now: number,
 ): void {
+  // Every counter row must name a registered surface (verify --surfaces
+  // enforces the cross-ref), so the chokepoint registers any key that has
+  // no row yet — a counter-ledger surface, never a census finding. DO
+  // NOTHING on conflict: the census owns the rows it enumerated.
+  db.prepare(`
+    INSERT INTO ai_surfaces (surface_key, kind, name, path, evidence, first_seen, last_seen)
+    VALUES (?, 'counter', ?, NULL, ?, ?, ?)
+    ON CONFLICT(surface_key) DO NOTHING`)
+    .run(surfaceKey, surfaceKey, 'counter-ledger surface: counts its writer’s events; no disk artifact backs it', now, now);
   db.prepare(`
     INSERT INTO surface_activity (surface_key, counter_kind, counter, first_seen, last_seen)
     VALUES (?, ?, ?, ?, ?)

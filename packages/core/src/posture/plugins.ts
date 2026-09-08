@@ -17,9 +17,11 @@ import { home, readJson, upsertLever, bumpCounter, tryReaddir } from './shared';
  */
 
 export interface CatalogPlugin {
-  name: string;
+  name: string; // 'name@marketplace' when the catalog is object-shaped
   tokens: Record<string, { always_on?: number; on_invoke?: number }>; // model -> figures
-  components: Record<string, number>; // commands/agents/skills/hooks/mcpServers/lspServers -> count
+  // commands/agents/skills/hooks/mcpServers/lspServers -> count, or the real
+  // object form's per-item arrays (counted by length, never guessed)
+  components: Record<string, number | unknown[]>;
   unique_installs: number | null;
 }
 
@@ -35,12 +37,21 @@ export function parseCatalog(json: unknown): PluginCatalog {
   if (!json || typeof json !== 'object') return empty;
   const root = json as {
     fetchedAt?: string;
-    catalog?: { marketplace_sha?: string; models?: string[]; plugins?: unknown[] };
+    catalog?: { marketplace_sha?: string; models?: string[]; plugins?: unknown };
   };
-  const rawPlugins = (root.catalog?.plugins ?? []) as {
+  // The real plugin-catalog-cache.json ships catalog.plugins as an OBJECT keyed
+  // 'name@marketplace' (values carry a 'plugin' field, not 'name'); an array
+  // shape is accepted too. Object entries keep their full key as the name.
+  type RawPlugin = {
     name?: string; tokens?: Record<string, { always_on?: number; on_invoke?: number }>;
-    components?: Record<string, number>; unique_installs?: number;
-  }[];
+    components?: Record<string, number | unknown[]>; unique_installs?: number;
+  };
+  const raw = root.catalog?.plugins;
+  const rawPlugins: RawPlugin[] = Array.isArray(raw)
+    ? (raw as RawPlugin[])
+    : raw && typeof raw === 'object'
+      ? Object.entries(raw as Record<string, RawPlugin>).map(([key, v]) => ({ ...v, name: key }))
+      : [];
   return {
     marketplace_sha: root.catalog?.marketplace_sha ?? null,
     fetched_at: root.fetchedAt ?? null,
@@ -61,9 +72,13 @@ export type CapabilityTier = 'high' | 'low' | 'not_in_catalog';
 /** Declaring hooks, mcpServers or lspServers means the plugin executes code or
  *  opens a transport — high tier. Skills and commands only is low tier. This is
  *  a DECLARATION in a cached vendor catalog, not an observation of behaviour. */
-export function capabilityTier(components: Record<string, number> | null): CapabilityTier {
+export function capabilityTier(components: Record<string, number | unknown[]> | null): CapabilityTier {
   if (!components) return 'not_in_catalog';
-  const high = ['hooks', 'mcpServers', 'lspServers'].some((k) => (components[k] ?? 0) > 0);
+  // The real catalog lists components as per-item arrays; the count is the
+  // length, never a guess at an array's numeric meaning.
+  const count = (v: number | unknown[] | undefined): number =>
+    Array.isArray(v) ? v.length : typeof v === 'number' ? v : 0;
+  const high = ['hooks', 'mcpServers', 'lspServers'].some((k) => count(components[k]) > 0);
   return high ? 'high' : 'low';
 }
 
@@ -222,8 +237,7 @@ export function sweepPlugins(db: DB, now: number): { plugins: number; reconciled
       null, join(pluginsDir, 'known_marketplaces.json'), now);
     marketplaces++;
   }
-  const extra = (readJson(join(home(), '.claude', 'settings.json')) as { extraKnownMarketplaces?: string[] } | undefined)?.extraKnownMarketplaces;
-  for (const name of extra ?? []) {
+  for (const name of extraMarketplaceNames((readJson(join(home(), '.claude', 'settings.json')) as { extraKnownMarketplaces?: unknown } | undefined)?.extraKnownMarketplaces)) {
     upsertLever(db, 'claude_code', `marketplace:${name}`, 'settings:extraKnownMarketplaces', null, join(home(), '.claude', 'settings.json'), now);
     marketplaces++;
   }
@@ -234,6 +248,15 @@ export function sweepPlugins(db: DB, now: number): { plugins: number; reconciled
     marketplaces++;
   }
   return { plugins: pluginRows, reconciled: installedKeys.length, taxRows, marketplaces };
+}
+
+/** settings.json carries extraKnownMarketplaces as either a string[] or a
+ * name -> {source} map — the real world has shipped both. */
+export function extraMarketplaceNames(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.filter((n): n is string => typeof n === 'string');
+  if (raw && typeof raw === 'object') return Object.keys(raw);
+  if (typeof raw === 'string') return [raw];
+  return [];
 }
 
 /** Which agents a plugin tree DECLARES it targets, by the marker files it ships. */

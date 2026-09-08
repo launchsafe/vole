@@ -299,7 +299,7 @@ export type SessionIdentityRow = {
   plan?: string | null;
   seat_role?: string | null;
   surface?: string | null;
-  binding_evidence?: 'session_proved' | 'ambient' | 'unbound';
+  binding_evidence?: 'session_proved' | 'store_origin' | 'ambient' | 'unbound';
   first_seen?: number;
   last_seen?: number;
   source?: 'live' | 'seed';
@@ -363,6 +363,117 @@ export function upsertSessionIdentity(db: DB, rows: SessionIdentityRow[]): numbe
     n++;
   }
   return n;
+}
+
+// ── the collect identity pass (tier 3 #17/#19/#21) ───────────────────────────
+
+/**
+ * The production caller of upsertSessionIdentity: one pass, three arms.
+ *
+ * 1. Codex sessions proved by their own rollout plan_type (feature 21) —
+ *    the session's own file attests the plan, classifyAccount turns it into
+ *    an account class, binding 'session_proved'.
+ * 2. Claude sessions proved by a bridge-session line — ownerOrganizationUuid
+ *    is org_oauth session-proved; a bare ownerAccountUuid proves the account
+ *    but never a class (class stays NULL, not a guess).
+ * 3. The current-account snapshot (auth-path shape readers) stamped 'ambient'
+ *    on this principal's classless sessions so no reader can mistake it for
+ *    session proof.
+ *
+ * 'unknown' is never stamped: a session without identity-bearing evidence
+ * keeps account_class NULL (spec #17). All writes go through the widening
+ * upsert, so a stored fact is never re-derived away.
+ */
+export function recordSessionIdentityClasses(db: DB, pk: string, dk: string, now = Date.now(), home = homedir()): number {
+  const rows: SessionIdentityRow[] = [];
+
+  // Arm 1 — Codex: the rollout's own plan_type, binding 'session_proved'.
+  const codex = db
+    .prepare(`SELECT session_id, plan FROM session_identity
+              WHERE tool = 'codex' AND plan IS NOT NULL AND account_class IS NULL`)
+    .all() as { session_id: string; plan: string }[];
+  for (const r of codex) {
+    const c = classifyAccount({ tool: 'codex', codexPlan: r.plan });
+    if (c.account_class === 'unknown') continue;
+    rows.push({
+      session_id: r.session_id, tool: 'codex', principal_key: pk, device_key: dk,
+      account_class: c.account_class, class_evidence: c.class_evidence, plan: r.plan,
+      binding_evidence: 'session_proved', first_seen: now, last_seen: now,
+    });
+  }
+
+  // Arm 2 — Claude bridge-session owner uuids, binding 'session_proved'.
+  // The collector stores them in event_links under event_key
+  // 'claude_code:session:<session_id>' (substr(event_key, 21) recovers it).
+  const bridged = db
+    .prepare(`SELECT substr(event_key, 21) AS session_id,
+                     MAX(CASE WHEN link_kind = 'owner_account_uuid' THEN link_id END) AS account_id,
+                     MAX(CASE WHEN link_kind = 'owner_organization_uuid' THEN link_id END) AS org_id
+              FROM event_links
+              WHERE event_key LIKE 'claude_code:session:%'
+                AND link_kind IN ('owner_account_uuid', 'owner_organization_uuid')
+              GROUP BY 1`)
+    .all() as { session_id: string; account_id: string | null; org_id: string | null }[];
+  for (const r of bridged) {
+    rows.push({
+      session_id: r.session_id, tool: 'claude_code', principal_key: pk, device_key: dk,
+      account_id: r.account_id, org_id: r.org_id,
+      account_class: r.org_id ? 'org_oauth' : null,
+      class_evidence: r.org_id ? 'bridge-session ownerOrganizationUuid present' : null,
+      binding_evidence: 'session_proved', first_seen: now, last_seen: now,
+    });
+  }
+
+  // Arm 3 — the ambient snapshot per tool, stamped 'ambient'.
+  const claude = readClaudeJson(home);
+  const settings = readClaudeSettingsEnv(home);
+  const codexAuth = readCodexAuthShape(home);
+  const grokAuth = readGrokAuthShape(home);
+  const ambient: { tool: Tool; c: AccountClassification }[] = [];
+  if (claude?.oauthAccount || Object.keys(settings.env).length || settings.apiKeyHelper) {
+    ambient.push({
+      tool: 'claude_code',
+      c: classifyAccount({
+        tool: 'claude_code', env: settings.env, apiKeyHelper: settings.apiKeyHelper,
+        oauthAccount: claude?.oauthAccount ?? null,
+      }),
+    });
+  }
+  if (codexAuth) {
+    ambient.push({
+      tool: 'codex',
+      c: classifyAccount({ tool: 'codex', codexAuthMode: codexAuth.auth_mode, codexApiKeyPresent: codexAuth.apiKeyPresent }),
+    });
+  }
+  if (grokAuth) {
+    ambient.push({
+      tool: 'grok',
+      c: classifyAccount({ tool: 'grok', grokAuthMode: grokAuth.auth_mode, grokTeamIdPresent: grokAuth.teamIdPresent, grokPrincipalIdPresent: grokAuth.principalIdPresent }),
+    });
+  }
+  for (const { tool, c } of ambient) {
+    if (c.account_class === 'unknown') continue;
+    // The session's tool comes from usage_events (session_identity.tool is
+    // NULL on rows buildSessionIdentity created before any class landed).
+    // ponytail: LIMIT 2000 per pass like buildSessionIdentity; progressive
+    // (filled rows drop out of the account_class IS NULL filter next pass).
+    const sessions = db
+      .prepare(`SELECT DISTINCT si.session_id FROM session_identity si
+                JOIN usage_events e ON e.session_id = si.session_id
+                WHERE si.principal_key = ? AND e.tool = ? AND e.source = 'live'
+                  AND si.account_class IS NULL AND si.binding_evidence != 'session_proved'
+                LIMIT 2000`)
+      .all(pk, tool) as { session_id: string }[];
+    for (const s of sessions) {
+      rows.push({
+        session_id: s.session_id, tool, principal_key: pk, device_key: dk,
+        account_class: c.account_class, class_evidence: c.class_evidence,
+        binding_evidence: 'ambient', first_seen: now, last_seen: now,
+      });
+    }
+  }
+
+  return upsertSessionIdentity(db, rows);
 }
 
 // ── feature 36: account_switched ──────────────────────────────────────────────

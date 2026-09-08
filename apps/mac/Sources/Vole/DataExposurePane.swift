@@ -129,10 +129,20 @@ struct DataExposurePane: View {
     }
 }
 
-/// #142: the evidence viewer that re-reads the file AT VIEW TIME. The store keeps
-/// a fingerprint and an offset; the bytes come from disk when a human looks, and
-/// are never persisted. If the file has aged out (the 30-day vendor cleanup),
-/// the viewer says exactly that instead of showing stale evidence.
+/// #142: the evidence viewer that re-reads the file AT VIEW TIME (tier-4 #25).
+/// The store keeps a fingerprint and an offset; the bytes come from disk when a
+/// human looks, and are never persisted, cached or exported — the buffer is
+/// discarded on deselect. The matched span itself is NEVER rendered: context
+/// shows, `[detector]` stands where the value sat. Opening it writes an
+/// info-severity incident naming the viewer and the fingerprint — the audit
+/// trail is the price of the capability. If the file has aged out (the 30-day
+/// vendor cleanup) or was rewritten shorter than the sighting's span, the
+/// viewer says exactly that instead of showing stale or wrong evidence.
+///
+/// ponytail: no pseudonymous mode exists in this app yet to disable the viewer
+/// under (tier-4 asks for it); gate `selected` on it when one lands. Read
+/// access stays the OS's own permission check — there is no separate grant
+/// model to consult.
 struct JustInTimeViewer: View {
     let sighting: SecretSighting
     @Environment(\.dismiss) private var dismiss
@@ -155,7 +165,7 @@ struct JustInTimeViewer: View {
                     Text("fingerprint \(sighting.fingerprint)").font(.caption2).monospaced().foregroundStyle(.tertiary)
                 }
             }
-            GroupBox("Evidence (re-read from disk, never stored)") {
+            GroupBox("Evidence (±200 bytes of context, the match redacted — never stored)") {
                 if let ev = evidence {
                     ScrollView { Text(ev).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }
                         .frame(maxHeight: 180)
@@ -169,16 +179,50 @@ struct JustInTimeViewer: View {
         }
         .padding(20)
         .frame(width: 520, height: 420)
-        .onAppear(perform: read)
+        .onAppear(perform: open)
+        .onDisappear { evidence = nil }   // discard the buffer on deselect
     }
 
-    /// Reads the bytes around the sighting — ±120 chars of context, live from disk.
+    /// Opening the evidence is an audited event: the info incident first, then
+    /// the read.
+    private func open() {
+        StoreWriter.recordViewerIncident(
+            fingerprint: sighting.fingerprint, detector: sighting.detector,
+            path: sighting.path, offset: sighting.byteOffset, length: sighting.byteLength)
+        read()
+    }
+
+    /// Reads the bytes around the sighting — ±200 bytes of context, live from
+    /// disk, with the matched span replaced by `[detector]`: this is the one
+    /// place a human could see the secret, and the secret is exactly what does
+    /// not render. Nil = no evidence to show (file gone or bad span bounds).
     private func read() {
         guard let data = FileManager.default.contents(atPath: sighting.path) else { return }
-        let start = max(0, sighting.byteOffset - 120)
-        let end = min(data.count, sighting.byteOffset + sighting.byteLength + 120)
-        guard start < end, start <= sighting.byteOffset else { return }
-        let slice = data.subdata(in: start..<end)
-        evidence = String(data: slice, encoding: .utf8) ?? "(binary content — \(slice.count) bytes)"
+        evidence = redactedEvidence(data, offset: sighting.byteOffset,
+                                    length: sighting.byteLength, detector: sighting.detector)
     }
+}
+
+/// The redacted evidence string for a sighting's span: ±200 bytes of context,
+/// the matched span itself rendered as `[detector]` — never the bytes. A span
+/// that no longer fits the file is the rewritten-file case: say so rather than
+/// show the wrong bytes as evidence. Internal (not private) so the CLI
+/// harness exercises the exact code the viewer renders.
+///
+/// ponytail: the span is redacted by offset, not re-verified against the
+/// fingerprint — sightings found in normalised views (base64/JSON-unescape;
+/// core's one-decode-level limit) carry offsets into that view, not the raw
+/// file, so an HMAC re-check would false-negative on them. Re-verify when
+/// core back-maps offsets to file bytes; until then a same-length rewrite
+/// redacts the wrong span.
+func redactedEvidence(_ data: Data, offset: Int, length: Int, detector: String) -> String? {
+    guard offset >= 0, length >= 0 else { return nil }
+    guard offset + length <= data.count else {
+        return "(context no longer matches — the file has changed since the sighting)"
+    }
+    let start = max(0, offset - 200)
+    let end = min(data.count, offset + length + 200)
+    return String(decoding: data.subdata(in: start..<offset), as: UTF8.self)
+        + "[\(detector)]"
+        + String(decoding: data.subdata(in: (offset + length)..<end), as: UTF8.self)
 }

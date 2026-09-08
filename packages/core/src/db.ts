@@ -1,4 +1,5 @@
 import { Database } from './sqlite';
+import { createHash } from 'node:crypto';
 import { mkdirSync, existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { hostname, userInfo } from 'node:os';
@@ -459,7 +460,9 @@ export const MIGRATIONS: Migration[] = [
     // autonomy_intervals: posture as a timeline. session_identity: the binding
     // between a session and its principal, with evidence rank. suppression: turn
     // a rule off centrally, keep counting what it hid. content_packs: versioned
-    // detector packs with checksums. export_seq: the change cursor.
+    // detector packs with checksums. (export_seq was created here too — a
+    // change-cursor sketch that never gained a writer; migration 28 drops it in
+    // favour of the durable export_outbox, which can re-send a rewritten row.)
     apply: (db) => {
       db.exec(`
         CREATE TABLE IF NOT EXISTS autonomy_intervals (
@@ -1357,6 +1360,22 @@ export const MIGRATIONS: Migration[] = [
       addColumn(db, 'upload_decisions', 'in_requirement_pin', 'INTEGER') +
       addColumn(db, 'upload_decisions', 'telemetry_source', 'TEXT'),
   },
+  {
+    version: 28,
+    name: 'drop-dead-export-seq',
+    kind: 'ddl',
+    // export_seq (migration 19) was the tier-7 spec's change-cursor sketch.
+    // The durable outbox (export_outbox, cursor = MAX(seq)) shipped as the
+    // working mechanism instead, because a rowid high-water mark can never
+    // re-send a row the usage upsert rewrote in place (streaming placeholders
+    // would stay zero forever — see export/outbox.ts). export_seq never gained
+    // a writer — 0 rows on every real store — so it is dropped: the honest
+    // move for a dead table, rather than keeping a cursor that lies.
+    apply: (db) => {
+      db.exec('DROP TABLE IF EXISTS export_seq');
+      return 0;
+    },
+  },
 ]
 ;
 
@@ -1935,6 +1954,20 @@ export function scanDue(db: DB, scanner: string, cadenceMs: number, now = Date.n
   return now - row.last_started_at >= cadenceMs;
 }
 
+/**
+ * Bounded notes: the content boundary's shape rule (verify --content) is that no
+ * free-text value exceeds 512 chars or carries a newline. Anything longer is
+ * truncated with the full value's digest appended — deterministic, so a caller
+ * comparing two epochs through this function still sees every change (the
+ * detection-rules rule-set epoch relies on exactly that).
+ */
+export function boundNote(notes: string | null): string | null {
+  if (notes === null) return null;
+  if (notes.length <= 512 && !notes.includes('\n')) return notes;
+  const digest = createHash('sha256').update(notes).digest('hex').slice(0, 12);
+  return `${notes.replace(/\n/g, ' ').slice(0, 470)} …[truncated sha256:${digest}]`;
+}
+
 export function recordScan(
   db: DB,
   scanner: string,
@@ -1953,7 +1986,7 @@ export function recordScan(
        last_duration_ms = excluded.last_duration_ms,
        ok = excluded.ok,
        notes = excluded.notes`,
-  ).run(scanner, cadenceMs, startedAt, durationMs, ok ? 1 : 0, notes);
+  ).run(scanner, cadenceMs, startedAt, durationMs, ok ? 1 : 0, boundNote(notes));
 }
 
 export function latestScans(db: DB): ScanStateRow[] {

@@ -44,6 +44,7 @@ import { Database } from '../sqlite';
 import { paths } from '../paths';
 import { rateFor } from '../pricing';
 import { walkTranscripts } from '../collectors/claude-code';
+import { reconcileClaudeToolCalls } from '../toolcalls/reconcile';
 import { verifyIdentity } from '../identity/verify';
 
 /** `cr` is a flat cache-read $/MTok where a model deviates from the 0.1x rule. */
@@ -253,7 +254,8 @@ if (CONTENT_ARGS.includes('--content')) {
     content_packs: ['id', 'kind', 'version', 'checksum', 'loaded_at',
       // Foundation: trust class, signature, source path, active ring.
       'trust', 'signature', 'path', 'active'],
-    export_seq: ['id', 'exported_at', 'last_anomaly_id', 'last_event_ts'],
+    // (export_seq was dropped by migration 28: the durable export_outbox is
+    // the change cursor; a dead table is not on the allowlist.)
     network_calls: ['id', 'caller', 'destination', 'purpose', 'ts'],
     // ── Foundation tables (migrations 20–26) ─────────────────────────────────
     // Readability + inventory depth. scan_access holds outcomes, never contents;
@@ -440,60 +442,29 @@ if (CONTENT_ARGS.includes('--behaviour')) {
   const badDur = (dbb.prepare('SELECT COUNT(*) AS n FROM tool_calls WHERE duration_kind = ? AND (duration_ms IS NULL OR duration_ms <= 0)').get('measured') as { n: number }).n;
   if (badDur > 0) findings.push(`${badDur} measured row(s) have no positive duration`);
   // 4. The Claude reconciliation: an INDEPENDENT recount of tool_use blocks
-  //    in the live transcripts against the ledger, per file. The count is
-  //    derived from the raw JSONL, not from any product code path, so a
-  //    parser bug cannot cancel itself out. The source horizon applies: a
-  //    transcript the vendor pruned can no longer prove or disprove its rows.
-  const ledgerCount = (dbb.prepare("SELECT COUNT(*) AS n FROM tool_calls WHERE tool = 'claude_code'").get() as { n: number }).n;
-
-  const ledgerByFile = new Map<string, number>();
-  for (const r of dbb
-    .prepare("SELECT raw_ref FROM tool_calls WHERE tool = 'claude_code' AND raw_ref IS NOT NULL")
-    .all() as { raw_ref: string }[]) {
-    const hash = r.raw_ref.lastIndexOf('#');
-    const file = hash > 0 ? r.raw_ref.slice(0, hash) : r.raw_ref;
-    ledgerByFile.set(file, (ledgerByFile.get(file) ?? 0) + 1);
-  }
-  let recountFiles = 0;
-  let recountBlocks = 0;
-  let recountMismatches = 0;
-  const tRoot = paths.claudeCodeProjects();
-  if (existsSync(tRoot)) {
-    for (const f of walkTranscripts(tRoot)) {
-      recountFiles++;
-      let expected = 0;
-      try {
-        for (const line of readFileSync(f, 'utf8').split('\n')) {
-          if (!line.includes('"tool_use"')) continue; // cheap pre-filter, exact check below
-          let e: any;
-          try {
-            e = JSON.parse(line);
-          } catch {
-            continue;
-          }
-          const c = e?.message?.content;
-          if (e?.type === 'assistant' && Array.isArray(c)) {
-            expected += c.filter((b: any) => b?.type === 'tool_use').length;
-          }
-        }
-      } catch {
-        continue; // unreadable: neither proves nor fails
-      }
-      recountBlocks += expected;
-      if ((ledgerByFile.get(f) ?? 0) !== expected) recountMismatches++;
-    }
-  }
+  //    in the live transcripts against the ledger, by call id. The ledger keys
+  //    a call by its toolu id — one call, one row — and Claude Code replays
+  //    history across forked/continued session files, so the same block appears
+  //    in several transcripts; a per-file count would double-count the raw
+  //    side and can never reconcile. Lagging (bytes appended after the last
+  //    collector run) and pruned (vendor cleanup horizon) are reported, never
+  //    failed — the same races the main verify handles per row.
+  const rec = reconcileClaudeToolCalls(dbb, paths.claudeCodeProjects());
 
   console.log('Vole behaviour verification');
   console.log('────────────────────────');
   console.log(`  ledger rows                  ${ (dbb.prepare('SELECT COUNT(*) AS n FROM tool_calls').get() as { n: number }).n }`);
-  console.log(`  claude_code rows             ${ledgerCount}`);
+  console.log(`  claude_code rows             ${rec.ledgerRows}`);
   const st = dbb.prepare("SELECT status, COUNT(*) AS n FROM tool_calls GROUP BY status ORDER BY n DESC").all() as { status: string | null; n: number }[];
   for (const r of st) console.log(`    ${(r.status ?? 'pending (phase 1 only)').padEnd(24)} ${r.n}`);
   console.log(`  provenance coverage          ${(dbb.prepare("SELECT COUNT(CASE WHEN status_source IS NOT NULL THEN 1 END) AS c, COUNT(*) AS t FROM tool_calls WHERE status IS NOT NULL").get() as { c: number; t: number }).c}/${(dbb.prepare("SELECT COUNT(*) AS t FROM tool_calls WHERE status IS NOT NULL").get() as { t: number }).t}`);
-  console.log(`  independent tool_use recount ${recountBlocks} blocks over ${recountFiles} transcript(s)`);
-  console.log(`  recount mismatches           ${recountMismatches} file(s) where ledger != raw count  (expect 0)`);
-  if (recountMismatches > 0) findings.push(`${recountMismatches} transcript file(s) disagree with the independent tool_use recount`);
+  console.log(`  independent tool_use recount ${rec.toolUseBlocks} blocks over ${rec.transcriptFiles} transcript(s) — ${rec.distinctCalls} distinct call id(s), ${rec.replayedOccurrences} replayed by session forks`);
+  console.log(`  missing from ledger          ${rec.missing}  (expect 0 — not lagging, their bytes predate the last run)`);
+  console.log(`  lagging (heals next pass)    ${rec.lagging}`);
+  console.log(`  pruned by source cleanup     ${rec.pruned}  (reported — the transcript is gone, the row cannot be re-proved)`);
+  console.log(`  ledger rows without a call   ${rec.bogus}  (expect 0 — the source file still exists)`);
+  if (rec.missing > 0) findings.push(`${rec.missing} tool call(s) in the transcripts are missing from the ledger (their bytes predate the last collector run)`);
+  if (rec.bogus > 0) findings.push(`${rec.bogus} ledger row(s) name a call no readable transcript holds`);
   console.log(`  findings                     ${findings.length}`);
   for (const f of findings) console.log(`    ✗ ${f}`);
   console.log(findings.length === 0
@@ -626,12 +597,16 @@ if (CONTENT_ARGS.includes('--surfaces')) {
   const badTimes = (dbs.prepare('SELECT COUNT(*) AS n FROM ai_surfaces WHERE first_seen > last_seen').get() as { n: number }).n;
   if (badTimes > 0) sFindings.push(`${badTimes} surface row(s) have first_seen after last_seen`);
 
-  // Monotone counters: surface_activity's `counter` is a line-count watermark
-  // over event NAMES (never bodies) — it can never go backwards, and a
-  // watermark above the current counter is a regression.
+  // Monotone counters. `counter` is a cumulative count of matched event NAMES
+  // and only ever grows (every writer upserts with MAX or +=). `watermark` is
+  // a BYTE offset into the tailed file (tailCounter, shell-history,
+  // editor-stores all store bytes) — comparing it to a line counter would be
+  // a units error, so the stored-state check is the one that holds in every
+  // writer's unit: neither may go negative, and a truncated/rotated log may
+  // legitimately lower its byte watermark.
   if (has('surface_activity')) {
-    const nonMonotone = (dbs.prepare('SELECT COUNT(*) AS n FROM surface_activity WHERE watermark IS NOT NULL AND watermark > counter').get() as { n: number }).n;
-    if (nonMonotone > 0) sFindings.push(`${nonMonotone} surface_activity counter(s) went backwards (watermark > counter)`);
+    const nonMonotone = (dbs.prepare('SELECT COUNT(*) AS n FROM surface_activity WHERE counter < 0 OR watermark < 0').get() as { n: number }).n;
+    if (nonMonotone > 0) sFindings.push(`${nonMonotone} surface_activity counter(s) are negative — a monotone counter cannot be`);
     // Cross-ref: every counter row must name a registered surface — a
     // dangling surface_key is an event_key that traces to nothing.
     const dangling = (dbs.prepare(

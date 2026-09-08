@@ -3,6 +3,8 @@ import { existsSync, statSync } from 'node:fs';
 import { paths } from '../paths';
 import { contextWindow } from '../pricing';
 import { skeletonize, type ToolCallRow } from '../toolcalls/bind';
+import { BASH_TOOLS } from '../toolcalls/file-writes';
+import { commandOf } from '../toolcalls/net-ledgers';
 import { getCursor, advanceCursor } from '../cursors';
 import { stampObservedAt } from './ledger';
 import type { DB } from '../db';
@@ -127,6 +129,7 @@ export function collectOpencode(_db: DB): CollectorResult {
     const toolParts: {
       id: string; session_id: string | null; tool: string;
       status: string | null; exit: number | null; start: number | null; end: number | null;
+      args: unknown;
     }[] = [];
     for (const r of src
       .prepare(
@@ -136,7 +139,7 @@ export function collectOpencode(_db: DB): CollectorResult {
       )
       .all(...(hasPartTime ? [partCursor, partTimeCursor] : [partCursor])) as { id: string; session_id: string | null; message_id: string; data: string; rid: number; time_updated: number | null }[]) {
       let d: {
-        tool?: string; state?: { status?: string; metadata?: { exit?: number }; time?: { start?: number; end?: number } };
+        tool?: string; state?: { status?: string; metadata?: { exit?: number }; time?: { start?: number; end?: number }; input?: unknown };
       };
       try {
         d = JSON.parse(r.data);
@@ -154,6 +157,7 @@ export function collectOpencode(_db: DB): CollectorResult {
         exit: d.state?.metadata?.exit ?? null,
         start: d.state?.time?.start ?? null,
         end: d.state?.time?.end ?? null,
+        args: d.state?.input ?? null, // the raw tool arguments — derivation-only, never stored
       });
     }
 
@@ -183,10 +187,15 @@ export function collectOpencode(_db: DB): CollectorResult {
 
     // child session -> { parent, label }. Nesting is one level deep in OpenCode.
     const parentOf = new Map<string, { parent: string; label: string }>();
+    // session -> directory, for write-target resolution (older stores lack it).
+    const cwdOf = new Map<string, string>();
+    const hasDirectory = (src.prepare('PRAGMA table_info(session)').all() as { name: string }[])
+      .some((c) => c.name === 'directory');
     for (const r of src
-      .prepare('SELECT id, parent_id, agent FROM session WHERE parent_id IS NOT NULL')
-      .all() as { id: string; parent_id: string; agent: string | null }[]) {
-      parentOf.set(r.id, { parent: r.parent_id, label: `${r.agent ?? 'agent'}:${r.id}` });
+      .prepare(`SELECT id, parent_id, agent${hasDirectory ? ', directory' : ''} FROM session`)
+      .all() as { id: string; parent_id: string | null; agent: string | null; directory?: string | null }[]) {
+      if (r.parent_id) parentOf.set(r.id, { parent: r.parent_id, label: `${r.agent ?? 'agent'}:${r.id}` });
+      if (r.directory) cwdOf.set(r.id, r.directory);
     }
 
     for (const r of rows) {
@@ -265,6 +274,9 @@ export function collectOpencode(_db: DB): CollectorResult {
         name: tp.tool,
         shape: skeletonize(tp.tool, null),
         args_digest: null, // opencode parts carry no args in the tool row
+        args: tp.args, // derivation-only: the bind-time ledgers read it, the store never keeps it
+        command: BASH_TOOLS.has(tp.tool) ? commandOf(tp.tool, tp.args) : null,
+        cwd: cwdOf.get(tp.session_id ?? '') ?? null,
         session_id: parentOf.get(tp.session_id ?? '')?.parent ?? tp.session_id,
         agent_id: parentOf.get(tp.session_id ?? '')?.label ?? null,
         ts: tp.start ?? 0,

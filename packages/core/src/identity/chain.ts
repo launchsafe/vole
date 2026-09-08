@@ -246,7 +246,8 @@ export function principalRows(db: DB, includeSeed = false): { principals: Princi
 
 /** `vole whoami` / the vole_identity MCP tool: truncated ids only, never auth shapes. */
 export interface WhoamiToolRow {
-  tool: Tool;
+  /** NULL on rows buildSessionIdentity created before any tool was stamped. */
+  tool: Tool | null;
   account_class: string | null;
   plan: string | null;
   org_id: string | null;

@@ -20,7 +20,7 @@ import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import type { DB } from '../db';
 import { openDbReadOnly } from '../db';
-import { localIdentifiers, reIdentificationScan } from './support';
+import { localIdentifiers, reIdentificationScan, redactIdentifiers } from './support';
 import { exportJson } from './export';
 import { custodyFigures, custodySentence, deriveEvidenceGaps, collectWitnessTimestamps } from '../triage/custody';
 
@@ -283,7 +283,7 @@ export function incidentBundle(db: DB, anomaly_key: string, now: number = Date.n
     custody: { figures, sentence: custodySentence(figures) },
     manifest: {
       columns: incidentPreviewFields(),
-      note: 'deny-by-default: only listed fields ride; raw_ref carries <path>#<byte offset> provenance marked verifiable or expired against the cleanup horizon',
+      note: 'deny-by-default: only listed fields ride; raw_ref carries <path>#<byte offset> provenance marked verifiable or expired against the cleanup horizon; keys and shape strings are composed with home-dir paths and local identifiers redacted (deterministic, so dedupe keys stay comparable)',
     },
   };
 }
@@ -331,7 +331,10 @@ function main(): void {
   const ids = localIdentifiers();
 
   if (incidentKey) {
-    const bundle = incidentBundle(db, incidentKey);
+    // Composition-time redaction: keys and shape strings that embed the home
+    // dir or the local username never ride. The scan below stays strict — if
+    // anything unredacted survived, the bundle fails closed, not quietly.
+    const bundle = redactIdentifiers(incidentBundle(db, incidentKey), ids);
     db.close();
     if (!bundle) fail(`no anomaly with key ${incidentKey} in this store`);
     const hits = reIdentificationScan(bundle, ids);
@@ -368,7 +371,9 @@ function main(): void {
     bundle_version: 1,
     generated_at: new Date().toISOString(),
     custody_sentence: custodySentence(figures),
-    contents: { export: JSON.parse(exportJson()) },
+    // Redacted at composition: anomaly/case keys and tool-call shapes that
+    // embed /Users/<name> paths are replaced before the payload is rendered.
+    contents: { export: redactIdentifiers(JSON.parse(exportJson()), ids) },
     chain_of_evidence: {
       store_schema: (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
       packs: db.prepare('SELECT kind, version, checksum FROM content_packs').all(),

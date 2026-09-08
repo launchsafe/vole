@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import type { Dirent } from 'node:fs';
 import { join } from 'node:path';
@@ -46,15 +47,25 @@ export interface Surface {
 /**
  * The single ai_surfaces writer every census module in this batch shares.
  * Depth columns widen NULL-only — a stored fact is never overwritten by a
- * re-derived one — and first_seen never moves.
+ * re-derived one — and first_seen never moves. last_seen is clamped with MAX:
+ * some census modules stamp `now` from a file mtime (an artifact older than
+ * the wall clock), and an unguarded write would drag last_seen below the
+ * already-stored first_seen.
  */
 export function upsertSurface(db: DB, s: Surface, now: number): void {
+  // The content boundary is enforced at the chokepoint: an `extra` blob over
+  // 512 chars (or multiline) never lands verbatim — it degrades to a digest
+  // stub so the row stays auditable without carrying content-shaped text.
+  const extra =
+    s.extra != null && (s.extra.length > 512 || s.extra.includes('\n'))
+      ? JSON.stringify({ truncated: true, bytes: s.extra.length, sha256: createHash('sha256').update(s.extra).digest('hex').slice(0, 16) })
+      : (s.extra ?? null);
   db.prepare(`
     INSERT INTO ai_surfaces (surface_key, kind, name, path, evidence, version, extra, first_seen, last_seen,
       vendor, identifier, state, scanner, confidence, evidence_kind, discovery, account_class, class_evidence)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(surface_key) DO UPDATE SET
-      last_seen = excluded.last_seen,
+      last_seen = MAX(ai_surfaces.last_seen, excluded.last_seen),
       evidence = excluded.evidence,
       extra = COALESCE(excluded.extra, ai_surfaces.extra),
       version = COALESCE(excluded.version, ai_surfaces.version),
@@ -68,7 +79,7 @@ export function upsertSurface(db: DB, s: Surface, now: number): void {
       discovery = COALESCE(excluded.discovery, ai_surfaces.discovery),
       account_class = COALESCE(excluded.account_class, ai_surfaces.account_class),
       class_evidence = COALESCE(excluded.class_evidence, ai_surfaces.class_evidence)`)
-    .run(s.surface_key, s.kind, s.name, s.path, s.evidence, s.version ?? null, s.extra ?? null, now, now,
+    .run(s.surface_key, s.kind, s.name, s.path, s.evidence, s.version ?? null, extra, now, now,
       s.depth?.vendor ?? null, s.depth?.identifier ?? null, s.depth?.state ?? null, s.depth?.scanner ?? null,
       s.depth?.confidence ?? null, s.depth?.evidence_kind ?? null, s.depth?.discovery ?? null,
       s.depth?.account_class ?? null, s.depth?.class_evidence ?? null);

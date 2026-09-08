@@ -47,6 +47,18 @@ buildSync({
   target: 'node22',
   outfile: bundlePath,
   logLevel: 'info',
+  // `import.meta` does not exist in CJS, so esbuild emits `var import_meta = {}` and
+  // every `import.meta.url` in the graph becomes undefined. Five sites do that here,
+  // and two of them run at module scope — fileURLToPath(undefined) and
+  // createRequire(undefined) both throw — so the SEA died on its first line with
+  // ERR_INVALID_ARG_TYPE before any collecting happened. Define it once, for the whole
+  // bundle, instead of rewriting each call site.
+  define: { 'import.meta.url': '__voleImportMetaUrl' },
+  banner: {
+    js:
+      "const __voleImportMetaUrl = require('node:url').pathToFileURL(" +
+      "typeof __filename !== 'undefined' ? __filename : process.execPath).href;",
+  },
 });
 
 // ── Resolve the SEA host: pinned, or explicitly local (dev only) ─────────────
@@ -122,7 +134,16 @@ console.log('[3/4] generating the SEA blob …');
 writeFileSync(
   configPath,
   JSON.stringify(
-    { main: bundlePath, output: blobPath, disableExperimentalSEAWarning: true },
+    {
+      main: bundlePath,
+      output: blobPath,
+      disableExperimentalSEAWarning: true,
+      // The DLP pack is TOML, so it cannot ride along as a JSON import the way
+      // data/pricing.json does, and tsx has no text loader to import it as one in dev.
+      // Embedding it as a SEA asset keeps the executable self-contained — src/dlp/pack.ts
+      // reads it via sea.getAsset() when isSea(), and straight off disk otherwise.
+      assets: { 'dlp-detectors.toml': join(root, 'src/data/dlp-detectors.toml') },
+    },
     null,
     2,
   ),

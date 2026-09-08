@@ -39,15 +39,21 @@ for a in "$@"; do
 done
 
 # 1. icon — prebuilt and committed. Regeneration is explicit (--regen-icon), never
-#    automatic: it needs sharp, which is not a lockfile dependency, and a fresh
-#    clone (or CI, or a release pipeline) must be able to bundle without it.
+#    automatic, so a fresh clone (or CI, or a release pipeline) bundles the committed
+#    artwork. Icon/build.mjs is the retired cube design and would silently swap the
+#    mark out; Icon/from-png.swift renders the shipped one from Icon/logo.png.
 if [ "$REGEN_ICON" = true ]; then
-  node Icon/build.mjs --emit
+  mkdir -p build && rm -rf build/Vole.iconset
+  swift Icon/from-png.swift Icon/logo.png build/Vole.iconset
+  iconutil -c icns build/Vole.iconset -o Icon/Vole.icns
+  cp build/Vole.iconset/icon_512x512@2x.png Icon/AppIcon.appiconset/icon_512x512@2x.png
+  cp build/Vole.iconset/icon_512x512@2x.png Sources/Vole/Resources/AppIcon.png
+  rm -rf build/Vole.iconset
 fi
 if [ ! -f Icon/Vole.icns ]; then
   echo "Icon/Vole.icns is missing. It is committed prebuilt — restore it with" >&2
   echo "  git checkout -- apps/mac/Icon/Vole.icns" >&2
-  echo "or regenerate deliberately (needs sharp): node Icon/build.mjs --emit" >&2
+  echo "or regenerate deliberately: ./bundle.sh --regen-icon" >&2
   exit 1
 fi
 

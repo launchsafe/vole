@@ -1104,9 +1104,9 @@ struct DashboardView: View {
                             Text(Labels.tool[lag.tool] ?? lag.tool)
                             Spacer()
                             if let p50 = lag.p50Ms, let p95 = lag.p95Ms {
-                                Text("p50 \(Fmt.compact(p50 / 1000))s · p95 \(Fmt.compact(p95 / 1000))s")
+                                Text("p50 \(Fmt.compactDbl(p50 / 1000))s · p95 \(Fmt.compactDbl(p95 / 1000))s")
                                     .font(.callout).monospacedDigit().foregroundStyle(.secondary)
-                                    .help("Over \(lag.observedRows) observed rows — incidents for this tool are detected on average \(Fmt.compact(p50 / 1000))s after the call, at worst \(Fmt.compact(p95 / 1000))s.")
+                                    .help("Over \(lag.observedRows) observed rows — incidents for this tool are detected on average \(Fmt.compactDbl(p50 / 1000))s after the call, at worst \(Fmt.compactDbl(p95 / 1000))s.")
                             } else {
                                 Text("—").foregroundStyle(.tertiary)
                             }

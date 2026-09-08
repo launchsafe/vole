@@ -172,7 +172,9 @@ test('the support bundle carries the shape of the store, never its rows, and pas
   assert.equal(json.includes('remote_execution'), false);
   assert.match(JSON.stringify(b.store), /quick_check/);
   assert.ok(String(b.store.sqlite_schema_sha256).length === 64);
-  assert.equal(b.store.freelist_count, 0);
+  // Migration 28 (DROP TABLE export_seq) frees a page on a fresh store: the
+  // freelist is a fact about drops, not a leak — future writes reuse the page.
+  assert.ok((b.store.freelist_count as number) <= 1, `freelist ${b.store.freelist_count}`);
   assert.equal(b.versions.node, process.version);
   // The self-check: no local identifiers anywhere in the bundle.
   assert.equal(reIdentificationScan(b, localIdentifiers()).length, 0);

@@ -144,6 +144,10 @@ export function browserExtensionCensus(home: string, now: number): { surfaces: S
         const active = permLists(ext.active_permissions);
         const granted = permLists(ext.granted_permissions);
         const withheld = permLists(ext.withholding_permissions);
+        // Permission lists are stored as COUNTS, never the lists: a
+        // granted-permission array is free text a long-tail extension can push
+        // past the 512-char content boundary (ai_surfaces.extra is
+        // shape-scanned by verify --content). The names stay in the source file.
         const extra = {
           browser, profile, id, ai: isAi ?? false,
           location: EXTENSION_LOCATIONS[ext.location ?? -1] ?? 'unknown',
@@ -151,12 +155,15 @@ export function browserExtensionCensus(home: string, now: number): { surfaces: S
           from_webstore: ext.from_webstore ?? null,
           was_installed_by_default: ext.was_installed_by_default ?? null,
           disable_reasons: normalizeReasons(ext.disable_reasons),
-          declared_permissions: ext.manifest?.permissions ?? [],
-          declared_host_permissions: ext.manifest?.host_permissions ?? [],
+          declared_permissions: (ext.manifest?.permissions ?? []).length,
+          declared_host_permissions: (ext.manifest?.host_permissions ?? []).length,
           content_scripts: ext.manifest?.content_scripts?.length ?? 0,
-          active_permissions: active,
-          granted_permissions: granted,
-          withholding_permissions: withheld,
+          active_permissions: active.permissions.length,
+          active_host_permissions: active.host_permissions.length,
+          granted_permissions: granted.permissions.length,
+          granted_host_permissions: granted.host_permissions.length,
+          withheld_permissions: withheld.permissions.length,
+          withheld_host_permissions: withheld.host_permissions.length,
         };
         surfaces.push({
           surface_key: `browser-ext:${browser}:${profile}:${id}`,

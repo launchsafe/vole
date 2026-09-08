@@ -69,6 +69,14 @@ export function tailCounter(
     .prepare('SELECT counter, watermark FROM surface_activity WHERE surface_key = ? AND counter_kind = ?')
     .get(surfaceKey, counterKind) as { counter: number; watermark: number | null } | undefined;
   const counter = prev?.counter ?? 0;
+  // Same cross-ref contract as bumpCounter: a tailed log is a registered
+  // surface even when no endpoint line ever matched (an unmatched log is a
+  // fact, not a dangling key).
+  db.prepare(`
+    INSERT INTO ai_surfaces (surface_key, kind, name, path, evidence, first_seen, last_seen)
+    VALUES (?, 'counter', ?, ?, 'counter-ledger surface: a tailed log, counted by matched lines; the log itself is the artifact', ?, ?)
+    ON CONFLICT(surface_key) DO NOTHING`)
+    .run(surfaceKey, surfaceKey, file, now, now);
   let start = prev?.watermark ?? 0;
   if (start > size) start = 0; // rotated: reset instead of double-counting
   if (start === size) {
@@ -487,7 +495,10 @@ export const coverageScanner: Scanner = {
       ghostUpsert.run(
         `ghost-app:${g.bundleId ?? g.name}`, g.name, g.bundleId ? join(home, 'Library/Preferences', `${g.bundleId}.plist`) : null,
         g.evidence, JSON.stringify({ bundleId: g.bundleId, lastWrite: g.lastWrite }),
-        now, g.lastWrite ?? now,
+        // last_seen is the observation time, never the artifact's mtime —
+        // a residue not written since before Vole first saw it would else
+        // land last_seen < first_seen and fail the registry invariant.
+        now, now,
       );
     }
 
@@ -501,7 +512,7 @@ export const coverageScanner: Scanner = {
       storeUpsert.run(
         `store:${s.key}`, s.name, s.dir,
         `${s.stats.sessions ?? 'unknown'} sessions, ${s.stats.mb ?? 'unknown'} MB, last write ${last} — presence and size are exact; tokens are not recoverable here`,
-        JSON.stringify(s.stats), now, s.stats.lastWrite ?? now,
+        JSON.stringify(s.stats), now, now,
       );
     }
 

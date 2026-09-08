@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { userInfo } from 'node:os';
 import {
   openDb, insertEvents, insertAnomalies, repriceUnpriced, recordCollectorRun,
-  scanDue, recordScan, drainInbox,
+  scanDue, recordScan, boundNote, drainInbox,
 } from '../db';
 import { collectAll } from '../collectors';
 import type { CodexCollectorResult } from '../collectors/codex';
@@ -24,11 +24,10 @@ import { actionTargetsForCommand, insertActionTargets } from '../toolcalls/targe
 import { parseFetchIngress, insertFetchIngress } from '../toolcalls/ingress';
 import { upsertAnomalyContext } from '../toolcalls/context';
 import { resolvePrincipal, recordPrincipal } from '../identity/chain';
-import { recordVendorIdentities, seatInventory } from '../identity/accounts';
+import { recordVendorIdentities, seatInventory, recordSessionIdentityClasses } from '../identity/accounts';
 import { detectIdentityRules } from '../identity/rules';
 import { loadIdentityPolicy } from '../identity/policy';
-import { deviceKey, principalKey } from '../identity';
-import { sweepGrants } from '../identity';
+import { deviceKey, principalKey, recordIdentity, sweepGrants } from '../identity';
 import { paths } from '../paths';
 import { runBackfill } from '../backfill';
 import { registerPacks } from '../packs';
@@ -127,7 +126,12 @@ function runOnce(): void {
   step('identity', () => {
     const resolved = resolvePrincipal();
     const key = recordPrincipal(db, resolved);
+    recordIdentity(db, resolved.username);
     recordVendorIdentities(db);
+    // The session_identity binding ladder (tier 3 #17/#19/#21): account_class
+    // from classifyAccount, session-proved where the session's own file
+    // attests it, ambient where only the current-account snapshot does.
+    recordSessionIdentityClasses(db, principalKey(resolved.username), deviceKey());
     const policy = loadIdentityPolicy();
     seatInventory(db, policy?.seats_purchased);
     syncLifecycleFromPolicy(db);
@@ -222,6 +226,35 @@ function runOnce(): void {
     return `ledger ${a.rows} row(s), ${b} bridge identit(ies)`;
   });
 
+  // The scanner lane: gated by each scanner's own cadence, never the poll's.
+  // A check is one indexed read; a body runs at most once per cadence_ms.
+  // Every scanner is switch-gated: the manifest promise is only a control
+  // because this loop honours resolveScannerSwitch. It runs BEFORE the
+  // detection pass: the net-ledgers scan fills vcs_actions/context_edges from
+  // stored tool calls, and the ledger rules read those tables in this same
+  // pass — after the scan they would fire one pass late.
+  for (const s of SCANNERS) {
+    if (!scanDue(db, s.name, s.cadenceMs)) continue;
+    const t0 = Date.now();
+    let ok = false;
+    let notes: string | null = null;
+    const sw = resolveScannerSwitch(s.name);
+    if (!sw.enabled) {
+      notes = `off (${sw.basis}${sw.locked ? ', pinned by managed policy' : ''})`;
+    } else {
+      try {
+        const r = s.run();
+        ok = r.ok;
+        notes = r.notes ?? null;
+      } catch (err) {
+        ok = false;
+        notes = `scanner failed: ${(err as Error).message}`;
+      }
+    }
+    recordScan(db, s.name, s.cadenceMs, t0, Date.now() - t0, ok, notes);
+    if (verbose && notes) console.log(`  [scan] ${s.name}: ${notes}`);
+  }
+
   // Rules need full history to establish a baseline, so they run over the
   // trailing window, not just this poll's new rows. Stable anomaly_keys keep
   // re-runs idempotent. The pass is insert-gated: rules are pure functions of
@@ -234,7 +267,10 @@ function runOnce(): void {
   const lastEpoch = db
     .prepare("SELECT notes FROM scan_state WHERE scanner = 'detection-rules'")
     .get() as { notes: string | null } | undefined;
-  const epochChanged = lastEpoch?.notes !== rulesEpoch;
+  // The stored note is the bounded form (recordScan truncates the rule-id list
+  // to honour the content boundary), so the compare runs through the same
+  // transform — the digest in boundNote still distinguishes every rule-set change.
+  const epochChanged = lastEpoch?.notes !== boundNote(rulesEpoch);
   let anomalies: Anomaly[] = [];
   let newAnomalies: Anomaly[] = [];
   let escalatedAnomalies: Anomaly[] = [];
@@ -337,32 +373,6 @@ function runOnce(): void {
       `${fmt(newAnomalies.length)} new${escalatedAnomalies.length ? `, ${fmt(escalatedAnomalies.length)} escalated` : ''} (${ms}ms)`,
   );
 
-  // The scanner lane: gated by each scanner's own cadence, never the poll's.
-  // A check is one indexed read; a body runs at most once per cadence_ms.
-  // Every scanner is switch-gated: the manifest promise is only a control
-  // because this loop honours resolveScannerSwitch.
-  for (const s of SCANNERS) {
-    if (!scanDue(db, s.name, s.cadenceMs)) continue;
-    const t0 = Date.now();
-    let ok = false;
-    let notes: string | null = null;
-    const sw = resolveScannerSwitch(s.name);
-    if (!sw.enabled) {
-      notes = `off (${sw.basis}${sw.locked ? ', pinned by managed policy' : ''})`;
-    } else {
-      try {
-        const r = s.run();
-        ok = r.ok;
-        notes = r.notes ?? null;
-      } catch (err) {
-        ok = false;
-        notes = `scanner failed: ${(err as Error).message}`;
-      }
-    }
-    recordScan(db, s.name, s.cadenceMs, t0, Date.now() - t0, ok, notes);
-    if (verbose && notes) console.log(`  [scan] ${s.name}: ${notes}`);
-  }
-
   if (notify) {
     const cutoff = Date.now() - NOTIFY_WINDOW_MS;
     // Inserted always notifies; an escalation (a severity that ROSE on a window
@@ -386,9 +396,20 @@ function runOnce(): void {
 function deriveCommandLedgers(calls: import('../toolcalls/bind').ToolCallRow[]): void {
   let writes = 0, reads = 0, grantsN = 0, pkgs = 0, targets = 0, ingress = 0;
   for (const tc of calls) {
+    // The args channel (structured Edit/Write/apply_patch, or the command
+    // string): the raw arguments object, never stored. Empty means nothing
+    // to derive — 'no write recorded', not zero.
+    const args = tc.args ?? tc.command;
+    const ctx = {
+      tool_call_key: tc.tool_call_key,
+      session_id: tc.session_id ?? null,
+      ts: tc.ts,
+      cwd: tc.cwd ?? null,
+    };
+    if (args !== undefined && args !== null && args !== '') {
+      writes += insertFileWrites(db, fileWritesForCall(tc.name, args, ctx));
+    }
     if (!tc.command) continue;
-    const ctx = { tool_call_key: tc.tool_call_key, session_id: tc.session_id ?? null, ts: tc.ts };
-    writes += insertFileWrites(db, fileWritesForCall(tc.name, tc.command, ctx));
     reads += insertSecretStoreReads(db, secretStoreReads(tc.command, tc.tool_call_key, tc.ts ?? null));
     grantsN += insertGrantDeposits(db, grantDeposits(tc.command, tc.tool_call_key, tc.ts ?? null));
     pkgs += insertPackageExecs(db, packageExecs(tc.command, tc.tool_call_key, tc.ts ?? null));

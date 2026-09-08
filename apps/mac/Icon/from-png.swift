@@ -31,6 +31,35 @@ let S: CGFloat = 1024          // canvas
 let CARD: CGFloat = 1000        // near full-bleed: matches modern app icons (Raycast/Arc sizing)
 let INSET: CGFloat = (S - CARD) / 2
 let R: CGFloat = 224            // corner radius — Apple squircle proportion (~22.4% of body)
+// The artwork ships with ~26% transparent padding baked in. Aspect-filling that
+// padded canvas left the mark at ~45% of the tile height, so Vole read as a small
+// thing in a big square next to Slack/VS Code/Claude (65-78%). Trim to the mark
+// and size it ourselves instead: MARK_W of the card wide, never taller than MARK_H.
+let MARK_W: CGFloat = 0.82
+let MARK_H: CGFloat = 0.72
+
+/// Tightest rect (image coordinates, origin top-left) containing every non-transparent pixel.
+func alphaBounds(_ img: CGImage) -> CGRect {
+    let w = img.width, h = img.height
+    var px = [UInt8](repeating: 0, count: w * h * 4)
+    guard let c = CGContext(data: &px, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    else { return CGRect(x: 0, y: 0, width: w, height: h) }
+    c.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+    var x0 = w, y0 = h, x1 = -1, y1 = -1
+    for y in 0..<h {
+        for x in 0..<w where px[(y * w + x) * 4 + 3] > 8 {
+            if x < x0 { x0 = x }; if x > x1 { x1 = x }
+            if y < y0 { y0 = y }; if y > y1 { y1 = y }
+        }
+    }
+    guard x1 >= x0, y1 >= y0 else { return CGRect(x: 0, y: 0, width: w, height: h) }
+    // the scan is bottom-left origin, cropping(to:) wants top-left
+    return CGRect(x: x0, y: h - 1 - y1, width: x1 - x0 + 1, height: y1 - y0 + 1)
+}
+
+let mark = image.cropping(to: alphaBounds(image)) ?? image
 
 func render(_ size: Int) -> CGImage? {
     let px = CGFloat(size)
@@ -46,15 +75,24 @@ func render(_ size: Int) -> CGImage? {
     let path = CGPath(roundedRect: cardRect, cornerWidth: R * scale, cornerHeight: R * scale, transform: nil)
     ctx.addPath(path)
     ctx.clip()
-    // The tile background: near-black #080808 behind the letterforms, so the
-    // mark reads on both light and dark Dock backgrounds.
+    // The tile background: near-black #080808. Note that macOS 26 paints a ~17px light
+    // glass rim on every app icon, which is invisible on a light tile but shows on a
+    // dark one as a grey ramp into the edge, so this reads marginally smaller in the
+    // Dock than a white-tiled neighbour. That is a known, accepted trade for the look.
     ctx.setFillColor(CGColor(red: 8 / 255, green: 8 / 255, blue: 8 / 255, alpha: 1))
     ctx.fill(cardRect)
-    // Aspect-fill the source into the card (centre-cropped, never stretched).
-    let iw = CGFloat(image.width), ih = CGFloat(image.height)
-    let fill = max((CARD * scale) / iw, (CARD * scale) / ih)
-    let dw = iw * fill, dh = ih * fill
-    ctx.draw(image, in: CGRect(x: cardRect.midX - dw / 2, y: cardRect.midY - dh / 2, width: dw, height: dh))
+    // Fit the trimmed mark into the card, centred, never stretched or cropped.
+    let mw = CGFloat(mark.width), mh = CGFloat(mark.height)
+    let fit = min(CARD * MARK_W / mw, CARD * MARK_H / mh) * scale
+    let dw = mw * fit, dh = mh * fit
+    // The mouse is drawn as a mask filled pure white rather than blitted: logo.png's
+    // own off-white (#F5F4EF) goes grey under the system's glass pass, #FFF survives it.
+    let markRect = CGRect(x: cardRect.midX - dw / 2, y: cardRect.midY - dh / 2, width: dw, height: dh)
+    ctx.saveGState()
+    ctx.clip(to: markRect, mask: mark)
+    ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+    ctx.fill(markRect)
+    ctx.restoreGState()
     return ctx.makeImage()
 }
 

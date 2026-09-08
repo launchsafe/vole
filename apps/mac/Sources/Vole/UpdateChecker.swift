@@ -52,6 +52,22 @@ final class UpdateChecker {
         let shaAsset: URL?
     }
 
+    /// The single choke point for this app's network calls — the Swift twin of
+    /// packages/core/src/egress.ts. Same contract: VOLE_NO_EGRESS is read at
+    /// CALL time (a test and a running app can both toggle it), every attempt
+    /// — allowed or denied — lands in the network_calls ledger, the ledger
+    /// write is best-effort (fail-open on accounting) and the switch always
+    /// blocks (fail-closed on the opt-out). No enabler flag here: the update
+    /// check is the one disclosed always-on call in the inventory. Internal
+    /// (not private) so the CLI harness exercises the real gate.
+    static func egress(caller: String, destination: String, purpose: String) -> Bool {
+        let blocked = ProcessInfo.processInfo.environment["VOLE_NO_EGRESS"] == "1"
+        StoreWriter.recordNetworkCall(
+            caller: caller, destination: destination,
+            purpose: "\(purpose) [\(blocked ? "no_egress" : "allowed")]")
+        return !blocked
+    }
+
     /// Testability: point the checker at a local file:// "API" and/or
     /// auto-install without a click. Not a settings surface — a test seam.
     init() {
@@ -72,6 +88,14 @@ final class UpdateChecker {
         // prerelease. /releases lists all of them, newest first.
         guard let url = URL(string: ProcessInfo.processInfo.environment["VOLE_UPDATE_API"]
                   ?? "https://api.github.com/repos/launchsafe/vole/releases?per_page=1") else { return }
+        // The choke point: the attempt is ledgered whether or not it is allowed,
+        // and VOLE_NO_EGRESS skips the network call entirely.
+        guard Self.egress(caller: "UpdateChecker.swift",
+                          destination: url.host.map { "\($0)\(url.path)" } ?? url.absoluteString,
+                          purpose: "version check on launch") else {
+            status = .idle
+            return
+        }
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
             guard let data,
                   let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],

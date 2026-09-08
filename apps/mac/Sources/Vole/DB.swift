@@ -302,11 +302,13 @@ struct ServerToolRow: Identifiable {
     var id: String { linkKind }
 }
 
-/// Observation lag per tool: observed_at minus ts.
+/// Observation lag per tool: observed_at minus ts. Double, not Int — some
+/// sources carry fractional-millisecond timestamps, and the reader must not
+/// truncate what queries.ts prints in full (read-model parity).
 struct LagRow: Identifiable {
     let tool: String
-    let p50Ms: Int?
-    let p95Ms: Int?
+    let p50Ms: Double?
+    let p95Ms: Double?
     let observedRows: Int
     var id: String { tool }
 }
@@ -408,7 +410,7 @@ final class DB {
     /// depends on the two agreeing about what "current" means. The read-model
     /// parity check asserts this against the fixture store (always at the TS head),
     /// so a forgotten bump fails CI instead of shipping a gate that blocks users.
-    static let knownSchemaVersion = 27
+    static let knownSchemaVersion = 28
 
     private var handle: OpaquePointer?
     let path: String
@@ -439,13 +441,29 @@ final class DB {
         guard !opened else { return }
         var h: OpaquePointer?
         if sqlite3_open_v2(path, &h, SQLITE_OPEN_READONLY, nil) == SQLITE_OK {
-            handle = h; opened = true
-        } else if sqlite3_open_v2(path, &h, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK {
+            // WAL cold-open probe: with no live -shm/-wal files (clean collector
+            // exit, or any copied store) a READONLY open returns SQLITE_OK but
+            // cannot rebuild the WAL index, so every prepare fails with "unable
+            // to open database file". One cheap prepare — it runs every launch —
+            // tells us whether this connection can actually read.
+            var stmt: OpaquePointer?
+            let readable = sqlite3_prepare_v2(h, "SELECT 1 FROM sqlite_master LIMIT 1", -1, &stmt, nil) == SQLITE_OK
+            if let stmt { sqlite3_finalize(stmt) }
+            if readable {
+                handle = h; opened = true
+                sqlite3_busy_timeout(h, 2000)
+                return
+            }
+            sqlite3_close_v2(h)
+            h = nil
+        }
+        var h2: OpaquePointer?
+        if sqlite3_open_v2(path, &h2, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK {
             // ponytail: WAL databases sometimes refuse a pure READONLY connection;
             // the file is user-writable, so fall back rather than show nothing.
-            handle = h; opened = true
+            handle = h2; opened = true
+            sqlite3_busy_timeout(h2, 2000)
         }
-        if let handle { sqlite3_busy_timeout(handle, 2000) }
     }
 
     deinit { if let handle { sqlite3_close_v2(handle) } }
@@ -973,8 +991,12 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
 
         lines.append("  \"observationLag\": [")
         let ol = observationLag(.all)
+        // JS prints integral doubles bare (194069984, not 194069984.0) — match it.
+        let jnum: (Double) -> String = { $0 == $0.rounded() ? String(Int64($0)) : String($0) }
         for (i, r) in ol.enumerated() {
-            lines.append("    {\"tool\": \"\(jstr(r.tool))\", \"p50_ms\": \(r.p50Ms.map(String.init) ?? "null"), \"p95_ms\": \(r.p95Ms.map(String.init) ?? "null"), \"observed_rows\": \(r.observedRows)}\(i == ol.count - 1 ? "" : ",")")
+            let p50 = r.p50Ms.map(jnum) ?? "null"
+            let p95 = r.p95Ms.map(jnum) ?? "null"
+            lines.append("    {\"tool\": \"\(jstr(r.tool))\", \"p50_ms\": \(p50), \"p95_ms\": \(p95), \"observed_rows\": \(r.observedRows)}\(i == ol.count - 1 ? "" : ",")")
         }
         lines.append("  ],")
 
@@ -1065,35 +1087,46 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
 
     /// The People view's principal dimension (parity port of getByPrincipal):
     /// live-only, every figure verbatim, binding coverage spelled out.
+    ///
+    /// MUST stay in lockstep with getByPrincipal in queries.ts: the join is
+    /// usage_events -> session_identity.principal_key -> principals, in pure SQL.
+    /// The reader never hashes — usage_events.user is cleartext and is never
+    /// matched against the keyed principals.principal_key (the old join did
+    /// exactly that and matched nothing).
     func byPrincipal() -> (principals: [PrincipalSummaryRow], originUnknownCalls: Int, originUnknownTokens: Int?) {
-        var users: [String] = []
-        run("SELECT DISTINCT user FROM usage_events e WHERE user IS NOT NULL AND e.source = 'live'") { row in
-            if let u = colText(row, 0) { users.append(u) }
+        var keys: [String] = []
+        run("""
+            SELECT DISTINCT si.principal_key FROM usage_events e
+            JOIN session_identity si ON si.session_id = e.session_id
+            WHERE si.principal_key IS NOT NULL AND e.source = 'live'
+            """) { row in
+            if let k = colText(row, 0) { keys.append(k) }
         }
         var out: [PrincipalSummaryRow] = []
-        for user in users {
-            // The identity row for this principal; absent → the queries below run
-            // against '' (matching nothing) and the row renders unbound, per TS.
-            var queryKey = ""
-            var outKey = "unknown:\(user)"
-            var display = user
-            runBound("SELECT principal_key, display FROM principals WHERE principal_key = ?", [.text(user)]) { row in
-                queryKey = colText(row, 0) ?? ""
-                outKey = colText(row, 0) ?? "unknown:\(user)"
-                display = colText(row, 1) ?? user
+        for key in keys {
+            var outKey = "unknown:\(key)"
+            var display = key
+            runBound("SELECT principal_key, display FROM principals WHERE principal_key = ?", [.text(key)]) { row in
+                outKey = colText(row, 0) ?? "unknown:\(key)"
+                display = colText(row, 1) ?? key
             }
             var sessions = 0, calls = 0
             var tokens: Int? = nil, cost: Double? = nil
             runBound("""
                 SELECT COUNT(DISTINCT e.session_id) AS sessions, COUNT(*) AS calls,
                        SUM(e.total_tokens) AS tokens, SUM(e.cost_usd) AS cost
-                FROM usage_events e WHERE e.user = ? AND e.source = 'live'
-                """, [.text(user)]) { row in
+                FROM usage_events e JOIN session_identity si ON si.session_id = e.session_id
+                WHERE si.principal_key = ? AND e.source = 'live'
+                """, [.text(key)]) { row in
                 sessions = colInt(row, 0); calls = colInt(row, 1)
                 tokens = colIntOpt(row, 2); cost = colDblOpt(row, 3)
             }
             var info = 0, warn = 0, critical = 0
-            runBound("SELECT severity, COUNT(*) AS n FROM anomalies WHERE user = ? GROUP BY severity", [.text(user)]) { row in
+            runBound("""
+                SELECT severity, COUNT(*) AS n FROM anomalies a
+                JOIN session_identity si ON si.session_id = a.session_id
+                WHERE si.principal_key = ? GROUP BY severity
+                """, [.text(key)]) { row in
                 switch colText(row, 0) {
                 case "info": info = colInt(row, 1)
                 case "warn": warn = colInt(row, 1)
@@ -1105,39 +1138,35 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
             runBound("""
                 SELECT tool, account_class, COUNT(DISTINCT session_id) AS n FROM session_identity
                 WHERE principal_key = ? GROUP BY tool, account_class ORDER BY n DESC
-                """, [.text(queryKey)]) { row in
+                """, [.text(key)]) { row in
                 classes.append((colText(row, 0), colText(row, 1), colInt(row, 2)))
             }
             var proved = 0, ambient = 0, unbound = 0
-            runBound("SELECT binding_evidence, COUNT(*) AS n FROM session_identity WHERE principal_key = ? GROUP BY binding_evidence", [.text(queryKey)]) { row in
+            runBound("SELECT binding_evidence, COUNT(*) AS n FROM session_identity WHERE principal_key = ? GROUP BY binding_evidence", [.text(key)]) { row in
                 switch colText(row, 0) {
                 case "session_proved": proved = colInt(row, 1)
                 case "ambient": ambient = colInt(row, 1)
                 default: unbound += colInt(row, 1)
                 }
             }
-            var identity = Set<String>()
-            runBound("SELECT session_id FROM session_identity WHERE principal_key = ?", [.text(queryKey)]) { row in
-                if let sid = colText(row, 0) { identity.insert(sid) }
-            }
-            var totalSessions = 0
-            runBound("""
-                SELECT COUNT(DISTINCT session_id) AS n FROM usage_events
-                WHERE user = ? AND session_id IS NOT NULL AND source = 'live'
-                """, [.text(user)]) { row in
-                totalSessions = colInt(row, 0)
-            }
+            // Sessions counted here all have an identity row by construction (the
+            // join is through it); live sessions with no identity row at all fall
+            // to the origin-unknown bucket below, never to a principal.
             out.append(PrincipalSummaryRow(
                 principalKey: outKey, display: display, sessions: sessions, calls: calls,
                 tokens: tokens, costUsd: cost, info: info, warn: warn, critical: critical,
                 sessionProved: proved, ambient: ambient, unbound: unbound,
-                noIdentityRow: max(0, totalSessions - identity.count),
+                noIdentityRow: 0,
                 accountClasses: classes))
         }
         out.sort { $0.calls == $1.calls ? $0.principalKey < $1.principalKey : $0.calls > $1.calls }
         var calls = 0
         var tokens: Int? = nil
-        run("SELECT COUNT(*) AS calls, SUM(total_tokens) AS tokens FROM usage_events e WHERE user IS NULL AND e.source = 'live'") { row in
+        run("""
+            SELECT COUNT(*) AS calls, SUM(e.total_tokens) AS tokens
+            FROM usage_events e LEFT JOIN session_identity si ON si.session_id = e.session_id
+            WHERE e.source = 'live' AND si.principal_key IS NULL
+            """) { row in
             calls = colInt(row, 0); tokens = colIntOpt(row, 1)
         }
         return (out, calls, tokens)
@@ -1242,17 +1271,17 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
     /// Observation lag: per tool, observed_at minus ts (the collection-delay read model).
     func observationLag(_ r: DateRange) -> [LagRow] {
         let from = r.startMs()
-        var byTool: [String: [Int]] = [:]
+        var byTool: [String: [Double]] = [:]
         run("""
             SELECT tool, observed_at - ts AS lag FROM usage_events
             WHERE ts >= ? AND observed_at IS NOT NULL AND source = 'live'
             """, [from]) { row in
-            byTool[colText(row, 0) ?? "?", default: []].append(colInt(row, 1))
+            byTool[colText(row, 0) ?? "?", default: []].append(colDblOpt(row, 1) ?? 0)
         }
         return byTool.map { tool, lags -> LagRow in
             let sorted = lags.sorted()
             // Same index math as queries.ts: floor((p/100) * n), capped at n-1.
-            let pct = { (p: Int) -> Int? in
+            let pct = { (p: Int) -> Double? in
                 sorted.isEmpty ? nil : sorted[min(sorted.count - 1, (p * sorted.count) / 100)]
             }
             return LagRow(tool: tool, p50Ms: pct(50), p95Ms: pct(95), observedRows: sorted.count)

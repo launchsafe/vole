@@ -154,9 +154,9 @@ test('browserExtensionCensus: location enum + permission triad from Secure Prefe
   const { surfaces } = browserExtensionCensus(home, Date.now());
   const row = surfaces.find((s) => s.surface_key === 'browser-ext:chrome:Default:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
   assert.ok(row, 'extension surface present');
-  const extra = JSON.parse(row!.extra!) as { location: string; granted_permissions: { permissions: string[] } };
+  const extra = JSON.parse(row!.extra!) as { location: string; granted_permissions: number };
   assert.equal(extra.location, 'unpacked');
-  assert.deepEqual(extra.granted_permissions.permissions, ['tabs', 'cookies']);
+  assert.equal(extra.granted_permissions, 2); // counts, never the permission name list
   assert.match(row!.evidence, /2 granted permission/);
   // Chrome's own verdict row carries the disable reasons.
   const verdict = surfaces.find((s) => s.surface_key === 'browser-extstore:chrome:Default:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');

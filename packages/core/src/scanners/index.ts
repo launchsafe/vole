@@ -74,6 +74,7 @@ import { collectContextImports } from '../chains/imports';
 import { collectKeyResidency, collectResidencyEvidence, collectAnswerableFrom } from '../chains/residency';
 import { collectTermsChain } from '../chains/terms';
 import { emitNetLedgers } from '../toolcalls/net-ledgers';
+import { emitFileWrites } from '../toolcalls/file-writes';
 import { measureStoreBudget } from '../privacy/store-budget';
 
 /** The shell-history scanner takes a store handle; the lane's Scanner shape does not. */
@@ -113,15 +114,19 @@ export const structuredSinksLaneScanner: Scanner = {
   },
 };
 
-/** Net ledgers are derived from stored tool-call shapes — no disk reads at all. */
+/** Net ledgers are derived from stored tool-call shapes — no disk reads at all.
+ *  The same lane backfills file_writes from the stored ledger (coarse rows,
+ *  path NULL — the store keeps the args digest, never the args). */
 export const netLedgersScanner: Scanner = {
   name: 'net-ledgers',
   cadenceMs: 10 * 60_000,
   run: () => {
-    const r = emitNetLedgers(openDb());
+    const db = openDb();
+    const r = emitNetLedgers(db);
+    const fw = emitFileWrites(db);
     return {
       ok: true,
-      notes: `context_edges ${r.context_edges}, vcs_actions ${r.vcs_actions}, package_execs ${r.package_execs}, remote_exec ${r.remote_exec}`,
+      notes: `context_edges ${r.context_edges}, vcs_actions ${r.vcs_actions}, package_execs ${r.package_execs}, remote_exec ${r.remote_exec}, file_writes ${fw}`,
     };
   },
 };

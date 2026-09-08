@@ -33,7 +33,10 @@ import {
  * These rules read the store directly (the ledger is the substrate; pure-array
  * plumbing would just copy it). Every anomaly_key is stable, so re-runs are
  * idempotent, and no key contains a now()-derived value — UTC bucket epochs of
- * observed timestamps are the only time components.
+ * observed timestamps are the only time components. Windows and stall bounds
+ * are anchored to the ledger's data horizon (the newest observed call), so a
+ * pass that stored nothing new reproduces byte-identical output no matter when
+ * it runs.
  *
  * Where a fact needs the collector's raw arguments (destinations, object names,
  * statement classes, scopes, target hashes), the rule reads the net ledgers
@@ -60,11 +63,14 @@ export interface CallLite {
 }
 
 function loadCalls(db: DB): CallLite[] {
+  // ts > 0: a row with ts = 0 carries no time fact (the column is NOT NULL, so
+  // collectors that lack a timestamp write 0) — letting it through would mint
+  // epoch-0 buckets (daily_exposure:0, unattended_run:...:0). Unknown, not zero.
   return db
     .prepare(
       `SELECT id, tool_call_key AS key, tool, name, COALESCE(tool_name, name) AS tn, shape, args_digest,
               session_id AS session, agent_id AS agent, status, ts, origin_kind, permission_mode
-       FROM tool_calls ORDER BY id`,
+       FROM tool_calls WHERE ts > 0 ORDER BY id`,
     )
     .all() as CallLite[];
 }
@@ -117,7 +123,7 @@ function anom(p: {
 
 // ── 27. denied_then_achieved / denial_then_reshape: the guardrail-bypass matcher
 
-function detectDeniedPairs(sessions: Map<string, CallLite[]>, now: number): Anomaly[] {
+function detectDeniedPairs(sessions: Map<string, CallLite[]>): Anomaly[] {
   const out: Anomaly[] = [];
   for (const [session, calls] of sessions) {
     const pairCalls: PairCall[] = calls.map((c) => ({
@@ -205,10 +211,10 @@ function detectShapeRules(calls: CallLite[]): Anomaly[] {
 
 // ── 34. tool_failure_storm: per tool_name, ratio over RECORDED outcomes only
 
-function detectFailureStorms(calls: CallLite[], now: number): Anomaly[] {
+function detectFailureStorms(calls: CallLite[], horizon: number): Anomaly[] {
   const groups = new Map<string, { tool: string; session: string; tn: string; failed: number; decided: number; unknown: number; n: number; lo: number; hi: number }>();
   for (const c of calls) {
-    if (!c.session || c.ts < now - 7 * 24 * 3600_000) continue;
+    if (!c.session || c.ts < horizon - 7 * 24 * 3600_000) continue;
     const gk = `${c.tool}::${c.session}::${c.tn}`;
     let g = groups.get(gk);
     if (!g) {
@@ -253,11 +259,15 @@ function detectFailureStorms(calls: CallLite[], now: number): Anomaly[] {
 const STALL_MS = 10 * 60_000;
 const IN_FLIGHT_WINDOW = 30 * 60_000;
 
-function detectStuckCalls(calls: CallLite[], now: number): Anomaly[] {
+function detectStuckCalls(calls: CallLite[]): Anomaly[] {
   const out: Anomaly[] = [];
   const sessions = bySession(calls);
   for (const [session, sc] of sessions) {
-    const unbound = sc.filter((c) => c.status === null && now - c.ts > STALL_MS && sc.some((l) => l.ts > c.ts));
+    // The data horizon: the last call this session is known to have issued. The
+    // stall is measured to it, never to Date.now() — a poll that stored nothing
+    // new must not mint a fresh stuck window (or widen one) as wall clock moves.
+    const horizon = sc.reduce((m, c) => Math.max(m, c.ts), 0);
+    const unbound = sc.filter((c) => c.status === null && horizon - c.ts > STALL_MS && sc.some((l) => l.ts > c.ts));
     if (!unbound.length) continue;
 
     // In-flight high-water mark: the most unbound calls ever overlapping in a
@@ -279,13 +289,13 @@ function detectStuckCalls(calls: CallLite[], now: number): Anomaly[] {
         tool: u.tool,
         session,
         ws: u.ts,
-        we: now,
-        title: `No outcome recorded after ${Math.round((now - u.ts) / 60000)} min: ${u.name}`,
+        we: horizon,
+        title: `No outcome recorded after ${Math.round((horizon - u.ts) / 60000)} min: ${u.name}`,
         detail:
-          `A ${u.name} call was issued with no bound result ${Math.round((now - u.ts) / 60000)} minutes ago while the session kept issuing calls — ` +
+          `A ${u.name} call was issued with no bound result ${Math.round((horizon - u.ts) / 60000)} minutes before the session's last recorded call — ` +
           `'no outcome recorded', not 'still running': without PID liveness a stuck row cannot distinguish the two. ` +
           `Session in-flight high-water mark: ${high}.`,
-        observed: now - u.ts,
+        observed: horizon - u.ts,
         threshold: STALL_MS,
       }));
     }
@@ -293,14 +303,16 @@ function detectStuckCalls(calls: CallLite[], now: number): Anomaly[] {
   return out;
 }
 
-function detectStuckMeasured(db: DB, now: number): Anomaly[] {
+function detectStuckMeasured(db: DB): Anomaly[] {
   const rows = db
-    .prepare(`SELECT tool, session_id, name, duration_ms, ts FROM tool_calls
-       WHERE duration_ms > ? AND duration_kind = 'measured'`)
-    .all(STALL_MS) as { tool: string; session_id: string | null; name: string; duration_ms: number; ts: number }[];
+    .prepare(`SELECT tool_call_key AS call_key, tool, session_id, name, duration_ms, ts FROM tool_calls
+       WHERE duration_ms > ? AND duration_kind = 'measured' AND ts > 0`)
+    .all(STALL_MS) as { call_key: string; tool: string; session_id: string | null; name: string; duration_ms: number; ts: number }[];
   return rows.map((r) =>
     anom({
-      key: `stuck_tool_call:${r.tool}:${r.session_id ?? 'none'}:${r.ts}`,
+      // Keyed on the call's own stable key: the old tool:session:ts triple
+      // collided for two measured calls that shared a millisecond.
+      key: `stuck_tool_call:measured:${r.call_key}`,
       rule: 'stuck_tool_call',
       severity: 'warn',
       tool: r.tool,
@@ -516,10 +528,18 @@ function detectSelfAuthorised(db: DB, calls: CallLite[], now: number): Anomaly[]
       session: near?.session ?? null,
       ws: changeTs,
       we: now,
-      title: `Permission surface changed: ${changes.map((c) => c.key).join(', ')}`,
+      // Bound both enumerations: detail is content-boundary-scanned (verify
+      // --content fails any value over 512 chars), and a flip of the same
+      // trust key across many project entries is one fact, not nine.
+      title: `Permission surface changed: ${[...new Set(changes.map((c) => c.key))].slice(0, 5).join(', ')}${changes.length > 5 ? ` (+${changes.length - 5} more)` : ''}`,
       detail:
         `A permission-granting key changed in ${path.split('/').slice(-2).join('/')}: ` +
-        changes.map((c) => `${c.key}: ${c.from} -> ${c.to}`).join('; ') + '. ' +
+        (() => {
+          const listed = changes.slice(0, 3).map((c) => `${c.key}: ${c.from} -> ${c.to}`).join('; ') +
+            (changes.length > 3 ? ` (+${changes.length - 3} more key(s))` : '');
+          // hard cap: the fixed prose is ~280 chars, the budget 512
+          return listed.length > 150 ? `${listed.slice(0, 149)}…` : listed;
+        })() + '. ' +
         (near ? `A tool call in session ${near.session?.slice(0, 8)} named the file within the poll interval — attribution is that call, not proof.` : `No session named the file near the change: actor unknown (the file may equally have been rewritten by a human clicking 'always allow').`) +
         ` Key names and value classes only — no entry text or value is stored.`,
       observed: changes.length,
@@ -551,6 +571,10 @@ function detectScopeDrift(db: DB, now: number): Anomaly[] {
     const crossing = db
       .prepare(`SELECT MIN(ts) AS t FROM tool_calls WHERE session_id = ? AND ts > ?`)
       .get(session, first.lo) as { t: number | null };
+    // Hard-capped list: the prose tail is ~359 chars, so the repo list must
+    // fit ~110 or verify --content's 512-char boundary fails on long paths.
+    const listed = sorted.slice(0, 3).map((r) => `${r.project} (${r.n} events)`).join(' -> ') +
+      (sorted.length > 3 ? ` (+${sorted.length - 3} more)` : '');
     out.push(anom({
       key: `scope_drift:${session}`,
       rule: 'scope_drift',
@@ -560,7 +584,7 @@ function detectScopeDrift(db: DB, now: number): Anomaly[] {
       we: sorted[sorted.length - 1]!.lo,
       title: `Scope drift: session spanned ${repos.length} repositories`,
       detail:
-        `Repos touched: ${sorted.map((r) => `${r.project} (${r.n} events)`).join(' -> ')}. ` +
+        `Repos touched: ${listed.length > 110 ? `${listed.slice(0, 109)}…` : listed}. ` +
         `The crossing happened at call time ${crossing.t !== null ? new Date(crossing.t).toISOString() : 'not recorded'}. ` +
         `A cd inside a Bash command never changes entry.cwd — a parsed cd target is a labelled second signal, never ground truth. ` +
         `Codex, Grok and Devin record cwd sparsely or not at all, so this rule covers Claude Code and OpenCode and says so rather than reporting zero drift for the rest.`,
@@ -674,6 +698,7 @@ function detectInstallAfterIngress(db: DB, sessions: Map<string, CallLite[]>): A
   const ledgerEmpty = actionKeys.size === 0;
 
   const out: Anomaly[] = [];
+  const seen = new Set<string>();
   for (const [session, calls] of sessions) {
     const sorted = [...calls].sort((a, b) => a.id - b.id);
     for (let i = 0; i < sorted.length; i++) {
@@ -684,8 +709,13 @@ function detectInstallAfterIngress(db: DB, sessions: Map<string, CallLite[]>): A
         const g = sorted[j]!;
         const isIngress = isMcpIngress(g) || (ledgerEmpty && isShapeIngress(g));
         if (!isIngress) continue;
+        // First action per ingress wins: two actions adjacent to one ingress
+        // share the key, and the id-ordered scan makes 'first' deterministic.
+        const key = `install_after_ingress:${session}:${g.key}`;
+        if (seen.has(key)) break;
+        seen.add(key);
         out.push(anom({
-          key: `install_after_ingress:${session}:${g.key}`,
+          key,
           rule: 'install_after_ingress',
           severity: 'warn',
           session,
@@ -813,22 +843,37 @@ function detectPushedData(db: DB): Anomaly[] {
       observed: 1,
     }));
   }
+  // The shape fallback: hour-bucketed, one aggregated row per (session, hour).
+  // The unordered scan's row order must not pick the payload, so rows are read
+  // in a stable order and folded to deterministic lo/hi/count values.
   const shapes = db
-    .prepare(`SELECT tool_call_key, tool, session_id, shape, ts FROM tool_calls WHERE shape LIKE 'scp%' OR shape LIKE 'rsync%'`)
-    .all() as { tool_call_key: string; tool: string; session_id: string | null; shape: string; ts: number }[];
+    .prepare(`SELECT tool_call_key, session_id, shape, ts FROM tool_calls
+       WHERE (shape LIKE 'scp%' OR shape LIKE 'rsync%') AND ts > 0 ORDER BY tool_call_key`)
+    .all() as { tool_call_key: string; session_id: string | null; shape: string; ts: number }[];
+  const fallback = new Map<string, { session: string | null; shape: string; lo: number; hi: number; n: number }>();
   for (const r of shapes) {
     if (covered.has(r.tool_call_key)) continue;
+    const k = `${r.session_id ?? 'none'}:${Math.floor(r.ts / 3600000)}`;
+    const g = fallback.get(k);
+    if (g) {
+      g.n++;
+      g.lo = Math.min(g.lo, r.ts);
+      g.hi = Math.max(g.hi, r.ts);
+    } else {
+      fallback.set(k, { session: r.session_id, shape: r.shape, lo: r.ts, hi: r.ts, n: 1 });
+    }
+  }
+  for (const [k, g] of fallback) {
     out.push(anom({
-      key: `agent_pushed:${r.session_id ?? 'none'}:${Math.floor(r.ts / 3600000)}`,
+      key: `agent_pushed:${k}`,
       rule: 'agent_pushed_data_off_device',
       severity: 'warn',
-      tool: r.tool,
-      session: r.session_id,
-      ws: r.ts,
-      we: r.ts,
-      title: `Data pushed off device: ${r.shape}`,
-      detail: `A ${r.shape} command ran — files left this laptop. The shape is the fact; the file names are never stored.`,
-      observed: 1,
+      session: g.session,
+      ws: g.lo,
+      we: g.hi,
+      title: `Data pushed off device: ${g.shape}`,
+      detail: `${g.n} scp/rsync command(s) ran — files left this laptop. The shape is the fact; the file names are never stored.`,
+      observed: g.n,
     }));
   }
   return out;
@@ -891,7 +936,10 @@ function detectContextEdges(db: DB): Anomaly[] {
     .all() as { transport: string; destination: string | null; direction: string; ts: number | null; session_id: string | null }[];
   const grouped = new Map<string, { transport: string; session: string | null; day: number; dests: Set<string>; n: number; ts: number | null }>();
   for (const r of rows) {
-    const day = r.ts !== null ? Math.floor(r.ts / 86400000) : 0;
+    // No timestamp, no day bucket: a NULL ts must not be invented into epoch
+    // day 0 (a fake 'context_edges:...::0::' key for every time-less crossing).
+    if (r.ts === null) continue;
+    const day = Math.floor(r.ts / 86400000);
     const k = `${r.session_id ?? 'none'}::${day}::${r.transport}`;
     let g = grouped.get(k);
     if (!g) {
@@ -1041,23 +1089,37 @@ function detectVcsActions(db: DB): Anomaly[] {
       observed: 1,
     }));
   }
+  // Shape fallback, hour-bucketed and aggregated like agent_pushed: one
+  // deterministic row per (session, hour), never one per unordered scan row.
   const shapes = db
-    .prepare(`SELECT tool_call_key, tool, session_id, shape, ts FROM tool_calls
-       WHERE shape LIKE 'git push%' OR shape LIKE 'git reset%' OR shape LIKE 'git clean%'`)
-    .all() as { tool_call_key: string; tool: string; session_id: string | null; shape: string; ts: number }[];
+    .prepare(`SELECT tool_call_key, session_id, shape, ts FROM tool_calls
+       WHERE (shape LIKE 'git push%' OR shape LIKE 'git reset%' OR shape LIKE 'git clean%') AND ts > 0
+       ORDER BY tool_call_key`)
+    .all() as { tool_call_key: string; session_id: string | null; shape: string; ts: number }[];
+  const fallback = new Map<string, { session: string | null; shape: string; lo: number; hi: number; n: number }>();
   for (const r of shapes) {
     if (covered.has(r.tool_call_key)) continue;
+    const k = `${r.session_id ?? 'none'}:${Math.floor(r.ts / 3600000)}`;
+    const g = fallback.get(k);
+    if (g) {
+      g.n++;
+      g.lo = Math.min(g.lo, r.ts);
+      g.hi = Math.max(g.hi, r.ts);
+    } else {
+      fallback.set(k, { session: r.session_id, shape: r.shape, lo: r.ts, hi: r.ts, n: 1 });
+    }
+  }
+  for (const [k, g] of fallback) {
     out.push(anom({
-      key: `vcs_action:${r.session_id ?? 'none'}:${Math.floor(r.ts / 3600000)}`,
+      key: `vcs_action:${k}`,
       rule: 'vcs_action',
       severity: 'info',
-      tool: r.tool,
-      session: r.session_id,
-      ws: r.ts,
-      we: r.ts,
-      title: `State-changing git: ${r.shape}`,
-      detail: `A ${r.shape} ran — repository state changed (pushed, reset or cleaned). Session ${r.session_id?.slice(0, 8) ?? 'unknown'}.`,
-      observed: 1,
+      session: g.session,
+      ws: g.lo,
+      we: g.hi,
+      title: `State-changing git: ${g.shape}`,
+      detail: `${g.n} state-changing git command(s) ran — repository state changed (pushed, reset or cleaned). Session ${g.session?.slice(0, 8) ?? 'unknown'}.`,
+      observed: g.n,
     }));
   }
   return out;
@@ -1111,7 +1173,7 @@ function detectHumanInterrupts(db: DB, now: number, projectsDir = paths.claudeCo
       severity: 'info',
       session,
       ws: ts.length ? Math.min(...ts) : since,
-      we: ts.length ? Math.max(...ts) : now,
+      we: ts.length ? Math.max(...ts) : since,
       title: `Human in the loop: ${ms.length} interrupt(s) (text marker)`,
       detail:
         `${ms.length} '[Request interrupted by user]' markers in this session — a TEXT MARKER, not a vendor signal: version-fragile, reproducible by pasting the string. ` +
@@ -1188,10 +1250,10 @@ function detectPostureTransitions(db: DB): Anomaly[] {
 
 // ── 35. paged_bulk_read (count leg; distinct-line-range keying needs collector-side reads)
 
-function detectPagedBulkRead(sessions: Map<string, CallLite[]>, now: number): Anomaly[] {
+function detectPagedBulkRead(sessions: Map<string, CallLite[]>, horizon: number): Anomaly[] {
   const out: Anomaly[] = [];
   for (const [session, calls] of sessions) {
-    const reads = calls.filter((c) => ['Read', 'Glob', 'Grep', 'read_file'].includes(c.name) && c.ts > now - 24 * 3600_000);
+    const reads = calls.filter((c) => ['Read', 'Glob', 'Grep', 'read_file'].includes(c.name) && c.ts > horizon - 24 * 3600_000);
     if (reads.length < 30) continue;
     out.push(anom({
       key: `paged_bulk_read:${session}`,
@@ -1212,14 +1274,15 @@ function detectPagedBulkRead(sessions: Map<string, CallLite[]>, now: number): An
 }
 
 /** tool_first_seen: a tool name appears for the first time — the MCP dimension. */
-function detectToolFirstSeen(db: DB, now: number): Anomaly[] {
+function detectToolFirstSeen(db: DB, horizon: number): Anomaly[] {
   // Keyed on the (tool, server, tool_name) triple: `mcp__searxng__search` and
   // `mcp__searxng__web_search` are two capabilities on one server, and a
   // second server exposing the same tool_name is a NEW surface.
+  if (horizon <= 0) return []; // no timestamped call in the ledger: no horizon to be recent to
   const rows = db
     .prepare(`SELECT tool, server, tool_name, MIN(ts) AS first FROM tool_calls
-       GROUP BY tool, server, tool_name HAVING first > ?`)
-    .all(now - 7 * 24 * 3600_000) as { tool: string; server: string | null; tool_name: string; first: number }[];
+       WHERE ts > 0 GROUP BY tool, server, tool_name HAVING first > ?`)
+    .all(horizon - 7 * 24 * 3600_000) as { tool: string; server: string | null; tool_name: string; first: number }[];
   return rows.map((r) => {
     const surface = r.server ? `${r.tool} ${r.server} ${r.tool_name}` : `${r.tool} ${r.tool_name}`;
     return anom({
@@ -1300,24 +1363,30 @@ export const LEDGER_RULE_IDS = [
 export function detectLedgerRules(db: DB, now = Date.now()): Anomaly[] {
   const calls = loadCalls(db);
   const sessions = bySession(calls);
+  // The data horizon: the newest observed call. Every trailing window and stall
+  // bound below is anchored to it, never to `now` — the rules stay pure
+  // functions of stored rows, so a pass that stored nothing new re-produces
+  // byte-identical keys and windows no matter when it runs. `now` survives only
+  // as the detected_at stamp.
+  const horizon = calls.reduce((m, c) => Math.max(m, c.ts), 0);
 
   const postureIntervals = db
     .prepare(`SELECT session_id AS session, autonomy, started_at, ended_at FROM autonomy_intervals WHERE session_id IS NOT NULL`)
     .all() as PostureInterval[];
 
   const anomalies = [
-    ...detectToolFirstSeen(db, now),
+    ...detectToolFirstSeen(db, horizon),
     ...detectPostureTransitions(db),
     ...detectPostureEscalatedLegacy(sessions),
     ...detectPushedData(db),
     ...detectPrivilegedRemote(db),
     ...detectDbActions(db),
-    ...detectPagedBulkRead(sessions, now),
-    ...detectDeniedPairs(sessions, now),
+    ...detectPagedBulkRead(sessions, horizon),
+    ...detectDeniedPairs(sessions),
     ...detectShapeRules(calls),
-    ...detectFailureStorms(calls, now),
-    ...detectStuckCalls(calls, now),
-    ...detectStuckMeasured(db, now),
+    ...detectFailureStorms(calls, horizon),
+    ...detectStuckCalls(calls),
+    ...detectStuckMeasured(db),
     ...detectHeadlessBypass(sessions, db, now),
     ...detectSensitiveMatrix(db, now),
     ...detectSensitiveShapeFallback(calls),

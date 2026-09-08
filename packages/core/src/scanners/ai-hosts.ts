@@ -23,18 +23,18 @@ export interface AiHost {
   label: string;
 }
 
+import builtinHosts from '../data/ai-hosts.json';
+
 let cachedHosts: AiHost[] | null = null;
 
 /** The shipped allowlist (data/ai-hosts.json). Empty array = pack unreadable, census inert. */
 export function loadAiHosts(): AiHost[] {
   if (cachedHosts) return cachedHosts;
-  try {
-    const raw = readFileSync(new URL('../data/ai-hosts.json', import.meta.url), 'utf8');
-    const parsed = JSON.parse(raw) as { hosts?: AiHost[] };
-    cachedHosts = parsed.hosts ?? [];
-  } catch {
-    cachedHosts = [];
-  }
+  // Imported, not read from disk: bundled into the SEA this module no longer sits
+  // next to ../data, and the read failed into the catch below — leaving the census
+  // silently inert in every shipped build. A JSON import travels with the bundle,
+  // the same way data/pricing.json and data/advisories.json already do.
+  cachedHosts = (builtinHosts as { hosts?: AiHost[] }).hosts ?? [];
   return cachedHosts;
 }
 

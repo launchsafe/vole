@@ -54,9 +54,11 @@ struct VoleApp: App {
             print(DB().readModelDump())
             exit(0)
         }
-        // Dock / ⌘-Tab / About icon — needed for `swift run` (an unbundled binary has
-        // no CFBundleIconFile); the .app bundle also carries it as AppIcon.icns.
-        if let icon = Res.image("AppIcon") {
+        // Dock / ⌘-Tab / About icon — only for `swift run`, where an unbundled binary has
+        // no Info.plist to name one. Inside the .app this must NOT run: assigning a raw
+        // NSImage overrides CFBundleIconFile, so the Dock would draw this PNG instead of
+        // the bundle's AppIcon.icns and any icon work done at bundle level is discarded.
+        if Bundle.main.bundleIdentifier == nil, let icon = Res.image("AppIcon") {
             NSApplication.shared.applicationIconImage = icon
         }
         // `Vole --section=settings` for demos/screenshots; also the key the menu-bar

@@ -27,17 +27,39 @@ import type { CollectorResult, UsageEvent } from '../types';
  * by the Claude Code collector via ~/.claude and are not double-counted here.)
  */
 
+interface Content {
+  _meta?: Record<string, string>;
+  toolCallId?: string;
+}
+
 interface Payload {
   turnId?: string;
-  content?: { _meta?: Record<string, string>; toolCallId?: string }[];
+  // Real ACP rows vary by kind: agent_message payloads carry an array of
+  // chunks, tool_call payloads carry a single content OBJECT. Normalize both.
+  content?: Content[] | Content;
+}
+
+/** content as a list, whatever shape the row used. */
+function contentList(p: Payload): Content[] {
+  const c = p.content;
+  if (Array.isArray(c)) return c;
+  if (c && typeof c === 'object') return [c];
+  return [];
 }
 
 /** The vendor's tool-call id, wherever in the payload it sits. */
 function findToolCallId(p: Payload): string | null {
-  for (const c of p.content ?? []) {
+  for (const c of contentList(p)) {
     if (typeof c?.toolCallId === 'string' && c.toolCallId) return c.toolCallId;
   }
   return null;
+}
+
+/** The row's own timestamp, if any content element states one. */
+function contentTimestamp(p: Payload): number | null {
+  const iso = contentList(p)[0]?._meta?.['cognition.ai/timestamp'];
+  const ts = iso ? Date.parse(iso) : NaN;
+  return Number.isNaN(ts) ? null : ts;
 }
 
 export function collectDevin(_db: DB): CollectorResult {
@@ -96,7 +118,7 @@ export function collectDevin(_db: DB): CollectorResult {
           const toolCallId = findToolCallId(p);
           const callKey = `devin:${sessionId}:${toolCallId ?? `pos${r.position}`}`;
           const name = 'devin_tool';
-          const iso = p.content?.[0]?._meta?.['cognition.ai/timestamp'];
+          const ts = contentTimestamp(p);
           calls.push({
             tool_call_key: callKey,
             tool: 'devin',
@@ -107,7 +129,7 @@ export function collectDevin(_db: DB): CollectorResult {
             args_digest: null, // payload content, never digested into storage
             session_id: sessionId,
             agent_id: null,
-            ts: iso ? Date.parse(iso) : Math.trunc(mtime),
+            ts: ts ?? Math.trunc(mtime),
             raw_ref: `${dbPath}#pos/${r.position}`,
           });
           continue;
@@ -118,8 +140,7 @@ export function collectDevin(_db: DB): CollectorResult {
         if (seen.has(turn)) continue;
         seen.add(turn);
 
-        const iso = p.content?.[0]?._meta?.['cognition.ai/timestamp'];
-        const ts = iso ? Date.parse(iso) : mtime;
+        const ts = contentTimestamp(p) ?? mtime;
 
         events.push({
           event_key: `devin:${sessionId}:${turn}`,

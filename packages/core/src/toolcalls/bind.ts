@@ -50,6 +50,13 @@ export interface ToolCallRow {
   allowed_tools?: string[] | null;
   /** The raw command string, for pattern-pack classification only. */
   command?: string | null;
+  /** The raw tool arguments (the args object, or the command string) — the
+   *  derivation channel every bind-time ledger (file_writes, the net ledgers)
+   *  reads. Never stored, never logged. */
+  args?: unknown;
+  /** The call's own working directory when the source states it — resolves
+   *  relative write targets. Derivation-only, never stored. */
+  cwd?: string | null;
 }
 
 /** permission_mode / sandbox raw string -> normalised autonomy + rank. */

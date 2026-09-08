@@ -67,9 +67,10 @@ test('ledger rules: the deep signatures fire, and re-running changes nothing', (
   call('f6', { session: 's-fail', name: 'mcp__playwright__navigate', args_digest: 'n6', status: 'success', ts: T0 + 7000 });
   call('f7', { session: 's-fail', name: 'mcp__playwright__navigate', args_digest: 'n7', status: 'success', ts: T0 + 8000 });
 
-  // 37. stuck: unbound outcome, 15 min old, session kept issuing
+  // 37. stuck: unbound outcome, later call 15 min on — past the stall bound
+  // measured to the session's data horizon, not the wall clock
   call('u1', { session: 's-stuck', name: 'Bash', shape: 'npm test', ts: T0 });
-  call('u2', { session: 's-stuck', name: 'Read', status: 'success', ts: T0 + 60_000 });
+  call('u2', { session: 's-stuck', name: 'Read', status: 'success', ts: T0 + 15 * 60_000 });
 
   // 19. identical repeat loop
   for (let i = 0; i < 5; i++) call(`l${i}`, { session: 's-loop', name: 'Bash', shape: 'ls', args_digest: 'stuck', ts: T0 + i * 1000 });
@@ -128,6 +129,30 @@ test('ledger rules: the deep signatures fire, and re-running changes nothing', (
   const run2 = detectLedgerRules(dbh, NOW);
   const keys2 = run2.map((a) => a.anomaly_key).sort();
   assert.deepEqual(keys2, keys1, 'no key contains a now()-derived value, so re-detection is stable');
+
+  // ── idempotency across the wall clock: the defect was a no-op second pass
+  // minting +245 rows because windows were run-relative. Every key and window
+  // bound must be a function of the DATA — re-running hours later with zero new
+  // rows reproduces byte-identical anomalies and inserts nothing.
+  const run3 = detectLedgerRules(dbh, NOW + 2 * 3600_000);
+  const stuck3 = run3.filter((a) => a.rule === 'stuck_tool_call');
+  assert.ok(stuck3.length > 0, 'the stuck fixture still fires');
+  for (const a of stuck3) {
+    assert.ok(a.window_end <= NOW, `stuck window_end is data-anchored, not the run hour: ${a.anomaly_key}`);
+  }
+  const byKey = new Map(run1.map((a) => [a.anomaly_key, a] as const));
+  for (const a of run3) {
+    const first = byKey.get(a.anomaly_key);
+    if (!first) continue;
+    assert.equal(a.window_start, first.window_start, `window_start stable for ${a.anomaly_key}`);
+    assert.equal(a.window_end, first.window_end, `window_end stable for ${a.anomaly_key}`);
+    assert.equal(a.observed, first.observed, `observed stable for ${a.anomaly_key}`);
+  }
+  const keys3 = run3.map((a) => a.anomaly_key).sort();
+  assert.deepEqual(keys3, keys1, 'a later wall clock mints no fresh keys over unchanged rows');
+  const rewritten = insertAnomalies(dbh, run3);
+  assert.equal(rewritten.inserted.length, 0, 'a no-op pass inserts no new rows');
+  assert.equal(rewritten.escalated.length, 0, 'a no-op pass escalates nothing');
 
   // ── content boundary: no anomaly text carries a raw path or command body ──
   for (const a of run1) {

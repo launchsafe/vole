@@ -1,6 +1,7 @@
 import { readdirSync, existsSync, statSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { skeletonize, type ToolCallRow } from '../toolcalls/bind';
+import { BASH_TOOLS } from '../toolcalls/file-writes';
 import { paths } from '../paths';
 import { getState, type DB } from '../db';
 import { parseLine } from '../util/jsonl';
@@ -84,6 +85,8 @@ interface CodexLine {
     cwd?: string;
     name?: string;
     arguments?: { cmd?: string | string[]; workdir?: string | null } | null;
+    /** custom_tool_call (apply_patch): the patch body is the input. */
+    input?: unknown;
     info?: {
       total_token_usage?: TokenUsage;
       last_token_usage?: TokenUsage;
@@ -386,6 +389,8 @@ export function collectCodex(db: DB): CodexCollectorResult {
       const agentIdNow = rolloutId && rolloutId !== sessionId ? rolloutId : null;
       if (entry.type === 'response_item' && TOOL_ITEMS.has(entry.payload?.type ?? '')) {
         const name = entry.payload?.name ?? entry.payload?.type ?? 'tool';
+        const rawCmd = entry.payload?.arguments?.cmd;
+        const cmd = typeof rawCmd === 'string' ? rawCmd : Array.isArray(rawCmd) ? rawCmd.join(' ') : null;
         pendingTools.push(name);
         // Source-native key (tier 5 #5): the call_id the vendor itself mints —
         // `codex:<function_call.call_id|custom_tool_call.call_id>`. The
@@ -400,6 +405,9 @@ export function collectCodex(db: DB): CodexCollectorResult {
           name,
           shape: skeletonize(name, entry.payload?.arguments?.cmd ?? null),
           args_digest: null, // call args are encrypted reasoning payloads
+          args: entry.payload?.input ?? entry.payload?.arguments ?? null, // derivation-only, never stored
+          command: BASH_TOOLS.has(name) ? cmd : null,
+          cwd: entry.payload?.cwd ?? entry.payload?.arguments?.workdir ?? null,
           session_id: sessionId,
           agent_id: agentIdNow,
           ts: anyTs ?? now, // explicit fallback: the collector clock, labelled by observed_at ≈ ts

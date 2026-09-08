@@ -6,6 +6,8 @@ import { readNewLines, parseLine } from '../util/jsonl';
 import { computeCost, contextWindow } from '../pricing';
 import type { CollectorResult, UsageEvent } from '../types';
 import { skeletonize, argsDigest, type ToolCallRow } from '../toolcalls/bind';
+import { BASH_TOOLS } from '../toolcalls/file-writes';
+import { commandOf } from '../toolcalls/net-ledgers';
 import { advanceCursor, readSlice } from '../cursors';
 import { insertEventLinks, stampObservedAt, widenToolCalls } from './ledger';
 
@@ -160,6 +162,9 @@ export function collectClaudeCode(db: DB): CollectorResult {
               name: block.name,
               shape: skeletonize(block.name, block.input),
               args_digest: argsDigest(block.input),
+              args: block.input, // derivation-only: the bind-time ledgers read it, the store never keeps it
+              command: BASH_TOOLS.has(block.name) ? commandOf(block.name, block.input) : null,
+              cwd: entry.cwd ?? null,
               session_id: entry.sessionId ?? null,
               agent_id: entry.agentId ?? null,
               // explicit fallback: the collector clock when the source has no

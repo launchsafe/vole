@@ -1,8 +1,9 @@
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
 import type { DB } from '../db';
-import { classifyPath, splitCommandSegments, tokenize, stripPrefixes } from './patterns';
+import { classifyPath, splitCommandSegments, syncPathClasses, tokenize, stripPrefixes } from './patterns';
 import { widenUpsert, type UpsertSpec } from './upsert';
+import { commandOf } from './net-ledgers';
 
 /**
  * The file-write ledger (feature 29 + the t6 envelope columns it stamps):
@@ -12,6 +13,18 @@ import { widenUpsert, type UpsertSpec } from './upsert';
  * generated names is written with path = NULL: 'unresolved', never dropped and
  * never counted as zero. The parse is a shell-shaped heuristic, not a shell —
  * quoting edge cases degrade to unresolved, which is the honest answer.
+ *
+ * Two entry paths, like the net ledgers:
+ *   1. BIND TIME (rich): collectors hold the raw arguments and pass them as
+ *      `args`; targets resolve to real paths. Names and argument keys cover the
+ *      vendors actually observed in the wild (claude_code, opencode, codex,
+ *      grok). ponytail: name/key lists are extended when a new vendor shows up,
+ *      not speculatively.
+ *   2. FROM STORE (coarse): emitFileWrites(db) re-derives what the stored rows
+ *      alone can prove — a structured write tool's name proves a write, a tee/
+ *      cp/mv/… shape head proves a copy/redirect — with path left NULL
+ *      ("target not recorded", never guessed) because the store never kept the
+ *      arguments, only their digest.
  */
 
 export interface FileWriteRow {
@@ -72,9 +85,12 @@ export function bashWriteTargets(command: string): Target[] {
     } else if (head === 'sed') {
       // sed -i [suffix] script file... — operands after the script.
       const rest = toks.slice(1);
-      if (rest.some((t) => /^-i/.test(t))) {
-        const after = rest.slice(rest.findIndex((t) => /^-i/.test(t)) + 1);
-        // The first operand following the (optionally separate) -i suffix is the script.
+      const iIdx = rest.findIndex((t) => /^-i/.test(t));
+      if (iIdx >= 0) {
+        let after = rest.slice(iIdx + 1);
+        // macOS writes a SEPARATE (often empty) suffix argument: sed -i "" s/a/b/ f.
+        if (rest[iIdx] === '-i' && (after[0] === '""' || after[0] === "''")) after = after.slice(1);
+        // The first remaining operand is the script; everything after it is a file.
         for (const t of after.slice(1)) {
           if (!t.startsWith('-')) out.push({ raw: t, write_class: 'bash_redirect' });
         }
@@ -88,15 +104,46 @@ export function bashWriteTargets(command: string): Target[] {
   return out;
 }
 
-/** The structured write tools' targets (Edit/Write/MultiEdit/NotebookEdit). */
-export function structuredWriteTarget(name: string, args: unknown): string | null {
-  if (!args || typeof args !== 'object') return null;
-  const a = args as Record<string, unknown>;
-  const p = a.file_path ?? a.notebook_path ?? a.path;
-  return typeof p === 'string' ? p : null;
+/** The structured write tools seen in real ledgers. apply_patch's input is a
+ *  patch body, not an args object, so it gets its own path extraction. */
+const STRUCTURED_WRITE_TOOLS = new Set([
+  'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'write', 'edit', 'apply_patch', 'search_replace',
+]);
+
+/** File targets named by a patch body (opencode patchText, codex input string). */
+function applyPatchTargets(text: string): string[] {
+  const out: string[] = [];
+  const re = /^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) out.push(m[1]!.trim());
+  return out;
 }
 
-const STRUCTURED_WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'write', 'edit']);
+/** The structured write tools' targets (Edit/Write/MultiEdit/NotebookEdit +
+ *  patch tools). Real sources name the file under file_path (claude_code),
+ *  filePath (opencode), notebook_path (jupyter) or path. */
+export function structuredWriteTargets(name: string, args: unknown): string[] {
+  if (name === 'apply_patch') {
+    if (typeof args === 'string') return applyPatchTargets(args);
+    if (args && typeof args === 'object') {
+      const a = args as Record<string, unknown>;
+      for (const k of ['patchText', 'input', 'patch']) {
+        if (typeof a[k] === 'string') return applyPatchTargets(a[k] as string);
+      }
+    }
+    return [];
+  }
+  if (!args || typeof args !== 'object') return [];
+  const a = args as Record<string, unknown>;
+  for (const k of ['file_path', 'filePath', 'notebook_path', 'path']) {
+    if (typeof a[k] === 'string') return [a[k] as string];
+  }
+  return [];
+}
+
+/** The shell-ish tools whose command string can name write targets. Exported
+ *  for the collectors, which gate the `command` derivation channel on it. */
+export const BASH_TOOLS = new Set(['Bash', 'bash', 'shell', 'exec_command', 'exec', 'run_terminal_command']);
 
 export interface WriteContext {
   tool_call_key: string;
@@ -113,12 +160,7 @@ export function fileWritesForCall(
   ctx: WriteContext,
 ): FileWriteRow[] {
   const rows: FileWriteRow[] = [];
-  const command =
-    typeof args === 'string'
-      ? args
-      : args && typeof args === 'object' && typeof (args as Record<string, unknown>).command === 'string'
-        ? ((args as Record<string, unknown>).command as string)
-        : null;
+  const command = commandOf(name, args);
   const emit = (raw: string | null, writeClass: string, idx: number) => {
     let path: string | null = null;
     let visibility: string | null = null;
@@ -148,11 +190,14 @@ export function fileWritesForCall(
   };
 
   if (STRUCTURED_WRITE_TOOLS.has(name)) {
-    const t = structuredWriteTarget(name, args);
-    emit(t, 'structured', 0);
+    // The call itself is a write of a file we could not name: still a row,
+    // path NULL — 'not recorded', never counted as zero.
+    const targets = structuredWriteTargets(name, args);
+    if (targets.length) targets.forEach((t, i) => emit(t, 'structured', i));
+    else emit(null, 'structured', 0);
     return rows;
   }
-  if (command && (name === 'Bash' || name === 'bash' || name === 'shell' || name === 'exec_command')) {
+  if (command && BASH_TOOLS.has(name)) {
     bashWriteTargets(command).forEach((t, i) => emit(t.raw, t.write_class, i));
   }
   return rows;
@@ -194,4 +239,68 @@ export function insertFileWrites(db: DB, rows: FileWriteRow[]): number {
 /** Convenience: distinct dirs of a set of paths (for the blast-radius counters). */
 export function distinctDirs(paths: string[]): number {
   return new Set(paths.map(dirname)).size;
+}
+
+// ── from-store emission (the coarse half, no collector changes required) ─────
+
+/** Shape heads that prove a write on their own (the stored skeleton keeps the
+ *  head; sed/patch without -i/-o are NOT provable, so they are absent). */
+const COARSE_WRITE_HEADS: Record<string, string> = {
+  tee: 'bash_redirect',
+  dd: 'bash_redirect',
+  cp: 'copy',
+  mv: 'copy',
+  install: 'copy',
+  rsync: 'copy',
+};
+
+/**
+ * Re-derive file-write rows from the stored tool_calls: every structured write
+ * tool's name proves one write, every tee/cp/mv/… shape head proves a copy or
+ * redirect — with path NULL, because the store holds the args digest, never
+ * the args. Rows are emitted only for calls that have no row in file_writes
+ * yet, so the pass is idempotent; a bind-time rich row (with the real path)
+ * for the same call lands on the same `#0` key and widens it. Also syncs the
+ * versioned path-class pack — the registry the ledger's path_class values are
+ * entries of.
+ */
+export function emitFileWrites(db: DB): number {
+  syncPathClasses(db);
+  const presence = new Set(
+    (db.prepare('SELECT DISTINCT tool_call_key AS k FROM file_writes').all() as { k: string }[]).map((r) => r.k),
+  );
+  const calls = db
+    .prepare('SELECT tool_call_key AS key, name, shape, session_id, ts FROM tool_calls')
+    .all() as { key: string; name: string; shape: string | null; session_id: string | null; ts: number }[];
+  const rows: FileWriteRow[] = [];
+  for (const c of calls) {
+    if (presence.has(c.key)) continue;
+    if (STRUCTURED_WRITE_TOOLS.has(c.name)) {
+      rows.push({ ...coarseRow(c.key, c.session_id, c.ts), write_class: 'structured' });
+    } else if (c.shape) {
+      const wc = COARSE_WRITE_HEADS[c.shape.split(' ')[0] ?? ''];
+      if (wc) rows.push({ ...coarseRow(c.key, c.session_id, c.ts), write_class: wc });
+    }
+  }
+  return insertFileWrites(db, rows);
+}
+
+function coarseRow(
+  key: string,
+  session_id: string | null,
+  ts: number,
+): Omit<FileWriteRow, 'write_class'> {
+  return {
+    write_key: `${key}#0`,
+    tool_call_key: key,
+    session_id,
+    path: null,          // the target is not recoverable from the store — NULL, never guessed
+    path_class: null,
+    change_risk_class: null,
+    class_pattern_id: null,
+    content_rev: null,
+    escape_state: null,
+    visibility_class: null,
+    ts,
+  };
 }

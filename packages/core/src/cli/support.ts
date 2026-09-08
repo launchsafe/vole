@@ -91,6 +91,42 @@ export function reIdentificationScan(payload: unknown, identifiers: string[]): R
   return hits;
 }
 
+// ── Redaction (applied when composing an outbound bundle payload) ─────────────
+
+/**
+ * Replaces, in every string of a payload, the home directory with '~' and every
+ * local identifier (username, hostname, RealName, oauth email) with
+ * '<redacted>'. Deterministic — split/join, no clocks, no random salt — so the
+ * same source row always redacts to the same value and sync dedupe keys stay
+ * comparable. This is the composition-time transform; the re-identification
+ * scan afterwards stays the fail-closed gate: if anything slipped past, the
+ * bundle does not leave the machine.
+ */
+export function redactIdentifiers<T>(payload: T, identifiers: string[]): T {
+  let homeDir: string | null = null;
+  try {
+    homeDir = userInfo().homedir;
+  } catch {
+    homeDir = null;
+  }
+  const redactString = (s: string): string => {
+    let out = homeDir ? s.split(homeDir).join('~') : s;
+    for (const id of identifiers) out = out.split(id).join('<redacted>');
+    return out;
+  };
+  const walk = (v: unknown): unknown => {
+    if (typeof v === 'string') return redactString(v);
+    if (Array.isArray(v)) return v.map(walk);
+    if (v !== null && typeof v === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [k, x] of Object.entries(v)) out[k] = walk(x);
+      return out;
+    }
+    return v;
+  };
+  return walk(payload) as T;
+}
+
 // ── store_epoch: proving the database is the one you were given ───────────────
 
 export interface StoreEpochRow {
@@ -115,7 +151,10 @@ export function ensureStoreEpoch(db: DB, collectorVersion: string): StoreEpochRo
   const existing = db.prepare('SELECT * FROM store_epoch LIMIT 1').get() as StoreEpochRow | undefined;
   if (existing) return existing;
   const firstEvent = (db.prepare('SELECT MIN(ts) AS t FROM usage_events').get() as { t: number | null }).t;
-  const lastSeq = (db.prepare('SELECT MAX(last_anomaly_id) AS s FROM export_seq').get() as { s: number | null }).s;
+  // The previous epoch's change cursor is the durable outbox's MAX(seq) —
+  // export_seq (the original sketch) was dropped by migration 28; NULL means
+  // nothing was ever queued, never zero.
+  const lastSeq = (db.prepare('SELECT MAX(seq) AS s FROM export_outbox').get() as { s: number | null }).s;
   let device: string | null = null;
   try {
     // Same stable identity the tier-3 machinery uses, without importing the

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { getAsset, isSea } from 'node:sea';
 import type { ValidatorName } from './validators';
 
 /**
@@ -126,9 +127,18 @@ function parseToml(text: string): { version: number; detectors: RawDetector[] } 
   return { version, detectors };
 }
 
+/// The pack text. Bundled into the SEA this module no longer sits next to ../data, and
+/// this runs at module scope, so a plain read there killed the collector on its first
+/// line (ENOENT, before any collecting). In the SEA it travels as an embedded asset
+/// (scripts/build-sea.mjs); on disk — dev, tests — it is read from src/data as before.
+function packText(): string {
+  return isSea()
+    ? (getAsset('dlp-detectors.toml', 'utf8') as string)
+    : readFileSync(new URL('../data/dlp-detectors.toml', import.meta.url), 'utf8');
+}
+
 function loadPack(): { version: number; detectors: Detector[] } {
-  const file = new URL('../data/dlp-detectors.toml', import.meta.url);
-  const text = readFileSync(file, 'utf8');
+  const text = packText();
   const parsed = parseToml(text);
   const detectors: Detector[] = parsed.detectors.map((d) => ({
     id: d.id,

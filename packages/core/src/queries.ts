@@ -797,58 +797,66 @@ export interface PrincipalSummaryRow {
   account_classes: { tool: Tool | null; account_class: string | null; sessions: number }[];
 }
 
-/** The People view's principal dimension (parity port of identity/chain.principalRows). */
+/**
+ * The People view's principal dimension. The join is pure SQL, never a hash in
+ * the reader: usage_events.session_id -> session_identity.principal_key ->
+ * principals. (The old join matched the cleartext usage_events.user against
+ * the keyed principals.principal_key — p:<HMAC> — and matched nothing.)
+ * MUST stay in lockstep with DB.swift byPrincipal().
+ */
 export function getByPrincipal(db: DB, _range: Range, includeSeed: boolean): {
   principals: PrincipalSummaryRow[];
   originUnknown: { calls: number; tokens: number | null };
 } {
   const src = includeSeed ? '' : "AND e.source = 'live'";
-  const rows = db
+  const keys = db
     .prepare(
-      `SELECT DISTINCT user FROM usage_events e WHERE user IS NOT NULL ${includeSeed ? '' : "AND e.source = 'live'"}`,
+      `SELECT DISTINCT si.principal_key FROM usage_events e
+       JOIN session_identity si ON si.session_id = e.session_id
+       WHERE si.principal_key IS NOT NULL ${src}`,
     )
-    .all() as { user: string }[];
+    .all() as { principal_key: string }[];
   const principals: PrincipalSummaryRow[] = [];
-  for (const { user } of rows) {
+  for (const { principal_key: key } of keys) {
     const p = db
       .prepare('SELECT principal_key, display FROM principals WHERE principal_key = ?')
-      .get(user) as { principal_key: string; display: string } | undefined;
+      .get(key) as { principal_key: string; display: string } | undefined;
     const agg = db
       .prepare(
         `SELECT COUNT(DISTINCT e.session_id) AS sessions, COUNT(*) AS calls,
                 SUM(e.total_tokens) AS tokens, SUM(e.cost_usd) AS cost
-         FROM usage_events e WHERE e.user = ? ${src}`,
+         FROM usage_events e JOIN session_identity si ON si.session_id = e.session_id
+         WHERE si.principal_key = ? ${src}`,
       )
-      .get(user) as { sessions: number; calls: number; tokens: number | null; cost_usd: number | null };
+      .get(key) as { sessions: number; calls: number; tokens: number | null; cost_usd: number | null };
     const inc = db
-      .prepare(`SELECT severity, COUNT(*) AS n FROM anomalies WHERE user = ? GROUP BY severity`)
-      .all(user) as { severity: string; n: number }[];
+      .prepare(
+        `SELECT severity, COUNT(*) AS n FROM anomalies a
+         JOIN session_identity si ON si.session_id = a.session_id
+         WHERE si.principal_key = ? GROUP BY severity`,
+      )
+      .all(key) as { severity: string; n: number }[];
     const classes = db
       .prepare(
         `SELECT tool, account_class, COUNT(DISTINCT session_id) AS n FROM session_identity
          WHERE principal_key = ? GROUP BY tool, account_class ORDER BY n DESC`,
       )
-      .all(p?.principal_key ?? '') as { tool: Tool | null; account_class: string | null; n: number }[];
+      .all(key) as { tool: Tool | null; account_class: string | null; n: number }[];
     const bind = db
       .prepare('SELECT binding_evidence, COUNT(*) AS n FROM session_identity WHERE principal_key = ? GROUP BY binding_evidence')
-      .all(p?.principal_key ?? '') as { binding_evidence: string | null; n: number }[];
+      .all(key) as { binding_evidence: string | null; n: number }[];
     const binding = { session_proved: 0, ambient: 0, unbound: 0, no_identity_row: 0 };
     for (const b of bind) {
       if (b.binding_evidence === 'session_proved') binding.session_proved = b.n;
       else if (b.binding_evidence === 'ambient') binding.ambient = b.n;
       else binding.unbound += b.n;
     }
-    const identity = new Set(
-      (db.prepare('SELECT session_id FROM session_identity WHERE principal_key = ?').all(p?.principal_key ?? '') as { session_id: string }[])
-        .map((r) => r.session_id),
-    );
-    const sessions = (db
-      .prepare(`SELECT COUNT(DISTINCT session_id) AS n FROM usage_events WHERE user = ? AND session_id IS NOT NULL ${src}`)
-      .get(user) as { n: number }).n;
-    binding.no_identity_row = Math.max(0, sessions - identity.size);
+    // no_identity_row is 0 by construction: every session counted here was
+    // reached THROUGH its session_identity row. Live sessions with no
+    // identity row at all fall to the origin-unknown bucket below.
     principals.push({
-      principal_key: p?.principal_key ?? `unknown:${user}`,
-      display: p?.display ?? user,
+      principal_key: p?.principal_key ?? `unknown:${key}`,
+      display: p?.display ?? key,
       sessions: agg.sessions,
       calls: agg.calls,
       tokens: agg.tokens,
@@ -863,7 +871,11 @@ export function getByPrincipal(db: DB, _range: Range, includeSeed: boolean): {
     });
   }
   const unknown = db
-    .prepare(`SELECT COUNT(*) AS calls, SUM(total_tokens) AS tokens FROM usage_events e WHERE user IS NULL ${includeSeed ? '' : "AND e.source = 'live'"}`)
+    .prepare(
+      `SELECT COUNT(*) AS calls, SUM(e.total_tokens) AS tokens
+       FROM usage_events e LEFT JOIN session_identity si ON si.session_id = e.session_id
+       WHERE si.principal_key IS NULL ${src}`,
+    )
     .get() as { calls: number; tokens: number | null };
   return { principals: principals.sort((a, b) => b.calls - a.calls || (a.principal_key < b.principal_key ? -1 : 1)), originUnknown: { calls: unknown.calls, tokens: unknown.tokens } };
 }

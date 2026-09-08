@@ -206,7 +206,9 @@ export interface ContribCaps {
   languageModelProviders: number;
   untrustedWorkspaces: string | null;
   extensionKind: string | null;
-  enabledApiProposals: string[];
+  /** COUNT of declared API proposals — the name list is free text that can push
+   *  extra past the 512-char content boundary, so only the count is stored. */
+  enabledApiProposals: number;
 }
 
 const AI_CONTRIB_POINTS = [
@@ -245,7 +247,7 @@ export function classifyContributes(pkg: {
     languageModelProviders,
     untrustedWorkspaces: pkg.capabilities?.untrustedWorkspaces?.supported ?? null,
     extensionKind: Array.isArray(pkg.extensionKind) ? pkg.extensionKind.join(',') : (pkg.extensionKind ?? null),
-    enabledApiProposals: pkg.enabledApiProposals ?? [],
+    enabledApiProposals: (pkg.enabledApiProposals ?? []).length,
   };
 }
 
@@ -394,7 +396,9 @@ export function extractModelSelections(entries: { key: string; value: unknown }[
 export interface BrowserAssistant {
   browser: string;
   profile: string;
-  last_invoked_time: number | null;
+  // Real Chrome Default/Preferences writes this as a STRING of internal ticks
+  // ("13431163951056639"); a plain ms-epoch number is also seen. Kept verbatim.
+  last_invoked_time: number | string | null;
   used_count: number | null;
   subscription_tier: string | null;
   rollout_eligibility: string | boolean | null;
@@ -410,7 +414,7 @@ export function browserAssistants(): BrowserAssistant[] {
   if (!profiles.length && !existsSync(join(root, 'Default', 'Preferences'))) return out;
   for (const profile of profiles.length ? profiles : ['Default']) {
     const prefs = readJson(join(root, profile, 'Preferences')) as {
-      glic?: { last_invoked_time?: number };
+      glic?: { last_invoked_time?: number | string };
       in_product_help?: { new_badge?: Record<string, { used_count?: number }> };
       account_values?: { sync?: { ai_subscription_tier?: string; glic_rollout_eligibility?: string | boolean } };
       ntp?: { compose_button?: boolean };
@@ -428,6 +432,14 @@ export function browserAssistants(): BrowserAssistant[] {
     });
   }
   return out;
+}
+
+/** An unparseable or absent glic.last_invoked_time stays NULL — unknown, never
+ *  fabricated, never a RangeError out of toISOString() on an Invalid Date. */
+function lastInvokedDate(v: number | string | null | undefined): string | null {
+  if (v === null || v === undefined) return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
 // ── Scanner ──────────────────────────────────────────────────────────────────
@@ -589,6 +601,7 @@ export const vscodeStateScanner: Scanner = {
 
     // Feature 42: browser_assistant.
     for (const b of browserAssistants()) {
+      const lastInvokedIso = lastInvokedDate(b.last_invoked_time);
       upsertSurface(db, {
         surface_key: `browser-assistant:${b.browser}:${b.profile}`,
         kind: 'site',
@@ -597,9 +610,11 @@ export const vscodeStateScanner: Scanner = {
         evidence:
           `vendor AI inside the browser — navigates to no domain and installs no extension folder, so hostname counts ` +
           `and folder walks both miss it. ` +
-          (b.last_invoked_time !== null
-            ? `Last invoked ${new Date(b.last_invoked_time).toISOString()} — the last time the panel was opened, not a prompt count.`
-            : `No invocation recorded on this profile.`),
+          (lastInvokedIso !== null
+            ? `Last invoked ${lastInvokedIso} — the last time the panel was opened, not a prompt count.`
+            : b.last_invoked_time === null
+              ? `No invocation recorded on this profile.`
+              : `An invocation time is recorded (${JSON.stringify(b.last_invoked_time)}) in a format this reader cannot date — kept verbatim, never fabricated.`),
         extra: JSON.stringify({
           browser: b.browser,
           profile: b.profile,

@@ -18,6 +18,55 @@ function devinDb(home: string, uuid: string, rows: { kind: string; payload: Reco
   db.close();
 }
 
+// Real ACP shapes, captured from a live Devin acp-messages db (2026-08):
+// kind='tool_call' rows carry content as a single OBJECT; agent_message rows
+// carry an array of chunks. The old collector iterated content and died with
+// "object is not iterable" on the first tool_call row.
+test('devin: object-form tool_call content does not crash; array agent_message still collapses', () => {
+  const s = makeStore('devin-object-content');
+  try {
+    devinDb(s.home, 'sess-uuid-2', [
+      {
+        kind: 'tool_call',
+        payload: {
+          kind: 'tool_call',
+          content: {
+            toolCallId: 'chatcmpl-tool-86cebb8203914769',
+            title: 'Searched for chat text box input',
+            kind: 'search',
+            _meta: { 'cognition.ai/inferenceToolName': 'find_code_context', 'cognition.ai/timestamp': '2026-08-22T04:33:24.206590+00:00' },
+          },
+        },
+      },
+      {
+        kind: 'agent_message',
+        payload: {
+          turnId: 'be125ca9-abad-4cbe-9934-6108d79c7e07',
+          content: [{ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' }, _meta: { 'cognition.ai/timestamp': '2026-08-22T04:33:21.433580+00:00' } }],
+        },
+      },
+      {
+        kind: 'agent_message',
+        payload: {
+          turnId: 'be125ca9-abad-4cbe-9934-6108d79c7e07',
+          content: [{ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' there' }, _meta: { 'cognition.ai/timestamp': '2026-08-22T04:33:22.000000+00:00' } }],
+        },
+      },
+    ]);
+    const r = collectDevin(s.db);
+    assert.equal(r.events.length, 1, 'streamed chunks collapse to one turn row');
+    assert.equal(r.events[0]!.event_key, 'devin:sess-uuid-2:be125ca9-abad-4cbe-9934-6108d79c7e07');
+    assert.equal(r.events[0]!.ts, Date.parse('2026-08-22T04:33:21.433580+00:00'));
+
+    assert.equal(r.toolCalls!.length, 1);
+    const c = r.toolCalls![0]!;
+    assert.equal(c.tool_call_key, 'devin:sess-uuid-2:chatcmpl-tool-86cebb8203914769', 'object-form content.toolCallId is read');
+    assert.equal(c.ts, Date.parse('2026-08-22T04:33:24.206590+00:00'), 'object-form _meta timestamp is read, not file mtime');
+  } finally {
+    s.done();
+  }
+});
+
 test('devin: tool calls keyed by the vendor content.toolCallId; turns stay activity_only', () => {
   const s = makeStore('devin');
   try {
