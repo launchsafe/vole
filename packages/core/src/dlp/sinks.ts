@@ -227,8 +227,8 @@ export function sinkMeta(sink: Sink, now = Date.now()): SinkMeta {
   for (const f of files) {
     const age = (now - f.mtime) / DAY_MS;
     const b = age <= 7 ? 'd0_7' : age <= 30 ? 'd7_30' : age <= 90 ? 'd30_90' : 'd90p';
-    hist[b][0]++;
-    hist[b][1] += f.size;
+    hist[b]![0]++;
+    hist[b]![1] += f.size;
   }
 
   const key = sink.key;
@@ -264,7 +264,7 @@ export function sinkMeta(sink: Sink, now = Date.now()): SinkMeta {
     mode,
     worldReadable,
     fileCount: reachable ? files.length : null,
-    ageHistogram: BUCKETS.map((bucket) => ({ bucket, files: hist[bucket][0], bytes: hist[bucket][1] })),
+    ageHistogram: BUCKETS.map((bucket) => ({ bucket, files: hist[bucket]![0], bytes: hist[bucket]![1] })),
     promptLoggingFlag,
     modelAttribution: noModelAttribution ? 'none' : null,
     directionExact: key === 'codex-thread-history',

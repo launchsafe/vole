@@ -274,16 +274,16 @@ test('content_stale: ages in 30-day steps with a deterministic key, per-kind flo
   const old = packRecord({ built_at: NOW - 118 * 86_400_000 });
   const rows = contentStaleRows([old], NOW);
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].anomaly_key, 'content_stale:dlp_detectors:5:3'); // floor(118/30) = 3, no now() in the key
-  assert.equal(rows[0].floor_days, 30);
+  assert.equal(rows[0]!.anomaly_key, 'content_stale:dlp_detectors:5:3'); // floor(118/30) = 3, no now() in the key
+  assert.equal(rows[0]!.floor_days, 30);
 
   // 32 days later the same pack escalates to the next step — a new key, not a frozen severity.
   const rows2 = contentStaleRows([old], NOW + 32 * 86_400_000);
-  assert.equal(rows2[0].anomaly_key, 'content_stale:dlp_detectors:5:5');
+assert.equal(rows2[0]!.anomaly_key, 'content_stale:dlp_detectors:5:5');
 
   // semconv is info-only.
   const semi = contentStaleRows([packRecord({ kind: 'semconv', built_at: NOW - 200 * 86_400_000 })], NOW);
-  assert.equal(semi[0].severity, 'info');
+assert.equal(semi[0]!.severity, 'info');
   writeFileSync(join(HOME, '.vole', 'policy', 'policy.json'), '{}');
 });
 
@@ -308,11 +308,11 @@ test('comparability gate: not_comparable, not_seen and comparable verdicts with 
 
   d.prepare('INSERT INTO package_execs (call_key, package_name, registry, fetch_and_run, ts) VALUES (?, ?, ?, ?, ?)').run('c1', 'keyv', 'npm', 0, NOW);
   r = comparabilityGate(d, [{ kind: 'package', ledger: 'package_execs', column: 'package_name', normaliser_id: 'semver_range', strength: 'identity', value: 'left-pad' }]);
-  assert.equal(r[0].verdict, 'not_seen');
+assert.equal(r[0]!.verdict, 'not_seen');
   r = comparabilityGate(d, [{ kind: 'package', ledger: 'package_execs', column: 'package_name', normaliser_id: 'semver_range', strength: 'identity', value: 'keyv' }]);
-  assert.equal(r[0].verdict, 'comparable');
+assert.equal(r[0]!.verdict, 'comparable');
   r = comparabilityGate(d, [{ kind: 'bogus', ledger: 'nope', column: 'x', normaliser_id: 'y', strength: 'identity' }]);
-  assert.equal(r[0].verdict, 'not_comparable');
+assert.equal(r[0]!.verdict, 'not_comparable');
 });
 
 test('baseline snapshot and drift diff', () => {
@@ -324,8 +324,8 @@ test('baseline snapshot and drift diff', () => {
   d.prepare("UPDATE posture_mcp_servers SET command = 'npx -y @evil/mcp' WHERE mcp_identity = 'id-abc'").run();
   const drift = driftDiff(d).rows.filter((r) => r.kind === 'mcp_identity');
   assert.equal(drift.length, 1);
-  assert.equal(drift[0].state, 'changed');
-  assert.notEqual(drift[0].before, drift[0].after);
+  assert.equal(drift[0]!.state, 'changed');
+  assert.notEqual(drift[0]!.before, drift[0]!.after);
   d.prepare('INSERT INTO posture_mcp_servers (source, config_path, client, server_name, mcp_identity, transport, command, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run('s', '/f.json', 'claude_code', 'searxng', 'id-2', 'stdio', 'x', NOW, NOW);
   assert.equal(driftDiff(d).rows.filter((r) => r.state === 'added').length, 1);
@@ -369,14 +369,14 @@ test('preflight: command_patterns and thresholds kinds score their ledgers', () 
     .run('tc2', 'claude_code', 'Bash', 'npm install left-pad', NOW, NOW, NOW);
   const cpFile = writePack(USER, 'candidate-cmdpat.json', { kind: 'command_patterns', version: 1, entries: [{ id: 'git-push', pattern: '^git push' }] }, vendor);
   const cp = preflightPack(d, cpFile);
-  assert.equal(cp.command_patterns?.entries[0].hits, 1);
+  assert.equal(cp.command_patterns?.entries[0]!.hits, 1);
   assert.equal(cp.command_patterns?.total_tool_calls, 2);
 
   const thFile = writePack(USER, 'candidate-thresholds.json', { kind: 'thresholds', rules: { error_storm: { min_errors: 9 } } }, admin);
   const th = preflightPack(d, thFile);
   assert.equal(th.thresholds?.changed.length, 1);
-  assert.equal(th.thresholds?.changed[0].to, 9);
-  assert.ok(th.thresholds?.changed[0].stored_anomalies >= 1); // the error_storm rows inserted earlier
+  assert.equal(th.thresholds?.changed[0]!.to, 9);
+  assert.ok((th.thresholds?.changed[0]?.stored_anomalies ?? 0) >= 1); // the error_storm rows inserted earlier
 });
 
 test('preflight assets: rows resolved, dead entries, collisions, near_match, severity delta', () => {
@@ -400,8 +400,8 @@ test('preflight assets: rows resolved, dead entries, collisions, near_match, sev
   assert.equal(r.assets?.entries.find((e) => e.asset_id === 'prod-db')?.rows_resolved, 2);
   assert.deepEqual(r.assets?.dead, ['staging']);
   assert.equal(r.assets?.collisions.length, 1);
-  assert.equal(r.assets?.collisions[0].winner, 'prod-db');
-  assert.equal(r.assets?.collisions[0].loser, 'prod-db-alias');
+  assert.equal(r.assets?.collisions[0]!.winner, 'prod-db');
+  assert.equal(r.assets?.collisions[0]!.loser, 'prod-db-alias');
   assert.equal(r.assets?.near_match.length, 1); // docs.example.com sits one label from staging.example.com
   assert.equal(r.assets?.invalid.length, 1);
   assert.equal(r.assets?.severity_delta, 2); // the two tier-1-resolving rows escalate one step

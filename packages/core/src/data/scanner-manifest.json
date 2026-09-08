@@ -1,11 +1,19 @@
 {
-  "_comment": "The shipped read manifest: every scanner, the paths it reads, the fields it stores, the fields it deliberately does not read, and its default enabled state. Rendered verbatim in the app's 'What Vole reads' screen. A managed policy can force a scanner on (the point for fleet deployment) but that must be visible to the employee, never silent — resolveScannerSwitch reports 'locked' when a pin decides.",
+  "_comment": "The shipped read manifest: every scanner, the paths it reads, the fields it stores, the fields it deliberately does not read, and its default enabled state. Rendered verbatim in the app's 'What Vole reads' screen. A managed policy can force a scanner on (the point for fleet deployment) but that must be visible to the employee, never silent \u2014 resolveScannerSwitch reports 'locked' when a pin decides.",
   "scanners": [
     {
       "name": "collector-health",
-      "paths": ["~/.vole/collector.pid"],
-      "fieldsStored": ["collector pid", "collector exe", "liveness state"],
-      "fieldsNeverRead": ["anything beyond the pidfile's own two keys"],
+      "paths": [
+        "~/.vole/collector.pid"
+      ],
+      "fieldsStored": [
+        "collector pid",
+        "collector exe",
+        "liveness state"
+      ],
+      "fieldsNeverRead": [
+        "anything beyond the pidfile's own two keys"
+      ],
       "defaultEnabled": true,
       "consentTier": "normal"
     },
@@ -24,8 +32,20 @@
         "~/Library/Preferences (bundle id plists, names only)",
         "PATH bin directories (/usr/local/bin, ~/.local/bin, ~/.cargo/bin, ~/go/bin, ~/.npm-global/bin)"
       ],
-      "fieldsStored": ["app names", "bundle identifiers", "versions", "install paths", "gateway alias maps", "extension names"],
-      "fieldsNeverRead": ["Chrome profile content", "browsing history", "page content", "credentials"],
+      "fieldsStored": [
+        "app names",
+        "bundle identifiers",
+        "versions",
+        "install paths",
+        "gateway alias maps",
+        "extension names"
+      ],
+      "fieldsNeverRead": [
+        "Chrome profile content",
+        "browsing history",
+        "page content",
+        "credentials"
+      ],
       "defaultEnabled": true,
       "consentTier": "normal"
     },
@@ -38,13 +58,22 @@
         "~/.vscode, ~/.cursor, ~/.antigram extensions.json",
         "readability probes (O_RDONLY canaries) on agent store roots"
       ],
-      "fieldsStored": ["model route aliases", "site capabilities per origin", "dependency names and versions", "readability states"],
-      "fieldsNeverRead": ["browser content", "extension source code", "config values beyond names"],
+      "fieldsStored": [
+        "model route aliases",
+        "site capabilities per origin",
+        "dependency names and versions",
+        "readability states"
+      ],
+      "fieldsNeverRead": [
+        "browser content",
+        "extension source code",
+        "config values beyond names"
+      ],
       "defaultEnabled": true,
       "consentTier": "normal"
     },
     {
-      "name": "dlp",
+      "name": "dlp-scan",
       "paths": [
         "~/.claude/projects",
         "~/.claude/shell-snapshots",
@@ -57,8 +86,18 @@
         "~/.gemini/antigravity-ide",
         "~/Library/Application Support/Devin/User/acp-messages"
       ],
-      "fieldsStored": ["secret fingerprints (HMAC)", "byte counts", "media types", "file paths"],
-      "fieldsNeverRead": ["prompt text", "tool arguments", "message bodies", "credential values"],
+      "fieldsStored": [
+        "secret fingerprints (HMAC)",
+        "byte counts",
+        "media types",
+        "file paths"
+      ],
+      "fieldsNeverRead": [
+        "prompt text",
+        "tool arguments",
+        "message bodies",
+        "credential values"
+      ],
       "defaultEnabled": true,
       "consentTier": "normal"
     },
@@ -70,18 +109,266 @@
         "agent homes (~/.claude, ~/.codex, ~/.gemini)",
         "consented repo roots: CLAUDE.md, AGENTS.md, .cursorrules, .github/copilot-instructions.md"
       ],
-      "fieldsStored": ["MCP server names and endpoints", "command shapes", "repo instruction file presence"],
-      "fieldsNeverRead": ["repo file content", "environment variable values", "keys"],
+      "fieldsStored": [
+        "MCP server names and endpoints",
+        "command shapes",
+        "repo instruction file presence"
+      ],
+      "fieldsNeverRead": [
+        "repo file content",
+        "environment variable values",
+        "keys"
+      ],
       "defaultEnabled": true,
       "consentTier": "normal"
     },
     {
       "name": "shell-history",
-      "paths": ["~/.zsh_history", "~/.bash_history", "~/.local/share/fish/fish_history"],
-      "fieldsStored": ["byte receipt (bytes read / windows matched / rows stored)", "matched-line sha256 fingerprints", "counts only"],
-      "fieldsNeverRead": ["command text", "command arguments", "per-command timestamps"],
+      "paths": [
+        "~/.zsh_history",
+        "~/.bash_history",
+        "~/.local/share/fish/fish_history"
+      ],
+      "fieldsStored": [
+        "byte receipt (bytes read / windows matched / rows stored)",
+        "matched-line sha256 fingerprints",
+        "counts only"
+      ],
+      "fieldsNeverRead": [
+        "command text",
+        "command arguments",
+        "per-command timestamps"
+      ],
       "defaultEnabled": false,
       "consentTier": "explicit"
+    },
+    {
+      "name": "agent-homes",
+      "paths": [
+        "agent home directories (~/.claude, ~/.codex, ~/.gemini, ~/.kiro, \u2026)"
+      ],
+      "fieldsStored": [
+        "root existence, first_seen/last_seen, origin slug"
+      ],
+      "fieldsNeverRead": [
+        "session contents"
+      ],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "model-routes",
+      "paths": [
+        "agent routing configs (~/.claude-code-router/config.sqlite, ~/.codex/config.toml, ~/.claude/settings.json)"
+      ],
+      "fieldsStored": [
+        "alias, api_base host, key presence (never the key)"
+      ],
+      "fieldsNeverRead": [
+        "API keys and other credential material"
+      ],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "execution-contexts",
+      "paths": [
+        "editor workspace storage (VS Code/Cursor globalStorage, workspaceStorage)"
+      ],
+      "fieldsStored": [
+        "context keys, machine ids, existence"
+      ],
+      "fieldsNeverRead": [
+        "workspace file contents"
+      ],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "vscode-state",
+      "paths": [
+        "~/Library/Application Support/Code (state.vscdb, extensions.json) and editor equivalents"
+      ],
+      "fieldsStored": [
+        "extension ids, activation counts, declared models, usage counts",
+        "metadata, hashes and counts only \u2014 no prompt, message or tool-argument content"
+      ],
+      "fieldsNeverRead": [
+        "keybinding/command history beyond extension ids"
+      ],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "deleted-sessions",
+      "paths": [
+        "agent session stores (SQLite)"
+      ],
+      "fieldsStored": [
+        "counts of vendor-deleted sessions per store"
+      ],
+      "fieldsNeverRead": [
+        "the deleted sessions themselves (gone by definition)"
+      ],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "os-intelligence",
+      "paths": [
+        "macOS system surfaces: default domains, mdfind-declared assets, OS version facts"
+      ],
+      "fieldsStored": [
+        "declared AI-partner surfaces, opt-in states"
+      ],
+      "fieldsNeverRead": [
+        "file contents beyond the declared keys"
+      ],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "scan-access",
+      "paths": [
+        "the paths every other scanner already reads (read-access probes, TCC canary)"
+      ],
+      "fieldsStored": [
+        "probe outcome per path: ok / eperm / enoent, errno, launch_context"
+      ],
+      "fieldsNeverRead": [
+        "file contents \u2014 the probe opens, never reads"
+      ],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "coverage",
+      "paths": [
+        "agent store directories (sizes, mtimes, session-file counts)"
+      ],
+      "fieldsStored": [
+        "session counts, byte sizes, last-write times"
+      ],
+      "fieldsNeverRead": [
+        "session contents"
+      ],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "browser-grants",
+      "paths": [
+        "browser profile extension stores (Chrome/Edge/Brave/Arc profiles on disk)"
+      ],
+      "fieldsStored": [
+        "extension ids, install sources, host permissions"
+      ],
+      "fieldsNeverRead": [
+        "browsing history, profile contents"
+      ],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "ai-hosts",
+      "paths": [
+        "browser History SQLite (visit counts per AI host)"
+      ],
+      "fieldsStored": [
+        "per-host visit counts only \u2014 no URL, title or page content",
+        "readable-profile badges"
+      ],
+      "fieldsNeverRead": [
+        "URLs, titles, page content \u2014 counts only by construction"
+      ],
+      "defaultEnabled": false,
+      "consentTier": "explicit"
+    },
+    {
+      "name": "ai-deps",
+      "paths": [
+        "package manifests under the user home (package.json devDependencies of AI tools)"
+      ],
+      "fieldsStored": [
+        "tool name, declared version, provider keys"
+      ],
+      "fieldsNeverRead": [
+        "lockfiles beyond a hash"
+      ],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "editor-census",
+      "paths": [
+        "editor application bundles and extension directories"
+      ],
+      "fieldsStored": [
+        "app version, extension ids, version, commit, builtin flag"
+      ],
+      "fieldsNeverRead": [
+        "workspace data"
+      ],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "editor-stores",
+      "paths": [
+        "editor session/chat stores on disk (Copilot, Cline, \u2026)"
+      ],
+      "fieldsStored": [
+        "session counts, sizes, timestamps",
+        "metadata, hashes and counts only \u2014 no prompt, message or tool-argument content"
+      ],
+      "fieldsNeverRead": [
+        "message bodies"
+      ],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "structured-sinks",
+      "paths": [
+        "structured agent stores (codex sessions, Copilot session store, Cursor tracking DB, Antigravity brain, Devin ACP messages)"
+      ],
+      "fieldsStored": [
+        "secret fingerprints, byte offsets, directions",
+        "metadata, hashes and counts only \u2014 no prompt, message or tool-argument content"
+      ],
+      "fieldsNeverRead": [
+        "secret values, message bodies"
+      ],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "net-ledgers",
+      "paths": [
+        "no disk reads \u2014 derived from rows already in the local store"
+      ],
+      "fieldsStored": [
+        "destinations, hosts, statement classes from stored call shapes"
+      ],
+      "fieldsNeverRead": [
+        "nothing new is read from disk"
+      ],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "store-budget",
+      "paths": [
+        "the Vole store itself (vole.db)"
+      ],
+      "fieldsStored": [
+        "object sizes and row counts"
+      ],
+      "fieldsNeverRead": [
+        "row contents"
+      ],
+      "defaultEnabled": true,
+      "consentTier": "normal"
     }
   ]
 }

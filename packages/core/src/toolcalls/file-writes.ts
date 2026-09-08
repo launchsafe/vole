@@ -1,8 +1,8 @@
-import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
+import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { homedir } from 'node:os';
 import type { DB } from '../db';
 import { classifyPath, splitCommandSegments, tokenize, stripPrefixes } from './patterns';
-import { widenUpsert } from './upsert';
+import { widenUpsert, type UpsertSpec } from './upsert';
 
 /**
  * The file-write ledger (feature 29 + the t6 envelope columns it stamps):
@@ -158,7 +158,7 @@ export function fileWritesForCall(
   return rows;
 }
 
-const UPSERT = {
+const UPSERT: UpsertSpec = {
   table: 'file_writes',
   keyCols: ['write_key'],
   cols: [
@@ -167,7 +167,7 @@ const UPSERT = {
     'visibility_class', 'ts',
   ],
   stamped: true,
-} as const;
+};
 
 /**
  * Bind write rows. content_rev is a per-(session, path) count of writes already

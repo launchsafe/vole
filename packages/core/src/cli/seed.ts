@@ -228,7 +228,7 @@ if (storyArg === '--story=enterprise') {
   console.log('  - a quota-exhausted day (Incidents)');
   console.log('Every export path refuses seed rows, so a demo can never become evidence.');
   console.log('Tour (six stops):');
-  const stops = [
+  const stops: [string, string][] = [
     ['Overview', 'what left this machine: spend, tokens and the agents behind them'],
     ['Shadow AI', 'twelve employees, three machines, one unsanctioned Grok CLI on two hosts'],
     ['Data Exposure', 'three secret findings at different lifecycle states, with the coverage denominator'],

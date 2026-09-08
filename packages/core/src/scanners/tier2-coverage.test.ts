@@ -246,7 +246,7 @@ test('storeStats reports session count, MB and last write', () => {
   assert.equal(stats.sessions, 3);
   assert.ok(stats.mb! > 0);
   assert.ok(stats.lastWrite! > 0);
-  assert.equal(storeStats(join(dir, 'absent')), null); // absent store: no fact, not a zero
+  assert.equal(storeStats(join(dir, 'absent'), /^sess_/), null); // absent store: no fact, not a zero
   rmSync(dir, { recursive: true, force: true });
 });
 

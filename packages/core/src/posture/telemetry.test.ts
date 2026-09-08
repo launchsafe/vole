@@ -52,7 +52,7 @@ test('telemetry posture reads the precedence layers and names the file that deci
   const rows = db.prepare('SELECT lever, observed_value, hardened_value, source_file FROM posture_levers ORDER BY lever').all() as Record<string, string>[];
   assert.equal(rows.length, 2);
   assert.equal(rows.find((r) => r.lever === 'env:CLAUDE_CODE_ENABLE_TELEMETRY')!.hardened_value, 'unset');
-  assert.ok(rows.every((r) => r.source_file.includes('settings.json')));
+  assert.ok(rows.every((r) => String(r.source_file).includes('settings.json')));
   dbMod!.resetDbCache();
 });
 

@@ -254,7 +254,7 @@ export function preflightPack(db: DB, path: string, opts: PreflightOpts = {}): P
   report.version = typeof m.version === 'number' ? m.version : null;
 
   if (m.kind === 'dlp_detectors') {
-    const d = scoreDetectors(db, m, opts);
+    const d = scoreDetectors(db, m, opts)!;
     report.dlp = d;
     report.sample = `${d.files_scanned} retained sighting files (${d.bytes_read} bytes read, ${d.files_gone} gone) — one laptop's evidence, not the fleet's`;
   } else if (m.kind === 'pricing') {
@@ -283,8 +283,8 @@ export function preflightPack(db: DB, path: string, opts: PreflightOpts = {}): P
     const storedN = new Map(stored.map((s) => [s.rule, s.n]));
     report.thresholds = {
       changed: effectiveThresholds()
-        .filter((t) => typeof cand[t.rule]?.[t.param] === 'number' && cand[t.rule][t.param] !== t.effective)
-        .map((t) => ({ rule: t.rule, param: t.param, from: t.effective, to: cand[t.rule][t.param], stored_anomalies: storedN.get(t.rule) ?? 0 })),
+        .filter((t) => typeof cand[t.rule]?.[t.param] === 'number' && cand[t.rule]![t.param] !== t.effective)
+        .map((t) => ({ rule: t.rule, param: t.param, from: t.effective, to: cand[t.rule]![t.param] as number, stored_anomalies: storedN.get(t.rule) ?? 0 })),
     };
     report.sample = 'configured thresholds, not enforcement — nothing here prevents an agent from doing anything';
   } else {

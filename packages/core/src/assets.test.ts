@@ -241,7 +241,7 @@ test('proposeAsset writes only to assets.proposed.json, never the signed pack', 
   const dir = join(tmpdir(), `vole-propose-${Date.now()}`);
   process.env.VOLE_HOME_OVERRIDE = dir;
   try {
-    const entry = { asset_id: 'cand', tier: 2, kind: 'domain', match: 'new.corp.example', basis: 'proposed' };
+    const entry = { asset_id: 'cand', tier: 2, kind: 'domain' as const, match: 'new.corp.example', basis: 'proposed' };
     proposeAsset(entry);
     proposeAsset({ ...entry, asset_id: 'cand2' });
     const text = readFileSync(proposedAssetPath(), 'utf8');

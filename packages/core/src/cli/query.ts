@@ -50,7 +50,7 @@ export const PUBLIC_TABLES: Record<string, PublicTable> = {
              SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END) AS unpriced_events,
              MIN(ts) AS first_seen, MAX(ts) AS last_seen
       FROM usage_events WHERE source = 'live' GROUP BY tool ORDER BY tool
-    `).all(),
+    `).all() as Record<string, unknown>[],
   },
   vole_surfaces: {
     name: 'vole_surfaces', schema_version: 1,
@@ -62,7 +62,7 @@ export const PUBLIC_TABLES: Record<string, PublicTable> = {
     ],
     rows: (db) => db.prepare(
       `SELECT kind, name, sanctioned, first_seen FROM ai_surfaces ORDER BY kind, name`,
-    ).all(),
+    ).all() as Record<string, unknown>[],
   },
   vole_incidents: {
     name: 'vole_incidents', schema_version: 1,
@@ -83,7 +83,7 @@ export const PUBLIC_TABLES: Record<string, PublicTable> = {
       SELECT anomaly_key, case_key, rule, severity, observed, baseline, threshold, state,
              window_start, window_end, detected_at
       FROM anomalies WHERE source = 'live' ORDER BY detected_at DESC
-    `).all(),
+    `).all() as Record<string, unknown>[],
   },
   vole_posture: {
     name: 'vole_posture', schema_version: 1,
@@ -104,7 +104,7 @@ export const PUBLIC_TABLES: Record<string, PublicTable> = {
         SELECT session_id, tool, permission_mode, COUNT(*) AS calls, MIN(ts) AS first_seen, MAX(ts) AS last_seen
         FROM tool_calls WHERE session_id IS NOT NULL AND permission_mode IS NOT NULL
         GROUP BY session_id, tool, permission_mode ORDER BY last_seen DESC
-      `).all();
+      `).all() as Record<string, unknown>[];
     },
   },
   vole_coverage: {
@@ -122,7 +122,7 @@ export const PUBLIC_TABLES: Record<string, PublicTable> = {
              (SELECT files FROM collector_runs c3 WHERE c3.tool = c1.tool ORDER BY started_at DESC LIMIT 1) AS files,
              (SELECT inserted FROM collector_runs c4 WHERE c4.tool = c1.tool ORDER BY started_at DESC LIMIT 1) AS inserted
       FROM collector_runs c1 GROUP BY tool ORDER BY tool
-    `).all(),
+    `).all() as Record<string, unknown>[],
   },
 };
 

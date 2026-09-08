@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import type { DB } from '../db';
 import { paths } from '../paths';
+import { COLLECTOR_REGISTRY } from '../collectors';
 
 /**
  * The scope-change ledger (§ 87(1) Nr. 6 BetrVG co-determination attaches to
@@ -42,12 +43,8 @@ export interface ScopeHistoryRow {
   source: string | null;
 }
 
-/** The collector vocabulary = the Tool union in types.ts. A new tool IS a scope change. */
-const COLLECTOR_VOCABULARY: readonly string[] = [
-  'claude_code', 'codex', 'cursor', 'antigravity', 'opencode', 'grok', 'devin',
-  'gemini', 'copilot_cli', 'goose', 'amp', 'continue', 'aider', 'vscode_chat',
-  'clines', 'ollama_local',
-];
+/** The collector vocabulary = the real collector registry. A new tool IS a scope change. */
+const COLLECTOR_VOCABULARY: readonly string[] = COLLECTOR_REGISTRY.map((r) => r.tool);
 
 /**
  * The field set that defines monitoring scope, one string per field:
@@ -163,7 +160,7 @@ export function appendScopeEvent(db: DB, what: string, opts: { source?: string; 
   db.prepare('INSERT INTO scope_history (captured_at, sha256, diff, source) VALUES (?, ?, ?, ?)').run(
     opts.now ?? Date.now(),
     scopeSha256(fields),
-    JSON.stringify({ event: what } satisfies StoredDiff),
+    JSON.stringify({ added: [], removed: [], event: what } satisfies StoredDiff),
     opts.source ?? 'manual',
   );
 }

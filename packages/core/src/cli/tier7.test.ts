@@ -166,12 +166,12 @@ test('the support bundle carries the shape of the store, never its rows, and pas
   db.prepare(
     'INSERT INTO collector_runs (tool, started_at, duration_ms, files, parsed, inserted, source_state, ok) VALUES (?, ?, ?, 0, 0, 0, ?, 1)',
   ).run('claude_code', 1, 5, 'ok');
-  const b = supportBundle(db);
+  const b = supportBundle(db) as { store: Record<string, unknown>; versions: Record<string, unknown> };
   const json = JSON.stringify(b);
   // No rows: the bundle never embeds an anomaly or usage row.
   assert.equal(json.includes('remote_execution'), false);
   assert.match(JSON.stringify(b.store), /quick_check/);
-  assert.ok(b.store.sqlite_schema_sha256.length === 64);
+  assert.ok(String(b.store.sqlite_schema_sha256).length === 64);
   assert.equal(b.store.freelist_count, 0);
   assert.equal(b.versions.node, process.version);
   // The self-check: no local identifiers anywhere in the bundle.

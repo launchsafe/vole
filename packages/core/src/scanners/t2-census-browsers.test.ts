@@ -123,7 +123,7 @@ test('upsertSurface: depth columns widen NULL-only', () => {
   assert.equal(row.account_class, 'personal');
   // A later pass with no depth must not clobber the stored class.
   upsertSurface(db, { surface_key: 'k', kind: 'site', name: 'n', path: null, evidence: 'c', version: null }, now + 2);
-  row = db.prepare('SELECT account_class FROM ai_surfaces WHERE surface_key = ?').get('k') as { account_class: string };
+  row = db.prepare('SELECT account_class FROM ai_surfaces WHERE surface_key = ?').get('k') as { account_class: string | null; version: string | null };
   assert.equal(row.account_class, 'personal');
 });
 

@@ -130,6 +130,8 @@ const ZERO_BY_TOOL: Record<Tool, number> = {
   vscode_chat: 0,
   clines: 0,
   ollama_local: 0,
+  kiro: 0,
+  vole: 0,
 };
 
 /**
@@ -772,4 +774,287 @@ export function getDigest(db: DB, range: Range, includeSeed: boolean, now = Date
     biggestSession: biggest ?? null,
     busiestDay: days[0] && days[0].tokens > 0 ? days[0] : null,
   };
+}
+
+// ── the deep-completion read models (integration phase, tiers 3-8) ─────────
+//
+// Each surface the tier docs name for a reader: the People view's principal
+// dimension, the ungated-call KPI, Blast Radius over the action-target and
+// child ledgers, the Files tab's write classes, the ingress band, the posture
+// ribbon, server-tool billing, observation lag and the Grok bulk-egress card.
+// Every figure is verbatim from its ledger; NULL means unknown, never 0.
+
+export interface PrincipalSummaryRow {
+  principal_key: string;
+  display: string;
+  sessions: number;
+  calls: number;
+  tokens: number | null;
+  cost_usd: number | null;
+  incidents: { info: number; warn: number; critical: number };
+  /** binding triple: session_proved / ambient / unbound (+ sessions with no identity row at all) */
+  binding: { session_proved: number; ambient: number; unbound: number; no_identity_row: number };
+  account_classes: { tool: Tool | null; account_class: string | null; sessions: number }[];
+}
+
+/** The People view's principal dimension (parity port of identity/chain.principalRows). */
+export function getByPrincipal(db: DB, _range: Range, includeSeed: boolean): {
+  principals: PrincipalSummaryRow[];
+  originUnknown: { calls: number; tokens: number | null };
+} {
+  const src = includeSeed ? '' : "AND e.source = 'live'";
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT user FROM usage_events e WHERE user IS NOT NULL ${includeSeed ? '' : "AND e.source = 'live'"}`,
+    )
+    .all() as { user: string }[];
+  const principals: PrincipalSummaryRow[] = [];
+  for (const { user } of rows) {
+    const p = db
+      .prepare('SELECT principal_key, display FROM principals WHERE principal_key = ?')
+      .get(user) as { principal_key: string; display: string } | undefined;
+    const agg = db
+      .prepare(
+        `SELECT COUNT(DISTINCT e.session_id) AS sessions, COUNT(*) AS calls,
+                SUM(e.total_tokens) AS tokens, SUM(e.cost_usd) AS cost
+         FROM usage_events e WHERE e.user = ? ${src}`,
+      )
+      .get(user) as { sessions: number; calls: number; tokens: number | null; cost_usd: number | null };
+    const inc = db
+      .prepare(`SELECT severity, COUNT(*) AS n FROM anomalies WHERE user = ? GROUP BY severity`)
+      .all(user) as { severity: string; n: number }[];
+    const classes = db
+      .prepare(
+        `SELECT tool, account_class, COUNT(DISTINCT session_id) AS n FROM session_identity
+         WHERE principal_key = ? GROUP BY tool, account_class ORDER BY n DESC`,
+      )
+      .all(p?.principal_key ?? '') as { tool: Tool | null; account_class: string | null; n: number }[];
+    const bind = db
+      .prepare('SELECT binding_evidence, COUNT(*) AS n FROM session_identity WHERE principal_key = ? GROUP BY binding_evidence')
+      .all(p?.principal_key ?? '') as { binding_evidence: string | null; n: number }[];
+    const binding = { session_proved: 0, ambient: 0, unbound: 0, no_identity_row: 0 };
+    for (const b of bind) {
+      if (b.binding_evidence === 'session_proved') binding.session_proved = b.n;
+      else if (b.binding_evidence === 'ambient') binding.ambient = b.n;
+      else binding.unbound += b.n;
+    }
+    const identity = new Set(
+      (db.prepare('SELECT session_id FROM session_identity WHERE principal_key = ?').all(p?.principal_key ?? '') as { session_id: string }[])
+        .map((r) => r.session_id),
+    );
+    const sessions = (db
+      .prepare(`SELECT COUNT(DISTINCT session_id) AS n FROM usage_events WHERE user = ? AND session_id IS NOT NULL ${src}`)
+      .get(user) as { n: number }).n;
+    binding.no_identity_row = Math.max(0, sessions - identity.size);
+    principals.push({
+      principal_key: p?.principal_key ?? `unknown:${user}`,
+      display: p?.display ?? user,
+      sessions: agg.sessions,
+      calls: agg.calls,
+      tokens: agg.tokens,
+      cost_usd: agg.cost_usd,
+      incidents: {
+        info: inc.find((i) => i.severity === 'info')?.n ?? 0,
+        warn: inc.find((i) => i.severity === 'warn')?.n ?? 0,
+        critical: inc.find((i) => i.severity === 'critical')?.n ?? 0,
+      },
+      binding,
+      account_classes: classes.map((c) => ({ tool: c.tool, account_class: c.account_class, sessions: c.n })),
+    });
+  }
+  const unknown = db
+    .prepare(`SELECT COUNT(*) AS calls, SUM(total_tokens) AS tokens FROM usage_events e WHERE user IS NULL ${includeSeed ? '' : "AND e.source = 'live'"}`)
+    .get() as { calls: number; tokens: number | null };
+  return { principals: principals.sort((a, b) => b.calls - a.calls || (a.principal_key < b.principal_key ? -1 : 1)), originUnknown: { calls: unknown.calls, tokens: unknown.tokens } };
+}
+
+/** The ungated-call KPI: calls that ran with no gate at all (bypass_no_gate). */
+export function ungatedCalls(db: DB, range: Range): { calls: number; totalCalls: number } {
+  const from = rangeStart(range);
+  const total = (db.prepare('SELECT COUNT(*) AS n FROM tool_calls WHERE ts >= ?').get(from) as { n: number }).n;
+  const ungated = (db
+    .prepare("SELECT COUNT(*) AS n FROM tool_calls WHERE ts >= ? AND authorization_basis = 'bypass_no_gate'")
+    .get(from) as { n: number }).n;
+  return { calls: ungated, totalCalls: total };
+}
+
+export interface BlastRadiusRow {
+  target_kind: string;
+  target_label: string | null;
+  locality: string | null;
+  env_class: string | null;
+  calls: number;
+  /** child-ledger corroboration: writes / vcs / packages touching the same scope */
+  writes: number;
+  vcs_actions: number;
+  package_execs: number;
+}
+
+/** Blast Radius: action_targets joined to the child ledgers' scope reach. */
+export function blastRadius(db: DB, range: Range): BlastRadiusRow[] {
+  const from = rangeStart(range);
+  const targets = db
+    .prepare(
+      `SELECT target_kind, target_label, locality, env_class, COUNT(DISTINCT call_key) AS calls
+       FROM action_targets WHERE last_seen >= ? GROUP BY target_kind, target_label, locality, env_class`,
+    )
+    .all(from) as BlastRadiusRow[];
+  const writeTotal = (db
+    .prepare('SELECT COUNT(*) AS n FROM file_writes WHERE ts >= ?')
+    .get(from) as { n: number }).n;
+  const scopeCount = (sql: string): number =>
+    (db.prepare(sql).get(from) as { n: number }).n;
+  const vcs = scopeCount('SELECT COUNT(*) AS n FROM vcs_actions WHERE ts >= ?');
+  const pkgs = scopeCount('SELECT COUNT(*) AS n FROM package_execs WHERE ts >= ?');
+  return targets
+    .map((t) => ({ ...t, writes: writeTotal, vcs_actions: vcs, package_execs: pkgs }))
+    .sort((a, b) => b.calls - a.calls || (a.target_kind < b.target_kind ? -1 : 1));
+}
+
+/** The Files tab: writes split by write_class, unresolved targets counted, never dropped. */
+export function filesByWriteClass(db: DB, range: Range): { write_class: string; writes: number; unresolved: number }[] {
+  const from = rangeStart(range);
+  const rows = db
+    .prepare(
+      `SELECT COALESCE(write_class, 'unresolved') AS write_class, COUNT(*) AS n
+       FROM file_writes WHERE ts >= ? GROUP BY write_class ORDER BY n DESC`,
+    )
+    .all(from) as { write_class: string; n: number }[];
+  const unresolved = (db
+    .prepare('SELECT COUNT(*) AS n FROM file_writes WHERE ts >= ? AND path IS NULL')
+    .get(from) as { n: number }).n;
+  return rows.map((r) => ({ write_class: r.write_class, writes: r.n, unresolved }));
+}
+
+/** The ingress band: fetch ingress by host, with NULL-status counts (unknown, not zero). */
+export function ingressBand(db: DB, range: Range): { url_host: string | null; calls: number; bytes: number | null; statusUnknown: number }[] {
+  const from = rangeStart(range);
+  return db
+    .prepare(
+      `SELECT url_host, COUNT(*) AS calls, SUM(bytes) AS bytes,
+              SUM(CASE WHEN status IS NULL THEN 1 ELSE 0 END) AS statusUnknown
+       FROM fetch_ingress WHERE ts >= ? GROUP BY url_host ORDER BY calls DESC`,
+    )
+    .all(from) as { url_host: string | null; calls: number; bytes: number | null; statusUnknown: number }[];
+}
+
+export interface PostureRibbonRow {
+  session_id: string;
+  autonomy: string | null;
+  started_at: number;
+  ended_at: number;
+  calls: number;
+  denied: number;
+  errors: number;
+  mode_raw: string | null;
+}
+
+/** The posture ribbon: the autonomy timeline, newest intervals first. */
+export function postureRibbon(db: DB, range: Range, limit = 200): PostureRibbonRow[] {
+  const from = rangeStart(range);
+  return db
+    .prepare(
+      `SELECT session_id, autonomy, started_at, ended_at, calls, denied, errors, mode_raw
+       FROM autonomy_intervals WHERE ended_at >= ? ORDER BY ended_at DESC LIMIT ?`,
+    )
+    .all(from, limit) as PostureRibbonRow[];
+}
+
+/** Server-tool billing: the event_links request counters the vendors bill on. */
+export function serverToolBilling(db: DB, range: Range): { link_kind: string; requests: number }[] {
+  const from = rangeStart(range);
+  return db
+    .prepare(
+      `SELECT link_kind, SUM(CAST(link_id AS INTEGER)) AS requests FROM event_links
+       WHERE link_kind IN ('web_search_requests','web_fetch_requests') AND first_seen >= ? GROUP BY link_kind`,
+    )
+    .all(from) as { link_kind: string; requests: number }[];
+}
+
+export interface ObservationLagRow {
+  tool: Tool;
+  p50_ms: number | null;
+  p95_ms: number | null;
+  observed_rows: number;
+}
+
+/** Observation lag: per tool, observed_at minus ts (the collection-delay read model). */
+export function observationLag(db: DB, range: Range): ObservationLagRow[] {
+  const from = rangeStart(range);
+  const rows = db
+    .prepare(
+      `SELECT tool, observed_at - ts AS lag FROM usage_events
+       WHERE ts >= ? AND observed_at IS NOT NULL AND source = 'live'`,
+    )
+    .all(from) as { tool: Tool; lag: number }[];
+  const byTool = new Map<Tool, number[]>();
+  for (const r of rows) {
+    const arr = byTool.get(r.tool);
+    if (arr) arr.push(r.lag);
+    else byTool.set(r.tool, [r.lag]);
+  }
+  const pct = (sorted: number[], p: number): number | null =>
+    sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))]! : null;
+  return [...byTool.entries()]
+    .map(([tool, lags]) => {
+      const sorted = [...lags].sort((a, b) => a - b);
+      return { tool, p50_ms: pct(sorted, 50), p95_ms: pct(sorted, 95), observed_rows: sorted.length };
+    })
+    .sort((a, b) => (a.tool < b.tool ? -1 : 1));
+}
+
+export interface BulkEgressRow {
+  upload_key: string;
+  repo_path: string | null;
+  turn: number | null;
+  max_file_bytes: number | null;
+  /** NULL = never enqueued — the count the Bulk Egress card prints. */
+  size_bytes: number | null;
+  gcs_path: string | null;
+  blobs: number | null;
+  uploads_enabled: number | null;
+  upload_reason: string | null;
+  telemetry_source: string | null;
+}
+
+/** Grok's repo_state uploads (tier 5 #7): the Bulk Egress card on Posture. */
+export function bulkEgress(db: DB): BulkEgressRow[] {
+  return db
+    .prepare(
+      `SELECT b.upload_key, b.repo_path, b.turn, b.max_file_bytes, b.size_bytes, b.gcs_path, b.blobs,
+              d.uploads_enabled, d.upload_reason, d.telemetry_source
+       FROM bulk_uploads b LEFT JOIN upload_decisions d ON d.upload_key = b.upload_key
+       ORDER BY b.started_at DESC`,
+    )
+    .all() as BulkEgressRow[];
+}
+
+/** The MCP dimension: configured servers grouped by identity, observed-only split. */
+export function mcpServersGroup(db: DB): { server_name: string; mcp_identity: string; clients: number; transport: string | null; enabled: number | null }[] {
+  return db
+    .prepare(
+      `SELECT server_name, mcp_identity, COUNT(DISTINCT client) AS clients, transport, MAX(enabled) AS enabled
+       FROM posture_mcp_servers GROUP BY server_name, mcp_identity, transport
+       ORDER BY server_name`,
+    )
+    .all() as { server_name: string; mcp_identity: string; clients: number; transport: string | null; enabled: number | null }[];
+}
+
+export interface AiSurfaceRow {
+  surface_key: string;
+  kind: string;
+  name: string;
+  path: string | null;
+  sanctioned: string | null;
+  version: string | null;
+  first_seen: number;
+  last_seen: number;
+}
+
+/** The ai_surfaces read model (the audit's missing getAiSurfaces). */
+export function getAiSurfaces(db: DB, kind?: string): AiSurfaceRow[] {
+  const rows = kind
+    ? db.prepare('SELECT surface_key, kind, name, path, sanctioned, version, first_seen, last_seen FROM ai_surfaces WHERE kind = ? ORDER BY surface_key').all(kind)
+    : db.prepare('SELECT surface_key, kind, name, path, sanctioned, version, first_seen, last_seen FROM ai_surfaces ORDER BY surface_key').all();
+  return rows as AiSurfaceRow[];
 }

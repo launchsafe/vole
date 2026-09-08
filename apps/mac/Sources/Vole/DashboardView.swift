@@ -310,9 +310,9 @@ enum DashSection: String, CaseIterable, Identifiable {
     case triage    = "Triage"
     case shadowAI  = "Shadow AI"
     case posture   = "Posture"
-    case exposure   = "Data Exposure"
-    case blast     = "Blast Radius"
     case behaviour  = "Behaviour"
+    case blast     = "Blast Radius"     // tier 5 #17: between Behaviour and Data Exposure
+    case exposure   = "Data Exposure"
     case people    = "People"
     case privacy   = "Privacy"
     case settings  = "Settings"
@@ -346,9 +346,7 @@ enum DashSection: String, CaseIterable, Identifiable {
         case .posture:   return ["grants"]
         case .exposure: return ["secret_sightings"]          // Tier 4 ledger
         case .behaviour: return ["tool_calls"]               // Tier 5 ledger
-        case .blast:     return ["tool_calls"]
-        case .blast:     return ["tool_calls"]                 // Tier 5 ledger
-        case .behaviour: return ["tool_calls"]
+        case .blast:     return ["action_targets"]           // Tier 5 target ledger
         case .people:    return ["principals"]
         case .privacy:   return nil
         }
@@ -374,7 +372,7 @@ enum DashSection: String, CaseIterable, Identifiable {
     var group: SidebarGroup {
         switch self {
         case .dashboard, .breakdown: return .monitor
-        case .incidents, .triage, .shadowAI, .posture, .exposure, .blast, .behaviour: return .risk
+        case .incidents, .triage, .shadowAI, .posture, .behaviour, .blast, .exposure: return .risk
         case .people, .privacy, .settings: return .manage
         }
     }
@@ -633,6 +631,14 @@ struct DashboardView: View {
             Section {
                 metricRow("Tokens", Fmt.compact(s.tokens), "circle.hexagongrid.fill", .blue, prominent: true)
                 metricRow("Equivalent Cost", Fmt.money(s.cost), "dollarsign", .green, prominent: true)
+                // The ungated-call KPI (tier 5 #8): calls that ran with no gate at all,
+                // beside tokens and cost. Zero is a real figure; the denominator rides
+                // in the tooltip so the count can never imply more coverage than it has.
+                if let u = store.ungated {
+                    metricRow("Ungated Tool Calls", u.calls > 0 ? "\(u.calls)" : "0",
+                              "exclamationmark.shield", u.calls > 0 ? .red : .secondary)
+                        .help("Calls with no permission gate at all (bypass_no_gate) in this range, of \(u.totalCalls) recorded tool calls.")
+                }
                 if let speed = store.tokenSpeed {
                     metricRow("Burn Rate", "\(Fmt.compactDbl(speed.perMin))/min", "speedometer", .orange)
                     metricRow("Peak Minute (24h)", "\(Fmt.compactDbl(speed.peakPerMin))/min", "chart.bar.fill", .secondary)
@@ -910,6 +916,20 @@ struct DashboardView: View {
                         .textCase(nil)
                     }
                 }
+                // Server-tool billing (tier 8 #33): billed per request, not per token.
+                if !store.serverTools.isEmpty {
+                    Section {
+                        ForEach(store.serverTools) { t in
+                            LabeledContent(serverToolLabel(t.linkKind)) {
+                                Text("\(t.requests)").monospacedDigit()
+                            }
+                        }
+                    } header: {
+                        Text("Server Tools")
+                    } footer: {
+                        Text("Request counters the vendor bills as their own line item (web search, web fetch). Claude Code only — other tools report none, which is absence, never zero.")
+                    }
+                }
             }
             .listStyle(.inset)
         }
@@ -965,6 +985,14 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 1) {
             Text(label).font(.caption2).foregroundStyle(.tertiary)
             Text(value).font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+        }
+    }
+
+    private func serverToolLabel(_ kind: String) -> String {
+        switch kind {
+        case "web_search_requests": return "Web search requests"
+        case "web_fetch_requests": return "Web fetch requests"
+        default: return kind
         }
     }
 
@@ -1060,6 +1088,35 @@ struct DashboardView: View {
                     Text("Token speed").tag("speed")
                     Text("Icon only").tag("icon")
                 }
+            }
+
+            Section {
+                // Observation lag (tier 7 #39): two clocks on every row. The figure
+                // folds flush delay and Vole's own poll together — an upper bound,
+                // stated as such, never presented as the agent's own latency.
+                if store.observationLags.isEmpty {
+                    Text("No row states an observation time yet — lag is unknown, never zero.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(store.observationLags) { lag in
+                        HStack {
+                            ToolIcon(tool: lag.tool, size: 14)
+                            Text(Labels.tool[lag.tool] ?? lag.tool)
+                            Spacer()
+                            if let p50 = lag.p50Ms, let p95 = lag.p95Ms {
+                                Text("p50 \(Fmt.compact(p50 / 1000))s · p95 \(Fmt.compact(p95 / 1000))s")
+                                    .font(.callout).monospacedDigit().foregroundStyle(.secondary)
+                                    .help("Over \(lag.observedRows) observed rows — incidents for this tool are detected on average \(Fmt.compact(p50 / 1000))s after the call, at worst \(Fmt.compact(p95 / 1000))s.")
+                            } else {
+                                Text("—").foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                }
+            } header: {
+                Text("Sources · Observation Lag")
+            } footer: {
+                Text("How long after a call Vole saw it: observed_at minus the agent's own timestamp. An upper bound that folds flush delay and the poll interval together — the two cannot be separated from the log.")
             }
 
             Section {

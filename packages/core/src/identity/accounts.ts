@@ -443,7 +443,7 @@ export function repoRemoteOrigin(cwd: string): string | null {
     const text = readFileSync(file, 'utf8');
     const section = text.match(/\[remote "origin"\]([\s\S]*?)(?=\n\[|$)/);
     if (!section) return null;
-    const url = section[1].match(/url\s*=\s*(\S+)/);
+    const url = section[1]!.match(/url\s*=\s*(\S+)/);
     return url?.[1] ?? null;
   } catch {
     return null;
@@ -455,7 +455,7 @@ export function parseRemote(url: string): { host: string | null; owner: string |
   const m = url.match(/^(?:https?:\/\/|git@)([^:/]+)[/:](.+?)(?:\.git)?$/);
   if (!m) return { host: null, owner: null, repo: null };
   const [, host, path] = m;
-  const [owner, repo] = path.split('/');
+  const [owner, repo] = (path ?? '').split('/');
   return { host: host ?? null, owner: owner ?? null, repo: repo ?? null };
 }
 

@@ -241,7 +241,7 @@ test('model_routes upsert: idempotent, api_key_present never demoted to unknown'
   assert.equal(row.api_key_present, 1);
   assert.equal(row.last_seen, 2000);
   upsertModelRoutes(db, [{ ...route, api_key_present: 0 }], 3000);
-  row = db.prepare('SELECT * FROM model_routes').get() as { api_key_present: number };
+  row = db.prepare('SELECT * FROM model_routes').get() as { api_key_present: number; last_seen: number };
   assert.equal(row.api_key_present, 0); // a measured change is a change, an unknown is not
 });
 

@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { openDb, resetDbCache } from '../db';
+import { openDb, resetDbCache, type DB } from '../db';
 import { Database } from '../sqlite';
 import {
   scanCodexThreadHistory, scanCopilotSessionStore, scanCursorTracking,
@@ -265,10 +265,10 @@ test('allowlist: a git-tracked inline command escalates to critical', () => {
     assert.ok(res.newSightings >= 1, 'the inline command body is scanned');
     assert.equal(res.escalated, 1);
     const anom = db.prepare("SELECT rule, severity, detail FROM anomalies WHERE anomaly_key = ?")
-      .get(`secret_at_rest:allowlist:${fakeFp(AWS_KEY)}`) as { rule: string; severity: string };
-    assert.equal(anom.rule, 'secret_at_rest');
-    assert.equal(anom.severity, 'critical');
-    assert.ok(!anom.detail.includes(AWS_KEY), 'the value is never in the incident text');
+      .get(`secret_at_rest:allowlist:${fakeFp(AWS_KEY)}`) as { rule: string; severity: string; detail: string } | undefined;
+    assert.equal(anom!.rule, 'secret_at_rest');
+    assert.equal(anom!.severity, 'critical');
+    assert.ok(!anom!.detail.includes(AWS_KEY), 'the value is never in the incident text');
   } finally {
     process.env.VOLE_HOME_OVERRIDE = home;
     rmSync(repo, { recursive: true, force: true });

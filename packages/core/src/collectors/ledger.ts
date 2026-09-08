@@ -238,6 +238,8 @@ export interface UploadDecision {
   in_cfg_telemetry_trace_upload?: number | null;
   in_remote_trace_upload_enabled?: number | null;
   has_remote_settings?: number | null;
+  in_requirement_pin?: number | null;
+  telemetry_source?: string | null;
 }
 
 /**
@@ -252,8 +254,8 @@ export function recordUploadDecision(db: DB, d: UploadDecision): void {
     `INSERT INTO upload_decisions (
        upload_key, uploads_enabled, upload_reason, trace_upload_source, telemetry_mode,
        data_collection_disabled, in_env_trace_upload, in_cfg_telemetry_trace_upload,
-       in_remote_trace_upload_enabled, has_remote_settings, ts)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       in_remote_trace_upload_enabled, has_remote_settings, in_requirement_pin, telemetry_source, ts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(upload_key) DO NOTHING`,
   ).run(
     d.upload_key,
@@ -266,6 +268,8 @@ export function recordUploadDecision(db: DB, d: UploadDecision): void {
     d.in_cfg_telemetry_trace_upload ?? null,
     d.in_remote_trace_upload_enabled ?? null,
     d.has_remote_settings ?? null,
+    d.in_requirement_pin ?? null,
+    d.telemetry_source ?? null,
     d.ts,
   );
 }

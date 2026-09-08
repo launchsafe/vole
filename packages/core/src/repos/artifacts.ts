@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { DB } from '../db';
@@ -77,7 +78,7 @@ function starMatch(seg: string, pattern: string): boolean {
  * directory levels (the manifest's declared depth); `*` matches one segment.
  * No readdir outside the declared prefixes.
  */
-export function expandGlob(rootPath: string, glob: string, exclude: string | undefined, maxDepth = 4): string[] {
+export function expandGlob(rootPath: string, glob: string, exclude?: string | undefined, maxDepth = 4): string[] {
   const segs = glob.split('/').filter((s) => s.length > 0);
   let current: string[][] = [[]]; // list of matched relative segment lists
   for (const seg of segs) {
@@ -87,7 +88,7 @@ export function expandGlob(rootPath: string, glob: string, exclude: string | und
       if (seg === '**') {
         // depth-bounded recursive walk (ponytail: capped at maxDepth)
         const walk = (rel: string[], depth: number) => {
-          let entries: string[] = [];
+          let entries: Dirent[] = [];
           try {
             entries = readdirSync(join(rootPath, ...rel), { withFileTypes: true });
           } catch {
@@ -101,7 +102,7 @@ export function expandGlob(rootPath: string, glob: string, exclude: string | und
         };
         walk(base, 0);
       } else if (seg.includes('*')) {
-        let entries: string[] = [];
+        let entries: Dirent[] = [];
         try {
           entries = readdirSync(abs, { withFileTypes: true });
         } catch {

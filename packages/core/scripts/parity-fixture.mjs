@@ -80,5 +80,67 @@ insertAnomalies(db, [
   },
 ]);
 
+
+// ── the deep-completion ledgers: rows the new read models round-trip ─────────
+// Fixed values only; every key deterministic. NULLs where a figure is unknown.
+db.exec(`
+  INSERT INTO tool_calls (tool_call_key, tool, name, shape, args_digest, session_id, ts, status,
+    status_source, permission_mode, authorization_basis, authority, origin_kind, first_seen, last_seen)
+  VALUES
+    ('tc1', 'claude_code', 'Bash', 'rm -rf build', 'd1', 's1', ${T + 1000}, 'success', 'result_flag', 'bypassPermissions', 'bypass_no_gate', 'posture_waived', null, ${T + 1000}, ${T + 1000}),
+    ('tc2', 'claude_code', 'Read', null, 'd2', 's1', ${T + 2000}, 'denied', 'denial_phrase', 'default', 'human_denied', 'denied', null, ${T + 2000}, ${T + 2000}),
+    ('tc3', 'claude_code', 'Write', null, 'd3', 's2', ${T + 3000}, 'success', 'result_flag', 'default', 'mode_auto', null, 'human', ${T + 3000}, ${T + 3000});
+
+  INSERT INTO autonomy_intervals (session_id, agent_id, started_at, ended_at, calls, denied, errors, mode_raw, autonomy, fs_policy, approval_policy, sandbox_policy, permission_profile)
+  VALUES
+    ('s1', 'main', ${T + 1000}, ${T + 2000}, 2, 1, 0, 'bypassPermissions', 'full_auto', null, null, null, null),
+    ('s2', 'main', ${T + 3000}, ${T + 3000}, 1, 0, 0, 'default', 'prompt_each', null, null, null, null);
+
+  INSERT INTO file_writes (write_key, tool_call_key, session_id, path, path_class, write_class, change_risk_class, class_pattern_id, content_rev, escape_state, visibility_class, ts, first_seen, last_seen)
+  VALUES
+    ('w1', 'tc3', 's2', '/w/src/a.ts', 'source', 'structured', 'source', null, 1, 'local', null, ${T + 3000}, ${T + 3000}, ${T + 3000}),
+    ('w2', 'tc1', 's1', null, null, 'bash_redirect', null, null, null, null, null, ${T + 1000}, ${T + 1000}, ${T + 1000});
+
+  INSERT INTO action_targets (call_key, target_kind, target_label, locality, env_class, first_seen, last_seen)
+  VALUES
+    ('tc1', 'vcs_repo', 'github.com/acme/billing', 'remote', 'prod', ${T + 1000}, ${T + 1000}),
+    ('tc3', 'database', 'prod-db.internal:5432', 'remote', 'prod', ${T + 3000}, ${T + 3000});
+
+  INSERT INTO fetch_ingress (call_key, url_host, status, bytes, ts)
+  VALUES
+    ('tc1', 'docs.example.com', 200, 1024, ${T + 1000}),
+    ('tc1', 'unparsed.host', null, null, ${T + 1500});
+
+  INSERT INTO event_links (event_key, vendor, link_kind, link_id, first_seen)
+  VALUES
+    ('p1', 'claude_code', 'web_search_requests', '3', ${T}),
+    ('p2', 'claude_code', 'web_fetch_requests', '5', ${T + 1000});
+
+  INSERT INTO bulk_uploads (upload_key, repo_path, turn, max_file_bytes, size_bytes, gcs_path, blobs, started_at)
+  VALUES
+    ('u1', '/w', 3, 1048576, 520761, 'gs://x/abc.tar.gz', 12, ${T}),
+    ('u2', '/w', 4, 1048576, null, null, null, ${T + 1000});
+
+  INSERT INTO upload_decisions (upload_key, uploads_enabled, upload_reason, trace_upload_source, telemetry_mode, data_collection_disabled, in_env_trace_upload, in_cfg_telemetry_trace_upload, in_remote_trace_upload_enabled, has_remote_settings, in_requirement_pin, telemetry_source, ts)
+  VALUES
+    ('u1', 1, 'remote_default', 'remote', 'on', 0, null, null, 1, 1, 0, 'remote', ${T});
+
+  INSERT INTO posture_mcp_servers (source, config_path, client, server_name, mcp_identity, transport, command, argv, url, cwd, enabled, env_key_names, first_seen, last_seen)
+  VALUES
+    ('claude_code', '/home/u/.claude.json', 'claude_code', 'github', 'id-abc', 'stdio', 'npx -y @github/mcp', null, null, null, 1, null, ${T}, ${T}),
+    ('codex', '/home/u/.codex/config.toml', 'codex', 'github', 'id-abc', 'stdio', 'npx -y @github/mcp', null, null, null, 1, null, ${T}, ${T});
+
+  INSERT INTO ai_surfaces (surface_key, kind, name, path, evidence, version, sanctioned, first_seen, last_seen)
+  VALUES
+    ('app:codex', 'app', 'Codex CLI', '/Applications/Codex.app', 'bundle id', '0.5.0', null, ${T}, ${T}),
+    ('gateway:acme', 'gateway', 'acme-ai-gateway', '/etc/acme.yaml', 'launchd argument', null, 'true', ${T}, ${T});
+`);
+
+// observation lag: observed_at is insert-time wall clock, so pin every row to a
+// fixed value — the parity diff must never see collection time.
+db.prepare('UPDATE usage_events SET observed_at = ts + 2500 WHERE event_key IN (?,?,?,?,?,?,?,?)')
+  .run('p1', 'p2', 'p3', 'g1', 'g2', 'c1', 'e1', 'e2');
+db.prepare('UPDATE usage_events SET observed_at = ? WHERE event_key = ?').run(T + 9000, 'p2');
+
 resetDbCache();   // closes the cached handle the fixtures opened
 console.log(`fixture store → ${file}`);

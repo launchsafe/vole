@@ -58,8 +58,6 @@ final class Store {
     private(set) var modelSpeeds: [ModelSpeed] = []
     /// The Tier 5 tool-call ledger (recent window).
     private(set) var toolCalls: [ToolCallEntry] = []
-    /// Blast Radius destinations from command shapes.
-    private(set) var blastRadius: [BlastEntry] = []
     /// The subagent tree: session → agent edges.
     private(set) var agentEdges: [AgentEdge] = []
     /// Tier 3: pseudonymous principals + devices.
@@ -67,6 +65,29 @@ final class Store {
     private(set) var devices: [DeviceEntry] = []
     /// Tier 6: permission declarations.
     private(set) var grants: [GrantEntry] = []
+    // ── the deep-completion read models (tiers 3-8) ──
+    /// The People view's principal dimension, plus the origin-unknown count.
+    private(set) var principalSummary: [PrincipalSummaryRow] = []
+    private(set) var originUnknownCalls = 0
+    private(set) var originUnknownTokens: Int? = nil
+    /// The ungated-call KPI (bypass_no_gate), range-scoped.
+    private(set) var ungated: UngatedCallCounts?
+    /// Blast Radius over action_targets + child-ledger corroboration.
+    private(set) var blastTargets: [BlastTargetRow] = []
+    /// The Files tab's write classes.
+    private(set) var writeClasses: [WriteClassRow] = []
+    /// The ingress band (fetch ingress by host).
+    private(set) var ingressHosts: [IngressHostRow] = []
+    /// The posture ribbon (autonomy timeline, newest first).
+    private(set) var autonomyIntervals: [AutonomyInterval] = []
+    /// Server-tool billing (web search / fetch request counters).
+    private(set) var serverTools: [ServerToolRow] = []
+    /// Observation lag per tool (p50 / p95).
+    private(set) var observationLags: [LagRow] = []
+    /// Grok's repo_state bulk uploads, with their decision chain.
+    private(set) var bulkUploads: [BulkEgressEntry] = []
+    /// The MCP dimension: configured servers grouped by identity.
+    private(set) var mcpServers: [McpServerRow] = []
     /// The DLP denominator, in bytes: what the engine has actually read.
     var scanDenominator: Int { scanStates.reduce(0) { $0 + $1.bytesScanned } }
     private(set) var fieldDictionary: [(table: String, columns: [(name: String, type: String)])] = []
@@ -168,11 +189,23 @@ final class Store {
         tokenSpeed = db.tokenSpeed()
         modelSpeeds = db.modelSpeeds(range)
         toolCalls = db.toolCalls()
-        blastRadius = db.blastRadius()
         agentEdges = db.agentEdges()
         principals = db.principals()
         devices = db.devices()
         grants = db.grants()
+        let principal = db.byPrincipal()
+        principalSummary = principal.principals
+        originUnknownCalls = principal.originUnknownCalls
+        originUnknownTokens = principal.originUnknownTokens
+        ungated = db.ungatedCalls(range)
+        blastTargets = db.blastTargets(range)
+        writeClasses = db.filesByWriteClass(range)
+        ingressHosts = db.ingressBand(range)
+        autonomyIntervals = db.postureRibbon(range)
+        serverTools = db.serverToolBilling(range)
+        observationLags = db.observationLag(range)
+        bulkUploads = db.bulkEgress()
+        mcpServers = db.mcpServersGroup()
         fieldDictionary = db.fieldDictionary()
         let beats = db.collectorHeartbeats()
         heartbeats = beats

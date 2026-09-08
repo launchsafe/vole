@@ -168,7 +168,7 @@ async function main(): Promise<void> {
       const encoded = docs.map((d) => ({ doc_id: d.doc_id, bytes: d.payload + '\n' }));
       return {
         ok: send, // dry run: succeed locally without touching the network
-        witness: send ? `local:${encoded.length}` : null,
+        witness: send ? `local:${encoded.length}` : undefined,
         error: send ? undefined : 'dry-run (pass --send to deliver)',
       };
     });
@@ -225,7 +225,7 @@ async function main(): Promise<void> {
       [`${out}/fleet/vole-queries.yml`]: fleetQueryPack(),
     };
     for (const k of Object.keys(sentinel.dcrKql)) {
-      files[`${out}/sentinel/${k}.kql`] = sentinel.dcrKql[k];
+      files[`${out}/sentinel/${k}.kql`] = sentinel.dcrKql[k]!;
     }
     for (const [path, content] of Object.entries(files)) {
       mkdirSync(path.split('/').slice(0, -1).join('/'), { recursive: true });

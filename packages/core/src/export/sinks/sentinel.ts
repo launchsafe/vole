@@ -71,9 +71,9 @@ export interface SentinelAssets {
  */
 export function generateSentinelAssets(): SentinelAssets {
   const shapeNames = Object.keys(SHAPES);
-  const streams = shapeNames.map((s, i) => ({
-    streamName: `Custom-Vole${camel(s.split('.')[1])}s`,
-    tableName: `Vole${camel(s.split('.')[1])}s_CL`,
+  const streams = shapeNames.map((s) => ({
+    streamName: `Custom-Vole${camel(s.split('.')[1]!)}s`,
+    tableName: `Vole${camel(s.split('.')[1]!)}s_CL`,
     shape: s,
   }));
   const arm = {

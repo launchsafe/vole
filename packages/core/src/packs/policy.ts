@@ -48,7 +48,7 @@ interface RulePolicyFile {
 
 /** The rule policy in force: the managed copy if present, else the per-user one. */
 export function loadRulePolicy(): { file: string | null; managed: boolean; policy: RulePolicyFile } {
-  const [managed, user] = paths.rulePolicyPaths();
+  const [managed, user] = paths.rulePolicyPaths() as [string, string];
   for (const [file, isManaged] of [[managed, true], [user, false]] as const) {
     if (!existsSync(file)) continue;
     try {
@@ -101,7 +101,7 @@ export function staleFloors(): StaleFloor[] {
     const overridden = typeof o[kind] === 'number';
     return {
       kind,
-      floor_days: overridden ? (o[kind] as number) : (DEFAULT_STALE_FLOORS[kind] ?? DEFAULT_STALE_FLOORS.default),
+      floor_days: overridden ? (o[kind] as number) : (DEFAULT_STALE_FLOORS[kind] ?? DEFAULT_STALE_FLOORS.default!),
       provenance: overridden ? (managed ? 'managed policy' : 'policy.json') : 'module default',
       source_path: overridden ? (file ?? undefined) : undefined,
     };

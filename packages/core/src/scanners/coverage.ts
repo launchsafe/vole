@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync, existsSync, statSync, lstatSync, readlinkSync, openSync, closeSync, readSync } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -351,7 +352,7 @@ export function storeStats(dir: string, sessionMatch: RegExp): StoreStats | null
   let lastWrite: number | null = null;
   let visited = 0;
   const walk = (d: string, depth: number): void => {
-    let entries: string[];
+    let entries: Dirent[];
     try {
       entries = readdirSync(d, { withFileTypes: true });
     } catch {

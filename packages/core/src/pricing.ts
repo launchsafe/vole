@@ -208,11 +208,11 @@ export function uncostedClass(model: string | null): UncostedClass {
 // ── cache economics: the 5m-versus-1h split (tier 8 #18) ─────────────────────
 
 export interface CacheClassTotals {
-  input_tokens: number;
-  output_tokens: number;
-  cache_write_5m_tokens: number;
-  cache_write_1h_tokens: number;
-  cache_read_tokens: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_write_5m_tokens: number | null;
+  cache_write_1h_tokens: number | null;
+  cache_read_tokens: number | null;
 }
 
 export interface CacheEconomics {
@@ -258,6 +258,8 @@ export function cacheEconomics(model: string | null, t: Partial<CacheClassTotals
 export function billableTokens(t: {
   input_tokens?: number | null;
   output_tokens?: number | null;
+  /** Cache reads are billed at the cache-read rate, not the input rate — excluded here. */
+  cache_read_tokens?: number | null;
 }): number | null {
   if (t.input_tokens == null && t.output_tokens == null) return null;
   return (t.input_tokens ?? 0) + (t.output_tokens ?? 0);
@@ -333,7 +335,7 @@ export function evaluateBudget(
   const unpriced_calls = inScope.filter((r) => r.confidence === 'exact' && r.cost_usd == null).length;
   const uncounted_calls = decl.limit_tokens != null ? inScope.filter((r) => r.confidence === 'activity_only').length : 0;
   let verdict: BudgetVerdict;
-  if (decl.limit_usd != null) verdict = unpriced_calls > 0 ? 'indeterminate' : spent_usd > decl.limit_usd ? 'exceeded' : 'ok';
+  if (decl.limit_usd != null) verdict = unpriced_calls > 0 ? 'indeterminate' : (spent_usd ?? 0) > decl.limit_usd ? 'exceeded' : 'ok';
   else if (decl.limit_tokens != null) verdict = uncounted_calls > 0 ? 'indeterminate' : (spent_tokens ?? 0) > decl.limit_tokens ? 'exceeded' : 'ok';
   else verdict = 'indeterminate';
   return {

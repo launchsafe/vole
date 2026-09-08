@@ -20,7 +20,11 @@
  */
 import { openDbReadOnly } from '../db';
 import { MIGRATIONS } from '../db';
-import { getSummary, getAnomalies } from '../queries';
+import {
+  getSummary, getAnomalies, ungatedCalls, filesByWriteClass, ingressBand,
+  postureRibbon, serverToolBilling, observationLag, bulkEgress, mcpServersGroup,
+  getAiSurfaces, blastRadius,
+} from '../queries';
 
 const db = openDbReadOnly();
 
@@ -64,6 +68,27 @@ const out = {
       observed: r6(i.observed), baseline: r6(i.baseline), threshold: r6(i.threshold),
       confidence: i.confidence, source: i.source, detected_at: i.detected_at,
     })),
+  // ── the deep-completion read models: the same contract, extended ──
+  ungatedCalls: (() => {
+    const u = ungatedCalls(db, 'all');
+    return { calls: u.calls, totalCalls: u.totalCalls };
+  })(),
+  filesByWriteClass: filesByWriteClass(db, 'all'),
+  ingressBand: ingressBand(db, 'all'),
+  postureRibbon: postureRibbon(db, 'all', 50).map((r) => ({
+    session_id: r.session_id, autonomy: r.autonomy, started_at: r.started_at, ended_at: r.ended_at,
+    calls: r.calls, denied: r.denied, errors: r.errors, mode_raw: r.mode_raw,
+  })),
+  serverToolBilling: serverToolBilling(db, 'all'),
+  observationLag: observationLag(db, 'all'),
+  bulkEgress: bulkEgress(db).map((b) => ({
+    upload_key: b.upload_key, repo_path: b.repo_path, turn: b.turn, max_file_bytes: b.max_file_bytes,
+    size_bytes: b.size_bytes, gcs_path: b.gcs_path, blobs: b.blobs, uploads_enabled: b.uploads_enabled,
+    upload_reason: b.upload_reason, telemetry_source: b.telemetry_source,
+  })),
+  mcpServers: mcpServersGroup(db),
+  blastRadius: blastRadius(db, 'all'),
+  aiSurfaces: getAiSurfaces(db).slice(0, 50),
 };
 
 console.log(JSON.stringify(out, null, 1));

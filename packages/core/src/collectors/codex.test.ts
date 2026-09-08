@@ -214,7 +214,7 @@ test('v2: plan_type proves the session plan with session_proved evidence, plus t
       primary: { used_percent: 41, window_minutes: 300, plan_type: 'team', limit_id: 'codex_plus', individual_limit: 120000, spend_control_reached: false },
     })]);
     const r = collectCodex(s.db);
-    assert.equal(r.rateLimits[0]!.used_percent, 41);
+    assert.equal(r.rateLimits![0]!.used_percent, 41);
     const si = s.db
       .prepare('SELECT plan, tool, binding_evidence FROM session_identity WHERE session_id = ?')
       .get('sess-1') as { plan: string; tool: string; binding_evidence: string };
@@ -242,8 +242,8 @@ test('v2: tool calls are keyed by the vendor call_id; claims from turn_context r
       tc(usage(100)),
     ]);
     const r = collectCodex(s.db);
-    assert.equal(r.toolCalls.length, 1);
-    assert.equal(r.toolCalls[0]!.tool_call_key, 'codex:call_abc', 'the source-native call_id is the key');
+    assert.equal(r.toolCalls!.length, 1);
+    assert.equal(r.toolCalls![0]!.tool_call_key, 'codex:call_abc', 'the source-native call_id is the key');
     assert.equal(r.codexClaims!.length, 1);
     const claim = r.codexClaims![0]!;
     assert.equal(claim.sandbox_type, 'workspace-write');

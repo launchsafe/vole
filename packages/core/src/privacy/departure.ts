@@ -20,7 +20,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DB } from '../db';
 import type { Anomaly, PrincipalState, Tool } from '../types';
-import { paths } from '../paths';
+import { paths, home as homeRoot } from '../paths';
 
 // ── declarations ─────────────────────────────────────────────────────────────
 
@@ -215,7 +215,7 @@ export interface CredentialRow {
  * and absence is not proof one was never there: a locked keychain or a
  * missing Full Disk Access grant yields NULL, not zero.
  */
-export function credentialSweep(homeDir: string = paths.home()): CredentialRow[] {
+export function credentialSweep(homeDir: string = homeRoot()): CredentialRow[] {
   const out: CredentialRow[] = [];
   // ~/.codex/auth.json — auth_mode and last_refresh are metadata, not material.
   const authJson = join(homeDir, '.codex', 'auth.json');

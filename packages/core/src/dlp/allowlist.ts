@@ -5,7 +5,8 @@ import { spawnSync } from 'node:child_process';
 import type { DB } from '../db';
 import { insertAnomalies } from '../db';
 import { paths } from '../paths';
-import { asContent, classifyStatus, scanBuffer, toFingerprint } from './engine';
+import { asContent, classifyStatus, scanBuffer } from './engine';
+import { fingerprintOf } from './keychain';
 import type { FingerprintFn } from './structured-sinks';
 
 /**
@@ -31,11 +32,14 @@ interface AllowlistTarget {
 function jsonRules(text: string, extract: (parsed: Record<string, unknown>) => unknown): string[] {
   try {
     const parsed = JSON.parse(text) as Record<string, unknown>;
+    const arr = extract(parsed);
     const out: string[] = [];
-    for (const r of extract(parsed) ?? []) {
-      if (typeof r === 'string') out.push(r);
-      else if (r && typeof r === 'object' && typeof (r as { command?: unknown }).command === 'string') {
-        out.push((r as { command: string }).command);
+    if (Array.isArray(arr)) {
+      for (const r of arr) {
+        if (typeof r === 'string') out.push(r);
+        else if (r && typeof r === 'object' && typeof (r as { command?: unknown }).command === 'string') {
+          out.push((r as { command: string }).command);
+        }
       }
     }
     return out;
@@ -119,7 +123,7 @@ export function scanPermissionAllowlists(
   db: DB,
   workRoots: string[],
   now: number,
-  fp: FingerprintFn = toFingerprint,
+  fp: FingerprintFn = fingerprintOf,
 ): AllowlistScanResult {
   const res: AllowlistScanResult = { filesScanned: 0, rulesScanned: 0, newSightings: 0, escalated: 0, notes: [] };
 

@@ -5,6 +5,9 @@ import { hostname, userInfo } from 'node:os';
 import { SCHEMA } from './schema';
 import { paths } from './paths';
 import { computeCost } from './pricing';
+import { principalKey } from './identity';
+import { currentExecutionContext } from './governance/context';
+import { isSubjectErased } from './privacy/forget';
 import type { Anomaly, Tool, UsageEvent } from './types';
 
 export type DB = Database;
@@ -996,7 +999,11 @@ export const MIGRATIONS: Migration[] = [
         addColumn(db, 'autonomy_intervals', 'fs_policy', 'TEXT') +
         addColumn(db, 'autonomy_intervals', 'approval_policy', 'TEXT') +
         addColumn(db, 'autonomy_intervals', 'sandbox_policy', 'TEXT') +
-        addColumn(db, 'autonomy_intervals', 'permission_profile', 'TEXT')
+        addColumn(db, 'autonomy_intervals', 'permission_profile', 'TEXT') +
+        // upload_decisions: the two precedence-ladder inputs the tier-5 reader
+        // parses but the table never carried (coordinated foundation change).
+        addColumn(db, 'upload_decisions', 'in_requirement_pin', 'INTEGER') +
+        addColumn(db, 'upload_decisions', 'telemetry_source', 'TEXT')
       );
     },
   },
@@ -1337,6 +1344,19 @@ export const MIGRATIONS: Migration[] = [
       return 0;
     },
   },
+  // The coordinated foundation columns the deep completion flagged: anomalies'
+  // subject_id (the pseudonymised insert's twin for incidents) and the two
+  // upload_decisions precedence-ladder inputs. addColumn is idempotent, so a
+  // fresh store and an old one converge on the same shape.
+  {
+    version: 27,
+    name: 'pseudonymised-anomaly-subject',
+    kind: 'ddl',
+    apply: (db) =>
+      addColumn(db, 'anomalies', 'subject_id', 'TEXT') +
+      addColumn(db, 'upload_decisions', 'in_requirement_pin', 'INTEGER') +
+      addColumn(db, 'upload_decisions', 'telemetry_source', 'TEXT'),
+  },
 ]
 ;
 
@@ -1498,19 +1518,21 @@ export function openDbReadOnly(file: string = paths.db()): DB {
   return new Database(file, { readonly: true, fileMustExist: true });
 }
 
-const INSERT_EVENT = `
+const INSERT_EVENT_WIDE = `
 INSERT INTO usage_events (
   event_key, tool, model, session_id, project, git_branch, ts,
   input_tokens, output_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
   cache_read_tokens, reasoning_tokens, total_tokens, cost_usd,
   confidence, is_error, stop_reason, source, raw_ref, user, machine,
-  tools, agent_id, context_window, duration_ms, duration_kind
+  tools, agent_id, context_window, duration_ms, duration_kind,
+  subject_id, execution_context_id, observed_at, cost_basis, pricing_rev
 ) VALUES (
   @event_key, @tool, @model, @session_id, @project, @git_branch, @ts,
   @input_tokens, @output_tokens, @cache_write_5m_tokens, @cache_write_1h_tokens,
   @cache_read_tokens, @reasoning_tokens, @total_tokens, @cost_usd,
   @confidence, @is_error, @stop_reason, @source, @raw_ref, @user, @machine,
-  @tools, @agent_id, @context_window, @duration_ms, @duration_kind
+  @tools, @agent_id, @context_window, @duration_ms, @duration_kind,
+  @subject_id, @execution_context_id, @observed_at, @cost_basis, @pricing_rev
 )
 ON CONFLICT(event_key) DO UPDATE SET
   input_tokens          = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.input_tokens          ELSE usage_events.input_tokens END,
@@ -1540,10 +1562,20 @@ ON CONFLICT(event_key) DO UPDATE SET
                            WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.duration_kind
                            WHEN usage_events.duration_ms IS NULL AND excluded.duration_ms IS NOT NULL THEN excluded.duration_kind
                            ELSE COALESCE(usage_events.duration_kind, excluded.duration_kind)
-                         END
+                         END,
+  subject_id            = COALESCE(usage_events.subject_id, excluded.subject_id),
+  execution_context_id  = COALESCE(usage_events.execution_context_id, excluded.execution_context_id),
+  observed_at           = COALESCE(usage_events.observed_at, excluded.observed_at),
+  cost_basis            = COALESCE(usage_events.cost_basis, excluded.cost_basis),
+  pricing_rev           = COALESCE(usage_events.pricing_rev, excluded.pricing_rev)
 WHERE excluded.total_tokens > usage_events.total_tokens
    OR (usage_events.tools IS NULL AND excluded.tools IS NOT NULL)
-   OR (usage_events.duration_ms IS NULL AND excluded.duration_ms IS NOT NULL)`;
+   OR (usage_events.duration_ms IS NULL AND excluded.duration_ms IS NOT NULL)
+   OR (usage_events.subject_id IS NULL AND excluded.subject_id IS NOT NULL)
+   OR (usage_events.execution_context_id IS NULL AND excluded.execution_context_id IS NOT NULL)
+   OR (usage_events.observed_at IS NULL AND excluded.observed_at IS NOT NULL)
+   OR (usage_events.cost_basis IS NULL AND excluded.cost_basis IS NOT NULL)
+   OR (usage_events.pricing_rev IS NULL AND excluded.pricing_rev IS NOT NULL)`;
 
 /**
  * Idempotent by construction: `event_key` is UNIQUE. Re-scanning a file can never
@@ -1570,21 +1602,122 @@ WHERE excluded.total_tokens > usage_events.total_tokens
  *
  * @returns number of rows inserted or upgraded
  */
+/** vole forget gate: an erased subject's rows are dropped on re-read. Tolerant of
+ * a store that predates the suppression register (older test stores) — a missing
+ * table means nothing was ever erased. */
+function subjectErased(db: DB, subject: string | null): boolean {
+  if (subject === null) return false;
+  try {
+    return isSubjectErased(db, subject);
+  } catch {
+    return false;
+  }
+}
+
 export function insertEvents(db: DB, events: UsageEvent[]): number {
   if (events.length === 0) return 0;
-  const stmt = db.prepare(INSERT_EVENT);
+  const sql = insertEventSql(db);
+  const wide = sql.includes('@subject_id');
+  const stmt = db.prepare(sql);
+  // The pseudonymised insert stamps (migration 21): subject_id replaces the
+  // cleartext user/machine pair — a NULL-only widening, so stored rows are
+  // never overwritten and pre-migration rows keep their NULL honesty.
+  let subject: string | null;
+  try {
+    subject = principalKey(userInfo().username);
+  } catch {
+    subject = null;
+  }
+  const ctxId = currentExecutionContext().execution_context_id;
+  // vole forget: an erased subject's rows are dropped on re-read so the
+  // six full-rescan collectors cannot resurrect what was forgotten.
+  const erased = subjectErased(db, subject);
   const run = db.transaction((rows: UsageEvent[]) => {
     let changed = 0;
     for (const r of rows) {
       if (!Number.isFinite(r.ts)) continue;
-      changed += stmt.run({ ...r, ...ORIGIN }).changes;
+      if (erased) break;
+      changed += stmt.run(wide
+        ? {
+            ...r,
+            user: null,
+            machine: null,
+            subject_id: r.subject_id ?? subject,
+            // Context stamp: the collector's own context only when no project
+            // path is known (the workspace pass fills project-carrying rows —
+            // an unmatched project stays NULL, never guessed).
+            execution_context_id: r.execution_context_id ?? (r.project == null ? ctxId : null),
+            observed_at: r.observed_at ?? Date.now(),
+            cost_basis: r.cost_basis ?? null,
+            pricing_rev: r.pricing_rev ?? null,
+          }
+        : { ...r, ...ORIGIN }).changes;
     }
     return changed;
   });
   return run(events);
 }
 
-const INSERT_ANOMALY = `
+const INSERT_ANOMALY_WIDE = `
+INSERT INTO anomalies (
+  anomaly_key, rule, severity, tool, session_id, model,
+  window_start, window_end, title, detail,
+  observed, baseline, threshold, confidence, source, detected_at,
+  user, machine, subject_id, execution_context_id
+) VALUES (
+  @anomaly_key, @rule, @severity, @tool, @session_id, @model,
+  @window_start, @window_end, @title, @detail,
+  @observed, @baseline, @threshold, @confidence, @source, @detected_at,
+  @user, @machine, @subject_id, @execution_context_id
+)`;
+/** The pre-migration-21 column list — a store without the stamp columns. */
+const INSERT_EVENT_LEGACY = `
+INSERT INTO usage_events (
+  event_key, tool, model, session_id, project, git_branch, ts,
+  input_tokens, output_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
+  cache_read_tokens, reasoning_tokens, total_tokens, cost_usd,
+  confidence, is_error, stop_reason, source, raw_ref, user, machine,
+  tools, agent_id, context_window, duration_ms, duration_kind
+) VALUES (
+  @event_key, @tool, @model, @session_id, @project, @git_branch, @ts,
+  @input_tokens, @output_tokens, @cache_write_5m_tokens, @cache_write_1h_tokens,
+  @cache_read_tokens, @reasoning_tokens, @total_tokens, @cost_usd,
+  @confidence, @is_error, @stop_reason, @source, @raw_ref, @user, @machine,
+  @tools, @agent_id, @context_window, @duration_ms, @duration_kind
+)
+ON CONFLICT(event_key) DO UPDATE SET
+  input_tokens          = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.input_tokens          ELSE usage_events.input_tokens END,
+  output_tokens         = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.output_tokens         ELSE usage_events.output_tokens END,
+  cache_write_5m_tokens = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.cache_write_5m_tokens ELSE usage_events.cache_write_5m_tokens END,
+  cache_write_1h_tokens = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.cache_write_1h_tokens ELSE usage_events.cache_write_1h_tokens END,
+  cache_read_tokens     = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.cache_read_tokens     ELSE usage_events.cache_read_tokens END,
+  reasoning_tokens      = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.reasoning_tokens      ELSE usage_events.reasoning_tokens END,
+  total_tokens          = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.total_tokens          ELSE usage_events.total_tokens END,
+  cost_usd              = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.cost_usd              ELSE usage_events.cost_usd END,
+  is_error              = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.is_error              ELSE usage_events.is_error END,
+  stop_reason           = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.stop_reason           ELSE usage_events.stop_reason END,
+  context_window        = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.context_window        ELSE usage_events.context_window END,
+  ts                    = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.ts                    ELSE usage_events.ts END,
+  tools                 = CASE
+                           WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.tools
+                           WHEN usage_events.tools IS NULL AND excluded.tools IS NOT NULL THEN excluded.tools
+                           ELSE usage_events.tools
+                         END,
+  duration_ms           = CASE
+                           WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.duration_ms
+                           WHEN usage_events.duration_ms IS NULL AND excluded.duration_ms IS NOT NULL THEN excluded.duration_ms
+                           ELSE usage_events.duration_ms
+                         END,
+  duration_kind         = CASE
+                           WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.duration_kind
+                           WHEN usage_events.duration_ms IS NULL AND excluded.duration_ms IS NOT NULL THEN excluded.duration_kind
+                           ELSE COALESCE(usage_events.duration_kind, excluded.duration_kind)
+                         END
+WHERE excluded.total_tokens > usage_events.total_tokens
+   OR (usage_events.tools IS NULL AND excluded.tools IS NOT NULL)
+   OR (usage_events.duration_ms IS NULL AND excluded.duration_ms IS NOT NULL)`;
+
+const INSERT_ANOMALY_LEGACY = `
 INSERT INTO anomalies (
   anomaly_key, rule, severity, tool, session_id, model,
   window_start, window_end, title, detail,
@@ -1596,6 +1729,21 @@ INSERT INTO anomalies (
   @observed, @baseline, @threshold, @confidence, @source, @detected_at,
   @user, @machine
 )`;
+
+/**
+ * A pre-migration-21 store (or a test's hand-rolled schema) has none of the
+ * pseudonymised stamp columns: the insert degrades to the legacy column list
+ * rather than erroring — an old store keeps collecting, the stamps stay NULL.
+ */
+function insertEventSql(db: DB): string {
+  const cols = (db.prepare('PRAGMA table_info(usage_events)').all() as { name: string }[]).map((c) => c.name);
+  return cols.includes('subject_id') ? INSERT_EVENT_WIDE : INSERT_EVENT_LEGACY;
+}
+
+function insertAnomalySql(db: DB): string {
+  const cols = (db.prepare('PRAGMA table_info(anomalies)').all() as { name: string }[]).map((c) => c.name);
+  return cols.includes('subject_id') ? INSERT_ANOMALY_WIDE : INSERT_ANOMALY_LEGACY;
+}
 
 const SEV_RANK: Record<string, number> = { info: 0, warn: 1, critical: 2 };
 
@@ -1622,7 +1770,18 @@ export interface AnomalyWriteResult {
 export function insertAnomalies(db: DB, rows: Anomaly[]): AnomalyWriteResult {
   const result: AnomalyWriteResult = { inserted: [], escalated: [] };
   if (rows.length === 0) return result;
-  const insert = db.prepare(INSERT_ANOMALY);
+  let subject: string | null;
+  try {
+    subject = principalKey(userInfo().username);
+  } catch {
+    subject = null;
+  }
+  const erased = subjectErased(db, subject);
+  if (erased) return result; // an erased subject's incidents are not resurrected
+  const ctxId = currentExecutionContext().execution_context_id;
+  const aSql = insertAnomalySql(db);
+  const aWide = aSql.includes('@subject_id');
+  const insert = db.prepare(aSql);
   const existing = db.prepare('SELECT severity, observed FROM anomalies WHERE anomaly_key = ?');
   const update = db.prepare(`
     UPDATE anomalies SET
@@ -1641,7 +1800,17 @@ export function insertAnomalies(db: DB, rows: Anomaly[]): AnomalyWriteResult {
     for (const r of rs) {
       const prev = existing.get(r.anomaly_key) as { severity: string; observed: number } | undefined;
       if (!prev) {
-        if (insert.run({ ...r, ...ORIGIN }).changes > 0) result.inserted.push(r);
+        if (insert.run(aWide
+          ? {
+              ...r,
+              user: null,
+              machine: null,
+              subject_id: subject,
+              // anomalies inherit their session's context via the workspace
+              // pass — an insert-time collector stamp would pre-empt it
+              execution_context_id: r.execution_context_id ?? null,
+            }
+          : { ...r, ...ORIGIN }).changes > 0) result.inserted.push(r);
         continue;
       }
       const escalates = (SEV_RANK[r.severity] ?? 0) > (SEV_RANK[prev.severity] ?? 0);
@@ -1666,6 +1835,11 @@ export interface CollectorState {
   last_offset: number;
   last_mtime: number | null;
   last_scanned_at: number | null;
+  /** Chained prefix digest over the bytes actually consumed (migration 26). */
+  prefix_sha256?: string | null;
+  head_sha256?: string | null;
+  inode?: number | null;
+  birthtime?: number | null;
 }
 
 export interface CollectorRunRow {
@@ -1678,6 +1852,14 @@ export interface CollectorRunRow {
   source_state: string;
   ok: number;
   notes: string | null;
+  /** Run-clock stamps (migration 25); NULL on a store that predates the columns. */
+  clock?: {
+    wall_ms: number;
+    boot_epoch: number | null;
+    rss_peak_bytes: number;
+    cpu_user_ms: number;
+    cpu_sys_ms: number;
+  };
 }
 
 /**
@@ -1687,11 +1869,23 @@ export interface CollectorRunRow {
  * to every liveness check.
  */
 export function recordCollectorRun(db: DB, r: CollectorRunRow): void {
+  const cols = (db.prepare('PRAGMA table_info(collector_runs)').all() as { name: string }[]).map((c) => c.name);
+  const hasClock = cols.includes('rss_peak_bytes') && !!r.clock;
   db.prepare(
-    `INSERT INTO collector_runs
-       (tool, started_at, duration_ms, files, parsed, inserted, source_state, ok, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(r.tool, r.started_at, r.duration_ms, r.files, r.parsed, r.inserted, r.source_state, r.ok, r.notes);
+    hasClock
+      ? `INSERT INTO collector_runs
+           (tool, started_at, duration_ms, files, parsed, inserted, source_state, ok, notes,
+            rss_peak_bytes, cpu_user_ms, cpu_sys_ms, boot_epoch, wall_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      : `INSERT INTO collector_runs
+           (tool, started_at, duration_ms, files, parsed, inserted, source_state, ok, notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    r.tool, r.started_at, r.duration_ms, r.files, r.parsed, r.inserted, r.source_state, r.ok, r.notes,
+    ...(hasClock
+      ? [r.clock!.rss_peak_bytes, r.clock!.cpu_user_ms, r.clock!.cpu_sys_ms, r.clock!.boot_epoch, r.clock!.wall_ms]
+      : []),
+  );
 }
 
 /** Latest run per collector — the four honest states a coverage strip renders from. */

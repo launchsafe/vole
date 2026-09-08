@@ -110,7 +110,7 @@ test('cost-state: the LAST line per session wins; a missing figure is NULL, neve
   assert.ok(s1);
   assert.equal(s1.totalCostUSD, 0.20247400000000002); // last line, not the mid-session copy
   assert.equal(s1.hasUnknownModelCost, true);
-  assert.equal(s1.modelUsage[0].model, 'claude-fable-5-1');
+  assert.equal(s1.modelUsage[0]!.model, 'claude-fable-5-1');
   const s2 = figures.find((f) => f.session_id === 's2');
   assert.ok(s2);
   assert.equal(s2.totalCostUSD, null); // interrupted/crashed session: no figure, never zero
@@ -314,10 +314,10 @@ test('reconcile_gap fires only on two consecutive days, with a deterministic now
   ];
   const out = detectReconcileGap(cells, 12345);
   assert.equal(out.length, 1);
-  assert.equal(out[0].anomaly_key, `reconcile:anthropic:idhmac:${DAY(2)}:tokens`);
-  assert.equal(out[0].rule, 'reconcile_gap');
-  assert.equal(out[0].threshold, 15);
-  assert.equal(out[0].detected_at, 12345);
+  assert.equal(out[0]!.anomaly_key, `reconcile:anthropic:idhmac:${DAY(2)}:tokens`);
+  assert.equal(out[0]!.rule, 'reconcile_gap');
+  assert.equal(out[0]!.threshold, 15);
+  assert.equal(out[0]!.detected_at, 12345);
   // not_comparable and unit-mismatched cells never fire
   assert.equal(
     detectReconcileGap([gapCell(DAY(0), 100, 10, { not_comparable: true }), gapCell(DAY(1), 100, 10, { not_comparable: true })], 1).length,
@@ -344,10 +344,10 @@ test('shadow_account_spend: no pull → no fire; subscription → no fire; blind
   assert.equal(detectShadowAccountSpend({ ...base, pull_ran: true, subscription: true }, 1).length, 0);
   const out = detectShadowAccountSpend({ ...base, pull_ran: true, subscription: false }, 1);
   assert.equal(out.length, 1);
-  assert.equal(out[0].rule, 'shadow_account_spend');
-  assert.equal(out[0].anomaly_key, `shadow_account_spend:anthropic:${DAY(0)}`);
-  assert.ok(out[0].title.includes('Console never saw this'));
-  assert.ok(out[0].detail.includes('qwen3.8-27b-fp8'));
+  assert.equal(out[0]!.rule, 'shadow_account_spend');
+  assert.equal(out[0]!.anomaly_key, `shadow_account_spend:anthropic:${DAY(0)}`);
+  assert.ok(out[0]!.title.includes('Console never saw this'));
+  assert.ok(out[0]!.detail.includes('qwen3.8-27b-fp8'));
   // zero-token (activity_only) days can never claim console blindness
   assert.equal(
     detectShadowAccountSpend(
@@ -363,11 +363,11 @@ test('shadow_account_spend: no pull → no fire; subscription → no fire; blind
 test('anthropic plan names the exact three GETs; subscription accounts degrade without calling', () => {
   const plan = anthropicPlan('2026-08-01', '2026-08-31');
   assert.equal(plan.requests.length, 3);
-  assert.ok(plan.requests[0].url.includes('/v1/organizations/usage_report/messages?starting_at=2026-08-01'));
-  assert.ok(plan.requests[0].url.includes('group_by[]=model'));
-  assert.ok(plan.requests[2].url.includes('/v1/organizations/cost_report'));
-  assert.equal(plan.requests[0].headers['anthropic-version'], '2023-06-01');
-  assert.equal(plan.requests[0].headers['x-api-key'], '<ANTHROPIC_ADMIN_KEY>'); // the value never appears
+  assert.ok(plan.requests[0]!.url.includes('/v1/organizations/usage_report/messages?starting_at=2026-08-01'));
+  assert.ok(plan.requests[0]!.url.includes('group_by[]=model'));
+  assert.ok(plan.requests[2]!.url.includes('/v1/organizations/cost_report'));
+  assert.equal(plan.requests[0]!.headers['anthropic-version'], '2023-06-01');
+  assert.equal(plan.requests[0]!.headers['x-api-key'], '<ANTHROPIC_ADMIN_KEY>'); // the value never appears
   const db = freshDb();
   db.prepare(
     `INSERT INTO vendor_identities (vendor, local_key_kind, local_key, plan, first_seen, last_seen)
@@ -415,12 +415,12 @@ test('copilot models.json is read in AIC, never converted, and lands as NULL-rat
   const cards = readCopilotRateCards([{ app: 'Code', root, marker: join(root, 'marker') }]);
   assert.equal(cards.length, 1);
   const c = cards[0];
-  assert.equal(c.model, 'gpt-5.1');
-  assert.equal(c.tiers.length, 2);
-  assert.equal(c.tiers[0].input_price, 1000);
-  assert.deepEqual(c.restricted_to, ['pro_plus', 'business']);
-  assert.equal(c.capabilities.max_context_window_tokens, 400000);
-  assert.ok(c.observed_at !== null);
+  assert.equal(c!.model, 'gpt-5.1');
+  assert.equal(c!.tiers.length, 2);
+  assert.equal(c!.tiers[0]!.input_price, 1000);
+  assert.deepEqual(c!.restricted_to, ['pro_plus', 'business']);
+  assert.equal(c!.capabilities.max_context_window_tokens, 400000);
+  assert.ok(c!.observed_at !== null);
   const db = freshDb();
   const n = insertCopilotRateCards(db, cards);
   assert.equal(n, 2);
@@ -507,7 +507,7 @@ test('loadBudgets and unit declarations: malformed files are ignored, effective_
   files.set('/good.json', JSON.stringify([{ scope: { tool: 'claude_code' }, cost_basis: 'anthropic_list', limit_usd: 10 }]));
   const budgets = loadBudgets(read, ['/bad.json', '/good.json']);
   assert.equal(budgets.length, 1);
-  assert.equal(budgets[0].cost_basis, 'anthropic_list');
+  assert.equal(budgets[0]!.cost_basis, 'anthropic_list');
 
   const decls = [
     { vendor: 'github_copilot', unit: 'AIC', usd_per_unit: null as number | null, effective_from: 0, author: 'admin' },

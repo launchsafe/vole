@@ -4,7 +4,8 @@ import { Database } from '../sqlite';
 import type { DB } from '../db';
 import type { Direction } from '../types';
 import { paths } from '../paths';
-import { asContent, classifyStatus, scanBuffer, packIdentity, toFingerprint } from './engine';
+import { asContent, classifyStatus, scanBuffer, packIdentity } from './engine';
+import { fingerprintOf } from './keychain';
 import { copilotSessionStorePaths } from './sinks';
 
 /**
@@ -128,7 +129,7 @@ interface ThreadItemRow {
  * watermark cursor: only rows with an ordinal above the stored cursor are
  * read, so polling is idempotent and covers turns whose rollout file rotated.
  */
-export function scanCodexThreadHistory(db: DB, now: number, fp: FingerprintFn = toFingerprint): StructuredOutcome {
+export function scanCodexThreadHistory(db: DB, now: number, fp: FingerprintFn = fingerprintOf): StructuredOutcome {
   const out: StructuredOutcome = { sink: 'codex-thread-history', storePresent: false, rowsScanned: 0, newSightings: 0, bytes: 0, notes: [] };
   const storePath = join(paths.codexHome(), 'thread_history_1.sqlite');
   const store = openSource(storePath);
@@ -221,7 +222,7 @@ function toMs(v: number | string | null | undefined): number | null {
  * 'vendor_table', and the turns table is scanned for secrets with the
  * prompt/response columns carrying direction.
  */
-export function scanCopilotSessionStore(db: DB, now: number, fp: FingerprintFn = toFingerprint): StructuredOutcome {
+export function scanCopilotSessionStore(db: DB, now: number, fp: FingerprintFn = fingerprintOf): StructuredOutcome {
   const out: StructuredOutcome = { sink: 'copilot-session-store', storePresent: false, rowsScanned: 0, newSightings: 0, bytes: 0, notes: [] };
   for (const storePath of copilotSessionStorePaths()) {
     const store = openSource(storePath);
@@ -332,7 +333,7 @@ function scanTurnsForSecrets(
  * code. Neither carries a model or an endpoint — provider stays NULL and the
  * registry tags 'no model attribution' so the blank column reads as a gap.
  */
-export function scanCursorTracking(db: DB, now: number, fp: FingerprintFn = toFingerprint): StructuredOutcome {
+export function scanCursorTracking(db: DB, now: number, fp: FingerprintFn = fingerprintOf): StructuredOutcome {
   const out: StructuredOutcome = { sink: 'cursor-tracking', storePresent: false, rowsScanned: 0, newSightings: 0, bytes: 0, notes: [] };
   const storePath = paths.cursorTrackingDb();
   const store = openSource(storePath);
@@ -380,7 +381,7 @@ export function scanCursorTracking(db: DB, now: number, fp: FingerprintFn = toFi
 // ── Antigravity brain + Devin acp-messages: no model attribution ──────────
 
 /** Antigravity brain/<id>/*.md: readable markdown plans, scanned as text. */
-export function scanAntigravityBrain(db: DB, now: number, fp: FingerprintFn = toFingerprint): StructuredOutcome {
+export function scanAntigravityBrain(db: DB, now: number, fp: FingerprintFn = fingerprintOf): StructuredOutcome {
   const out: StructuredOutcome = { sink: 'antigravity-brain', storePresent: false, rowsScanned: 0, newSightings: 0, bytes: 0, notes: [] };
   const brain = paths.antigravityBrain();
   if (!existsSync(brain)) {
@@ -421,7 +422,7 @@ export function scanAntigravityBrain(db: DB, now: number, fp: FingerprintFn = to
  * every table's string fields are scanned under a bounded row budget. No model,
  * no endpoint, no tokens — the ledger names the tool and the file, nothing else.
  */
-export function scanDevinAcpMessages(db: DB, now: number, fp: FingerprintFn = toFingerprint): StructuredOutcome {
+export function scanDevinAcpMessages(db: DB, now: number, fp: FingerprintFn = fingerprintOf): StructuredOutcome {
   const out: StructuredOutcome = { sink: 'devin-acp-messages', storePresent: false, rowsScanned: 0, newSightings: 0, bytes: 0, notes: [] };
   const root = paths.devinAcpMessages();
   if (!existsSync(root)) {
@@ -475,7 +476,7 @@ export function scanDevinAcpMessages(db: DB, now: number, fp: FingerprintFn = to
 }
 
 /** Runs every structured sink. The scanner entry point the integrator registers. */
-export function runStructuredSinks(db: DB, now = Date.now(), fp: FingerprintFn = toFingerprint): {
+export function runStructuredSinks(db: DB, now = Date.now(), fp: FingerprintFn = fingerprintOf): {
   ok: boolean;
   notes: string[];
 } {

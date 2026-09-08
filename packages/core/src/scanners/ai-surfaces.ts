@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -531,7 +532,7 @@ export function runtimeCensus(home: string): { surfaces: Surface[]; anomalies: A
   const models: string[] = [];
   const walk = (dir: string, depth: number) => {
     if (depth > 4) return;
-    let entries: string[];
+    let entries: Dirent[];
     try {
       entries = readdirSync(dir, { withFileTypes: true });
     } catch {

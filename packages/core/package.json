@@ -22,7 +22,21 @@
     "metrics": "tsx src/cli/metrics.ts",
     "retention": "tsx src/cli/retention.ts",
     "otlp": "tsx src/cli/otlp.ts",
-    "kanon": "tsx src/cli/kanon.ts"
+    "kanon": "tsx src/cli/kanon.ts",
+    "identity": "tsx src/cli/identity.ts",
+    "whoami": "tsx src/cli/identity.ts whoami",
+    "pilot": "tsx src/cli/identity.ts pilot",
+    "mcp": "tsx src/cli/mcp.ts",
+    "assess": "tsx src/cli/assess.ts",
+    "packs": "tsx src/cli/packs.ts",
+    "query": "tsx src/cli/query.ts",
+    "reconcile": "tsx src/cli/reconcile.ts",
+    "showback": "tsx src/cli/showback.ts",
+    "support": "tsx src/cli/support.ts",
+    "hosts": "tsx src/cli/hosts.ts",
+    "forget": "tsx src/cli/forget.ts",
+    "lifecycle": "tsx src/cli/lifecycle.ts",
+    "import": "tsx src/cli/import.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

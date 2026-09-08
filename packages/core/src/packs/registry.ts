@@ -226,7 +226,7 @@ export function discoverPacks(dirs?: [string, string]): PackRecord[] {
  * load_state column if a foundation migration opens.
  */
 export function loadStatePath(): string {
-  return join(paths.packPaths()[1], 'load-state.json');
+  return join(paths.packPaths()[1] ?? '', 'load-state.json');
 }
 
 function writeLoadState(records: PackRecord[], now: number): void {
@@ -388,7 +388,7 @@ export function activePack(db: DB, kind: string): PackRecord {
   return {
     kind: row.kind, version: row.version, checksum: row.checksum, built_at: builtin?.built_at ?? null,
     ring: null, entry_count: null, trust: row.trust, signature: row.signature, path: row.path,
-    source: row.path?.startsWith(paths.packPaths()[0]) ? 'managed' : 'user',
+    source: row.path?.startsWith(paths.packPaths()[0] ?? '\0managed') ? 'managed' : 'user',
     load_state: 'loaded', reason: null,
   };
 }

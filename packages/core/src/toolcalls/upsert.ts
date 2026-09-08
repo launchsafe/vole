@@ -16,7 +16,7 @@ export interface UpsertSpec {
   stamped?: boolean;
 }
 
-export function widenUpsert<T extends Record<string, unknown>>(
+export function widenUpsert<T extends object>(
   db: DB,
   spec: UpsertSpec,
   rows: T[],
@@ -43,7 +43,7 @@ export function widenUpsert<T extends Record<string, unknown>>(
     const now = Date.now();
     let changed = 0;
     for (const r of batch) {
-      const params: Record<string, unknown> = { ...r };
+      const params: Record<string, unknown> = { ...r } as Record<string, unknown>;
       for (const c of allCols) {
         // Stamp columns bind to @now, not to a row field.
         if (stamped && (c === 'first_seen' || c === 'last_seen')) continue;

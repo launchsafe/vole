@@ -8,6 +8,7 @@ import { collectOpencode } from './opencode';
 import { collectGrok } from './grok';
 import { collectDevin } from './devin';
 import { collectGemini } from './gemini';
+import { collectKiro } from './kiro';
 import { collectAider, collectGoose, collectAmp, collectContinue, collectCopilotCli, collectVscodeStores, collectOllamaLog } from './stores';
 
 export {
@@ -28,7 +29,8 @@ export {
   collectOllamaLog,
 };
 
-const REGISTRY: { tool: Tool; run: (db: DB) => CollectorResult }[] = [
+/** The collector vocabulary itself — the scope ledger and CLI consume it. */
+export const COLLECTOR_REGISTRY: { tool: Tool; run: (db: DB) => CollectorResult }[] = [
   { tool: 'claude_code', run: collectClaudeCode },
   { tool: 'codex', run: collectCodex },
   { tool: 'cursor', run: collectCursor },
@@ -44,12 +46,13 @@ const REGISTRY: { tool: Tool; run: (db: DB) => CollectorResult }[] = [
   { tool: 'copilot_cli', run: collectCopilotCli },
   { tool: 'vscode_chat', run: collectVscodeStores },
   { tool: 'ollama_local', run: collectOllamaLog },
+  { tool: 'kiro', run: collectKiro },
 ];
 
 /** Runs every collector, isolating failures so one bad source cannot stop the others. */
 export function collectAll(db: DB): CollectorResult[] {
   const results: CollectorResult[] = [];
-  for (const { tool, run } of REGISTRY) {
+  for (const { tool, run } of COLLECTOR_REGISTRY) {
     const started = Date.now();
     try {
       const r = run(db);

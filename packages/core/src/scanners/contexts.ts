@@ -246,9 +246,12 @@ function upsertSurface(db: DB, c: ExecutionContext, now: number): void {
  * matchable project and stay unstamped.
  */
 export function stampExecutionContexts(db: DB, contexts: ExecutionContext[]): { events: number; anomalies: number } {
+  // A workspace context OVERRIDES the insert-time collector context: both are
+  // facts about this machine, but 'this call ran in workspace X' is the finer
+  // truth, and the collector stamp is only the default before one is known.
   const stmt = db.prepare(`
     UPDATE usage_events SET execution_context_id = ?
-    WHERE source = 'live' AND execution_context_id IS NULL AND project = ?`);
+    WHERE source = 'live' AND project = ?`);
   let events = 0;
   for (const c of contexts) {
     if (c.kind !== 'workspace' || !c.detail) continue;
@@ -260,7 +263,7 @@ export function stampExecutionContexts(db: DB, contexts: ExecutionContext[]): { 
     UPDATE anomalies SET execution_context_id = (
       SELECT u.execution_context_id FROM usage_events u
       WHERE u.session_id = anomalies.session_id AND u.execution_context_id IS NOT NULL LIMIT 1)
-    WHERE execution_context_id IS NULL AND source = 'live'
+    WHERE source = 'live'
       AND EXISTS (SELECT 1 FROM usage_events u
                   WHERE u.session_id = anomalies.session_id AND u.execution_context_id IS NOT NULL)`).run().changes;
   return { events, anomalies };

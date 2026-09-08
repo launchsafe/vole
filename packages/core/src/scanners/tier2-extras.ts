@@ -279,7 +279,8 @@ export function agentEnvironmentsFromPs(): { pid: number; env: Record<string, st
   for (const line of out.split('\n')) {
     const m = line.match(/^\s*(\d+)\s+(.*)$/);
     if (!m) continue;
-    const [, pidS, rest] = m;
+    const pidS = m[1] ?? '0';
+    const rest = m[2] ?? '';
     if (!/\b(claude|codex)\b/i.test(rest)) continue;
     const env: Record<string, string> = {};
     for (const name of WATCH) {
@@ -476,13 +477,13 @@ export const tier2ExtrasScanner: Scanner = {
   run: () => {
     const db: DB = openDb();
     const now = Date.now();
+    // aiDependencySurfaces / siteCapabilitySurfaces / ghostExtensionSurfaces are
+    // retired: the deep browser-grants / ai-deps / editor-census scanners own
+    // those planes with richer rows; the shallow legs only produced duplicates.
     const surfaces = [
       ...modelRouteSurfaces(db),
       ...agentHomeRedirectSurfaces(),
-      ...aiDependencySurfaces(),
-      ...siteCapabilitySurfaces(),
       ...launchContextSurfaces(),
-      ...ghostExtensionSurfaces(),
     ];
     const upsert = db.prepare(`
       INSERT INTO ai_surfaces (surface_key, kind, name, path, evidence, version, extra, first_seen, last_seen)

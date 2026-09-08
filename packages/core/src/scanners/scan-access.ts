@@ -80,7 +80,7 @@ export function probeFile(file: string): ProbeResult {
  * the app/collector distinction comes from XPC_SERVICE_NAME, the uid from the OS.
  */
 export function launchContext(): string {
-  return `uid${process.getuid()}:${process.env.XPC_SERVICE_NAME ? 'app' : 'cli'}`;
+  return `uid${process.getuid?.() ?? -1}:${process.env.XPC_SERVICE_NAME ? 'app' : 'cli'}`;
 }
 
 /** The read access table's last row for a root, before this pass rewrites it. */

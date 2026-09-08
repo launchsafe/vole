@@ -5,6 +5,7 @@ import { detectErrorStorms } from './error-storm';
 import { detectRateLimitPressure } from './rate-limit';
 import { detectContextPressure } from './context-pressure';
 import { detectReroutedModels } from './rerouted-model';
+import { IDENTITY_RULE_IDS } from '../identity/rules';
 
 export { detectBillableBurn, detectRepeatLoops, detectErrorStorms, detectRateLimitPressure, detectContextPressure, detectReroutedModels };
 export { contextOf, windowOf } from './context-pressure';
@@ -24,6 +25,27 @@ export const RULE_IDS = [
   'rate_limit_pressure',
   'context_pressure',
   'rerouted_model',
+  // ── scanner-fired rules: rows insert via insertAnomalies from the scanner
+  // lane, but their ids live here so a rule epoch forces one full detect pass
+  // over history (the collector compares this list each pass).
+  'coverage_degraded',
+  'foreign_root_transcript',
+  'agent_home_moved',
+  'evidence_expiring',
+  'secret_reappeared_after_rotation',
+  // ── identity (tier 3): see identity/rules.ts
+  ...IDENTITY_RULE_IDS,
+  // ── claim violations (tier 5 #51), fired from the collect loop
+  'sandbox_claim_violated',
+  'network_claim_violated',
+  // ── vendor plane (tier 8): DB-driven, run via rulesAfterPull
+  'shadow_account_spend',
+  'reconcile_gap',
+  // ── lifecycle (tier 8)
+  'activity_after_departure',
+  // ── budgets (tier 8): verdicts computed in the collect pass
+  'budget_exceeded',
+  'budget_indeterminate',
 ] as const;
 
 /** Runs every rule. Pure: no DB access, so rules stay unit-testable in isolation. */

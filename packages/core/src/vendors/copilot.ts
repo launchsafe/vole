@@ -96,11 +96,11 @@ export function readCopilotRateCards(roots?: EditorRoot[]): CopilotRateCard[] {
         .filter((t) => prices[t])
         .map((t) => ({
           tier: t,
-          input_price: num(prices[t].input_price),
-          output_price: num(prices[t].output_price),
-          cache_price: num(prices[t].cache_price),
-          cache_write_price: num(prices[t].cache_write_price),
-          context_max: num(prices[t].context_max),
+          input_price: num(prices[t]!.input_price),
+          output_price: num(prices[t]!.output_price),
+          cache_price: num(prices[t]!.cache_price),
+          cache_write_price: num(prices[t]!.cache_write_price),
+          context_max: num(prices[t]!.context_max),
         }));
       if (!tiers.length) continue;
       out.push({

@@ -174,7 +174,7 @@ export function policyLayerPaths(): { agent: string; layer: string; path: string
 }
 
 export function probePolicyLayers(): PolicyLayer[] {
-  const out = policyLayerPaths().map((l) => {
+  const out: PolicyLayer[] = policyLayerPaths().map((l) => {
     try {
       const st = statSync(l.path);
       const text = readFileSync(l.path, 'utf8');

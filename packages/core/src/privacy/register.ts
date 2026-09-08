@@ -225,9 +225,11 @@ export function buildDsar(db: DB, opts: { principalKey?: string; now?: number } 
     n: r.n,
   }));
   const retention = loadRetentionPolicy();
-  const deleted = db.prepare(
+  const deleted = (db.prepare(
     `SELECT data_class, deleted_rows, ran_at FROM store_prunes ORDER BY ran_at DESC LIMIT 50`,
-  ).all() as { data_class: string; deleted_rows: number; ran_at: number }[];
+  ).all() as { data_class: string; deleted_rows: number; ran_at: number }[]).map((d) => ({
+    data_class: d.data_class, rows: d.deleted_rows, ran_at: d.ran_at,
+  }));
   return {
     subject: subject ?? 'pseudonymous principal (HMAC — the store holds no name or email)',
     data_held: { sessions, usage_rows: usageRows, incident_rules: incidentRules },
@@ -310,7 +312,7 @@ export function worksCouncilPack(
   return {
     generated_at: now,
     scope: 'one endpoint — fleet-wide numbers do not exist until sync is on',
-    date_range: range ?? null,
+    date_range: range ? { first_event: range.a, last_event: range.b } : null,
     fact_tables: factTables,
     personal_data_fields: personal.personal,
     exported_fields_total: personal.total,
@@ -329,7 +331,7 @@ export function worksCouncilPack(
 
 /** Counts identity/digest (personal-data) fields in the export registry. */
 export function countPersonalDataFields(
-  registry: { transform: string; export: string }[],
+  registry: readonly { transform: string; export: string }[],
 ): { personal: number; total: number } {
   const exported = registry.filter((f) => f.export !== 'never');
   return {

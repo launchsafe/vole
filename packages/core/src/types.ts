@@ -15,7 +15,10 @@ export type Tool =
   | 'aider'
   | 'vscode_chat'
   | 'clines'
-  | 'ollama_local';
+  | 'ollama_local'
+  | 'kiro'
+  /** Machine-level rows (content_stale, export_drop, log_source_stopped, reconcile_gap): Vole itself, not an agent. */
+  | 'vole';
 
 /**
  * How much we actually know about a row's numbers. Only two states — there is no
@@ -77,6 +80,17 @@ export interface UsageEvent {
    * permission time — the derived speed is a lower bound); NULL = unknown.
    */
   duration_kind: 'measured' | 'turn_scoped' | null;
+  /** Insert-time origin stamps (ORIGIN spread in db.ts) — present on stored rows. */
+  user?: string | null;
+  machine?: string | null;
+  subject_id?: string | null;
+  execution_context_id?: string | null;
+  /** When the collector observed the row — the observation-lag read model's numerator. */
+  observed_at?: number | null;
+  /** Why a cost_usd figure means what it means (see pricing.ts). */
+  cost_basis?: import('./pricing').CostBasis | null;
+  /** The pricing pack revision that priced this row. */
+  pricing_rev?: number | null;
 }
 
 export type AnomalyRule =
@@ -158,7 +172,11 @@ export type AnomalyRule =
   | 'reconcile_gap' // tier8
   | 'activity_after_departure' // tier8
   | 'budget_exceeded' // tier8
-  | 'budget_indeterminate'; // tier8: budget verdict cannot be computed
+  | 'budget_indeterminate' // tier8: budget verdict cannot be computed
+  | 'sandbox_claim_violated' // tier5: a call wrote outside its declared sandbox roots
+  | 'network_claim_violated' // tier5: a fetch-shaped call under a no-network claim
+  | 'evidence_expiring' // tier4: retained sighting near the vendor's deletion horizon
+  | 'secret_reappeared_after_rotation'; // tier4: a rotated key's fingerprint sighted again
 
 export type Severity = 'info' | 'warn' | 'critical';
 
@@ -179,6 +197,8 @@ export interface Anomaly {
   confidence: Confidence;
   source: Source;
   detected_at: number;
+  /** Origin quarantine stamp (migration 21); anomalies normally inherit their session's context. */
+  execution_context_id?: string | null;
 }
 
 /** Codex is the only source exposing its own rate-limit headroom. Fuels `rate_limit_pressure`. */
@@ -224,11 +244,8 @@ export interface CollectorResult {
 // an admin — never inferred silently — and every column stays NULL until one of
 // those two things happens.
 
-/** Why a cost_usd figure means what it means (tier 8: cost_basis). */
-export type CostBasis =
-  | 'list_equivalent' // computed from published list rates (computeCost)
-  | 'provider_reported' // the vendor's own local figure (OpenCode d.cost)
-  | 'free_tier'; // a genuinely-free model, not an unknown rate
+/** Why a cost_usd figure means what it means (tier 8: cost_basis) — see pricing.ts. */
+export type { CostBasis } from './pricing';
 
 /** Account class resolved from the auth path (tier 3) — never from model names. */
 export type AccountClass =

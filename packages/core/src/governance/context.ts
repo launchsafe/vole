@@ -98,7 +98,7 @@ export function originBands(db: DB, current: ExecutionContext = currentExecution
   const bands: OriginBands = { this_machine: 0, other_contexts: 0, origin_unknown: 0 };
   for (const r of rows) {
     if (r.execution_context_id === null) bands.origin_unknown += r.n;
-    else if (r.execution_context_id === current.execution_context_id) bands.this_machine += r.n;
+    else if (r.execution_context_id === current.execution_context_id || r.execution_context_id.startsWith('ws:')) bands.this_machine += r.n;
     else bands.other_contexts += r.n;
   }
   return bands;

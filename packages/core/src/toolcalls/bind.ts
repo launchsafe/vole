@@ -21,7 +21,8 @@ export type CallStatus = 'success' | 'error' | 'denied' | 'none';
 export type StatusSource = 'result_flag' | 'exit_code' | 'log_flag' | 'turn_status';
 export type Authority = 'denied' | 'pre_authorised' | 'posture_waived' | 'no_record';
 export type CallDurationKind = 'measured' | 'turn_scoped' | null;
-export type AuthorizationBasis = 'bypass_no_gate' | 'mode_auto' | 'rule_matched' | 'human_denied' | 'unknown';
+export type { AuthorizationBasis } from '../types';
+import type { AuthorizationBasis } from '../types';
 
 export interface ToolCallRow {
   tool_call_key: string;
@@ -52,15 +53,19 @@ export interface ToolCallRow {
 }
 
 /** permission_mode / sandbox raw string -> normalised autonomy + rank. */
+// The autonomy labels are the posture-weight ladder (prompt_each <
+// classifier_gated < accept_edits < full_auto) — one vocabulary, not two.
 const AUTONOMY: Record<string, { autonomy: string; rank: string }> = {
   'bypassPermissions': { autonomy: 'full_auto', rank: 'bypass' },
-  'acceptEdits': { autonomy: 'auto_edit', rank: 'accept_edits' },
-  'default': { autonomy: 'default', rank: 'default' },
-  'plan': { autonomy: 'plan', rank: 'plan' },
+  'acceptEdits': { autonomy: 'accept_edits', rank: 'accept_edits' },
+  'default': { autonomy: 'prompt_each', rank: 'default' },
+  'plan': { autonomy: 'classifier_gated', rank: 'plan' },
+  'planMode': { autonomy: 'classifier_gated', rank: 'plan' },
+  'auto': { autonomy: 'classifier_gated', rank: 'plan' },
   // Codex sandbox_policy.type values
   'danger-full-access': { autonomy: 'full_auto', rank: 'bypass' },
-  'workspace-write': { autonomy: 'auto_edit', rank: 'accept_edits' },
-  'read-only': { autonomy: 'read_only', rank: 'default' },
+  'workspace-write': { autonomy: 'accept_edits', rank: 'accept_edits' },
+  'read-only': { autonomy: 'prompt_each', rank: 'default' },
 };
 
 export function autonomyFor(modeRaw: string | null | undefined): { autonomy: string; rank: string } | null {

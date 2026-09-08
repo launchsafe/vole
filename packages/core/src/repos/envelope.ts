@@ -197,8 +197,8 @@ export function classifyFileWrites(db: DB, now: number): { classified: number; v
 
 export interface EditImage {
   filePath: string;
-  sessionId: string | null;
-  ts: number | null;
+  sessionId?: string | null;
+  ts?: number | null;
   /** Claude toolUseResult.originalFile — the pre-image */
   originalFile?: string | null;
   oldString?: string | null;
@@ -411,22 +411,22 @@ export function installHooksFromEdit(e: EditImage): InstallHook[] {
   if (post === null) return [];
   const postDoc = (() => {
     try {
-      return JSON.parse(post) as Record<string, { scripts?: Record<string, string> }>;
+      return JSON.parse(post) as { scripts?: Record<string, string> };
     } catch {
       return null;
     }
   })();
   const preDoc = (() => {
     try {
-      return JSON.parse(e.originalFile ?? '{}') as Record<string, { scripts?: Record<string, string> }>;
+      return JSON.parse(e.originalFile ?? '{}') as { scripts?: Record<string, string> };
     } catch {
       return null;
     }
   })();
   if (!postDoc) return [];
   const out: InstallHook[] = [];
-  const scripts = postDoc.scripts ?? {};
-  const preScriptsMap = preDoc?.scripts ?? {};
+  const scripts: Record<string, string> = { ...(postDoc.scripts ?? {}) };
+  const preScriptsMap: Record<string, string> = { ...(preDoc?.scripts ?? {}) };
   for (const key of INSTALL_SCRIPT_KEYS) {
     const cmd = scripts[key];
     if (typeof cmd !== 'string') continue;
@@ -454,7 +454,7 @@ export function installHookAnomaly(e: EditImage, hook: InstallHook, now: number)
     rule: 'install_hook_added' as const,
     severity: 'critical' as const,
     tool: 'claude_code' as const,
-    session_id: e.sessionId,
+    session_id: e.sessionId ?? null,
     model: null,
     window_start: e.ts ?? now,
     window_end: e.ts ?? now,

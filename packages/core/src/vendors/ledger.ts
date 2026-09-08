@@ -11,6 +11,7 @@
  * as ground truth.
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import { join } from 'node:path';
 import type { DB } from '../db';
 import { paths } from '../paths';
@@ -54,7 +55,7 @@ interface CostStateLine {
 }
 
 function walkJsonl(root: string, out: string[]): void {
-  let entries: string[];
+  let entries: Dirent[];
   try {
     entries = readdirSync(root, { withFileTypes: true });
   } catch {
@@ -673,11 +674,12 @@ export function detectReconcileGap(cells: GapCell[], now = Date.now()): Anomaly[
   for (const c of exceeded.values()) {
     const prev = exceeded.get(`${c.vendor}|${c.identity}|${c.direction}|${c.day - DAY_MS}`);
     if (!prev) continue; // single-day spikes are bucket skew until they repeat
-    const pct = Math.abs(c.vendor_value - c.local_value as number) / c.vendor_value;
+    if (c.local_value == null) continue; // a NULL local figure is not_comparable, never a fake gap
+    const pct = Math.abs(c.vendor_value - c.local_value) / c.vendor_value;
     out.push({
       anomaly_key: `reconcile:${c.vendor}:${c.identity}:${c.day}:${c.direction}`,
       rule: 'reconcile_gap',
-      severity: 'medium',
+      severity: 'warn',
       tool: VENDOR_TOOL[c.vendor] ?? 'claude_code',
       session_id: null,
       model: null,
@@ -732,7 +734,7 @@ export function detectShadowAccountSpend(input: ShadowInput, now = Date.now()): 
     out.push({
       anomaly_key: `shadow_account_spend:${input.vendor}:${day}`,
       rule: 'shadow_account_spend',
-      severity: 'high',
+      severity: 'critical',
       tool: VENDOR_TOOL[input.vendor] ?? 'claude_code',
       session_id: null,
       model: null,

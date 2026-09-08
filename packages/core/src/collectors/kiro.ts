@@ -68,18 +68,9 @@ function payloadOf<T>(p: Record<string, unknown> | null): T | null {
   return p as T;
 }
 
-/**
- * CollectorResult with the tool string loosened: 'kiro' is not in the Tool
- * union yet (types.ts is a coordinated seam), and kiro.log carries no token
- * data, so no usage_events row can honestly exist — the result exists only to
- * carry the ledger rows. When the union widens, tighten this to CollectorResult
- * and register the collector in collectors/index (integration).
- */
-export interface KiroResult extends Omit<CollectorResult, 'tool'> {
-  tool: string;
-}
-
-export function collectKiro(db: DB): KiroResult {
+/** kiro.log carries no token data, so no usage_events row can honestly
+ * exist — the result exists only to carry the ledger rows. */
+export function collectKiro(db: DB): CollectorResult {
   const root = join(home(), '.kiro', 'logs');
   const notes: string[] = [];
   const calls: ToolCallRow[] = [];

@@ -44,6 +44,7 @@ import { Database } from '../sqlite';
 import { paths } from '../paths';
 import { rateFor } from '../pricing';
 import { walkTranscripts } from '../collectors/claude-code';
+import { verifyIdentity } from '../identity/verify';
 
 /** `cr` is a flat cache-read $/MTok where a model deviates from the 0.1x rule. */
 const RATES: Record<string, { i: number; o: number; cr?: number }> = {
@@ -124,6 +125,27 @@ const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 //      raw paths, tool lists) must look like what the writers produce: short,
 //      single-line. Anything long or multi-line is content-shaped and fails.
 const CONTENT_ARGS = process.argv.slice(2);
+// ── verify --identity: the store holds no cleartext identity it should not ─────
+if (CONTENT_ARGS.includes('--identity')) {
+  const dbFileI = paths.db();
+  if (!existsSync(dbFileI)) {
+    console.log('verify --identity');
+    console.log(`  FAIL — no store at ${dbFileI}.`);
+    process.exit(1);
+  }
+  const dbi = new Database(dbFileI, { readonly: true, fileMustExist: true });
+  const r = verifyIdentity(dbi);
+  console.log('verify --identity — the pseudonymisation claim, scanned');
+  console.log(`  columns checked ${r.columnsChecked}`);
+  console.log(`  rows checked    ${r.rowsChecked}`);
+  for (const f of r.findings) console.log(`    ✗ ${f}`);
+  console.log(r.ok
+    ? '\n  PASS — no cleartext identity where a digest belongs; `vole identity verify` is the same check.'
+    : '\n  FAIL — cleartext identity found above.');
+  dbi.close();
+  process.exit(r.ok ? 0 : 1);
+}
+
 if (CONTENT_ARGS.includes('--content')) {
   const dbFileC = paths.db();
   if (!existsSync(dbFileC)) {
@@ -154,7 +176,9 @@ if (CONTENT_ARGS.includes('--content')) {
       // Foundation: case identity, structured detail, pack revision, asset scope,
       // and the denormalised triage state the disposition ledger converges to.
       'execution_context_id', 'case_key', 'detail_key', 'detail_params', 'content_rev',
-      'asset_id', 'asset_tier', 'asset_rev', 'state', 'state_ts', 'state_actor'],
+      'asset_id', 'asset_tier', 'asset_rev', 'state', 'state_ts', 'state_actor',
+      // the pseudonymised origin stamp (migration 27)
+      'subject_id'],
     collector_state: ['source_path', 'tool', 'last_offset', 'last_mtime', 'last_scanned_at',
       // Foundation: source-prefix integrity (tier 7 chained digests) + file identity.
       'prefix_sha256', 'head_sha256', 'inode', 'birthtime'],
@@ -292,7 +316,8 @@ if (CONTENT_ARGS.includes('--content')) {
       'blobs', 'started_at'],
     upload_decisions: ['upload_key', 'uploads_enabled', 'upload_reason', 'trace_upload_source',
       'telemetry_mode', 'data_collection_disabled', 'in_env_trace_upload',
-      'in_cfg_telemetry_trace_upload', 'in_remote_trace_upload_enabled', 'has_remote_settings', 'ts'],
+      'in_cfg_telemetry_trace_upload', 'in_remote_trace_upload_enabled', 'has_remote_settings',
+      'in_requirement_pin', 'telemetry_source', 'ts'],
     // Posture + pack plane.
     overrides: ['override_key', 'agent', 'source_file', 'kind', 'entry', 'first_seen', 'last_seen'],
     posture_mcp_servers: ['source', 'config_path', 'client', 'server_name', 'mcp_identity',

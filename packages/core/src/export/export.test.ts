@@ -247,12 +247,12 @@ test('outbox: byte cap backpressure drops oldest pending with an anomaly', () =>
 test('sink capability matrix states delivery semantics truthfully', () => {
   const m = capabilityMatrix();
   const byId = Object.fromEntries(m.map((s) => [s.id, s]));
-  assert.equal(byId.elastic.delivery, 'exactly-once-by-id');
-  assert.equal(byId.splunk.delivery, 'at-least-once');
-  assert.equal(byId.datadog.delivery, 'at-least-once');
-  assert.equal(byId.syslog.delivery, 'at-most-once');
-  assert.equal(byId.cef.delivery, 'at-most-once');
-  assert.deepEqual(byId.cef.shapes, ['vole.incident.v1'], 'CEF is incidents only');
+  assert.equal(byId.elastic!.delivery, 'exactly-once-by-id');
+  assert.equal(byId.splunk!.delivery, 'at-least-once');
+  assert.equal(byId.datadog!.delivery, 'at-least-once');
+  assert.equal(byId.syslog!.delivery, 'at-most-once');
+  assert.equal(byId.cef!.delivery, 'at-most-once');
+  assert.deepEqual(byId.cef!.shapes, ['vole.incident.v1'], 'CEF is incidents only');
   assert.ok(m.every((s) => s.network), 'every sink crosses the network: opt-in, default-off');
 });
 
@@ -509,7 +509,7 @@ test('public query tables preserve NULL and ship the unpriced counter', () => {
       ev({ event_key: 'p1', cost_usd: 0.5 }),
       ev({ event_key: 'p2', cost_usd: null, model: null }),
     ]);
-    const agents = PUBLIC_TABLES.vole_agents.rows(db) as {
+    const agents = PUBLIC_TABLES.vole_agents!.rows(db) as {
       tool: string; events: number; cost_usd: number | null; unpriced_events: number;
     }[];
     assert.equal(agents.length, 1);
@@ -517,7 +517,7 @@ test('public query tables preserve NULL and ship the unpriced counter', () => {
     assert.equal(agents[0]!.cost_usd, 0.5);
     assert.equal(agents[0]!.unpriced_events, 1, 'the denominator beside the aggregate');
 
-    const incidents = PUBLIC_TABLES.vole_incidents.rows(db);
+    const incidents = PUBLIC_TABLES.vole_incidents!.rows(db);
     assert.equal(incidents.length, 0, 'no live incidents, empty not fabricated');
     // the ATC pack and Fleet queries reference the public tables
     const atc = atcConfig();

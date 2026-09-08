@@ -25,14 +25,9 @@ import { paths } from '../paths';
 
 const BYTE_BUDGET = 24 * 1024 * 1024; // per pass, across all sinks
 
-/** Rules this batch needs that the AnomalyRule union does not carry yet. */
-type ExtraRule = 'evidence_expiring' | 'secret_reappeared_after_rotation';
-type DlpAnomaly = Omit<Anomaly, 'rule'> & { rule: AnomalyRule | ExtraRule };
-
-function insertDlpAnomalies(db: DB, rows: DlpAnomaly[]): void {
-  // integration seam: widen AnomalyRule in types.ts with the two literals and
-  // delete this cast — types.ts belongs to the foundation seam, not this batch.
-  insertAnomalies(db, rows as Anomaly[]);
+/** Rules this batch needs — now carried by the AnomalyRule union (types.ts). */
+function insertDlpAnomalies(db: DB, rows: Anomaly[]): void {
+  insertAnomalies(db, rows);
 }
 
 // ── evidence expiry (#133): the vendor deletes its own transcripts ──────────
@@ -137,7 +132,7 @@ export const dlpScanner: Scanner = {
       'SELECT cursor_kind, cursor_text, cursor_int, inode, backfill_done, last_seen_at FROM dlp_scan_state WHERE sink_key = ?',
     );
 
-    const anomalies: DlpAnomaly[] = [];
+    const anomalies: Anomaly[] = [];
     let budget = BYTE_BUDGET;
     let scanned = 0;
     let skipped = 0;

@@ -128,10 +128,13 @@ export function principalForUser(db: DB, user: string | null): {
 } | null {
   if (!user) return null;
   return (
-    db.prepare(
+    (db.prepare(
       `SELECT principal_key, display, principal_source, first_seen, last_seen, valid_from, valid_to
        FROM principals WHERE principal_key = ?`,
-    ).get(principalKey(user)) ?? null
+    ).get(principalKey(user)) as {
+      principal_key: string; display: string; principal_source: string | null;
+      first_seen: number; last_seen: number; valid_from: number | null; valid_to: number | null;
+    } | undefined) ?? null
   );
 }
 

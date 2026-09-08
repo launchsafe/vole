@@ -242,8 +242,9 @@ export function codexClaimViolations(
       .sort((a, b) => a.ts - b.ts)
       .at(-1);
     if (!claim || !c.path) continue;
+    const callPath = c.path;
     if (claim.sandbox_type === 'read-only' || claim.sandbox_type === 'workspace-write') {
-      const inside = claim.workspace_roots.some((r) => c.path === r || c.path.startsWith(r.endsWith('/') ? r : `${r}/`));
+      const inside = claim.workspace_roots.some((r) => callPath === r || callPath.startsWith(r.endsWith('/') ? r : `${r}/`));
       if (!inside) {
         out.push({
           kind: 'sandbox',

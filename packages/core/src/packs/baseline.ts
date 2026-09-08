@@ -98,11 +98,11 @@ export function driftDiff(db: DB, baseline: Baseline | null = readBaseline()): {
   const rows: DriftRow[] = [];
   for (const [key, hash] of after) {
     const prev = before.get(key);
-    if (prev === undefined) rows.push({ kind: key.split('|')[0], identity: key.split('|').slice(1).join('|'), before: null, after: hash, state: 'added' });
-    else if (prev !== hash) rows.push({ kind: key.split('|')[0], identity: key.split('|').slice(1).join('|'), before: prev, after: hash, state: 'changed' });
+    if (prev === undefined) rows.push({ kind: key.split('|')[0]!, identity: key.split('|').slice(1).join('|'), before: null, after: hash, state: 'added' });
+    else if (prev !== hash) rows.push({ kind: key.split('|')[0]!, identity: key.split('|').slice(1).join('|'), before: prev, after: hash, state: 'changed' });
   }
   for (const [key, hash] of before) {
-    if (!after.has(key)) rows.push({ kind: key.split('|')[0], identity: key.split('|').slice(1).join('|'), before: hash, after: null, state: 'removed' });
+    if (!after.has(key)) rows.push({ kind: key.split('|')[0]!, identity: key.split('|').slice(1).join('|'), before: hash, after: null, state: 'removed' });
   }
   return { baseline_captured_at: baseline.captured_at, rows };
 }

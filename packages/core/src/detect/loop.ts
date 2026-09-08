@@ -17,15 +17,14 @@ const IDENTICAL_REPEATS = 5;
 /** An A-B-A-B cycle needs at least 4 alternating calls to be a cycle. */
 const ABAB_MIN = 4;
 
-/** The ledger-call shape the signatures need (CallLite satisfies it structurally). */
+/** The ledger-call shape the signatures need (CallLite and PairCall satisfy it structurally). */
 export interface LoopCall {
   id: number;
-  key: string;
   tool: string;
   name: string;
   args_digest: string | null;
-  session: string | null;
-  agent: string | null;
+  session?: string | null;
+  agent?: string | null;
   ts: number;
 }
 

@@ -83,14 +83,14 @@ test('four-state authority: denied / posture_waived / pre_authorised / no_record
 test('a later denial supersedes an earlier posture_waived in the store', () => {
   const db = store();
   insertToolCalls(db, [call({ tool_call_key: 'c2', permission_mode: 'bypassPermissions' })]);
-  let row = db.prepare('SELECT authority, authorization_basis FROM tool_calls WHERE tool_call_key = ?').get('c2') as { authority: string; authorization_basis: string };
+  let row = db.prepare('SELECT authority, authorization_basis, authority_evidence FROM tool_calls WHERE tool_call_key = ?').get('c2') as { authority: string; authorization_basis: string; authority_evidence: string | null };
   assert.equal(row.authority, 'posture_waived');
   assert.equal(row.authorization_basis, 'bypass_no_gate');
   insertToolCalls(db, [call({ tool_call_key: 'c2', denial_kind: 'automode-blocked' })]);
-  row = db.prepare('SELECT authority, authorization_basis, authority_evidence FROM tool_calls WHERE tool_call_key = ?').get('c2') as { authority: string; authorization_basis: string; authority_evidence: string };
+  row = db.prepare('SELECT authority, authorization_basis, authority_evidence FROM tool_calls WHERE tool_call_key = ?').get('c2') as { authority: string; authorization_basis: string; authority_evidence: string | null };
   assert.equal(row.authority, 'denied');
   assert.equal(row.authorization_basis, 'human_denied');
-  assert.match(row.authority_evidence, /automode-blocked/);
+  assert.match(row.authority_evidence ?? '', /automode-blocked/);
 });
 
 test('mcp__ split: server and tool_name become separate dimensions', () => {
@@ -358,7 +358,7 @@ test('autonomy_intervals: contiguous posture runs with the widened columns', () 
   );
   assert.equal(runs.length, 2);
   assert.equal(runs[0]!.mode_raw, 'default');
-  assert.equal(runs[0]!.autonomy, 'default');
+  assert.equal(runs[0]!.autonomy, 'prompt_each');
   assert.equal(runs[0]!.errors, 1);
   assert.equal(runs[1]!.autonomy, 'full_auto');
   assert.equal(runs[1]!.denied, 1);

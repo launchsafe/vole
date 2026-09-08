@@ -131,7 +131,7 @@ export function noiseBudgetRows(db: DB, budget: NoiseBudget = loadNoiseBudget())
   }
   for (const [key, n] of overall) {
     if (n > budget.overall_per_week) {
-      const [machine, week] = key.split('|');
+      const [machine = '', week = ''] = key.split('|');
       exceeded.push({
         anomaly_key: `noise_budget:${machineHash(machine)}:__overall__:${week}`,
         rule: '__overall__', machine, iso_week: week,

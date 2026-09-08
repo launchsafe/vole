@@ -13,6 +13,7 @@ import {
   rankOf,
 } from './rules/posture-weight';
 import { pairCrossScope, pairDeniedThenAchieved, pairDenialThenReshape, type PairCall } from './rules/call-pairing';
+import { rebuildAutonomyIntervals } from '../toolcalls/posture';
 import { scanInterruptMarkers } from './rules/interrupts';
 import {
   diffWatchedKeys,
@@ -1212,22 +1213,27 @@ function detectPagedBulkRead(sessions: Map<string, CallLite[]>, now: number): An
 
 /** tool_first_seen: a tool name appears for the first time — the MCP dimension. */
 function detectToolFirstSeen(db: DB, now: number): Anomaly[] {
+  // Keyed on the (tool, server, tool_name) triple: `mcp__searxng__search` and
+  // `mcp__searxng__web_search` are two capabilities on one server, and a
+  // second server exposing the same tool_name is a NEW surface.
   const rows = db
-    .prepare(`SELECT name, MIN(ts) AS first FROM tool_calls GROUP BY name HAVING first > ?`)
-    .all(now - 7 * 24 * 3600_000) as { name: string; first: number }[];
-  return rows.map((r) =>
-    anom({
-      key: `tool_first_seen:${r.name}`,
+    .prepare(`SELECT tool, server, tool_name, MIN(ts) AS first FROM tool_calls
+       GROUP BY tool, server, tool_name HAVING first > ?`)
+    .all(now - 7 * 24 * 3600_000) as { tool: string; server: string | null; tool_name: string; first: number }[];
+  return rows.map((r) => {
+    const surface = r.server ? `${r.tool} ${r.server} ${r.tool_name}` : `${r.tool} ${r.tool_name}`;
+    return anom({
+      key: `tool_first_seen:${r.tool}:${r.server ?? '-'}:${r.tool_name}`,
       rule: 'tool_first_seen',
       severity: 'info',
       session: null,
       ws: r.first,
       we: r.first,
-      title: `New tool surface: ${r.name}`,
-      detail: `The ledger's first sighting of "${r.name}" was ${new Date(r.first).toISOString()}. A tool nobody has used before is a capability that just appeared.`,
+      title: `New tool surface: ${surface}`,
+      detail: `The ledger's first sighting of "${surface}" was ${new Date(r.first).toISOString()}. A tool nobody has used before is a capability that just appeared.`,
       observed: 1,
-    }),
-  );
+    });
+  });
 }
 
 // ── 48. posture-weighted severity across every rule ──────────────────────────
@@ -1256,42 +1262,13 @@ export function weightByPosture(a: Anomaly, intervals: PostureInterval[]): Anoma
 // ── the autonomy intervals table: posture as a timeline ──────────────────────
 
 /**
- * Rebuilt every pass (idempotent by rebuild). Intervals are runs of consecutive
- * calls sharing one permission_mode within a (session, agent) — the call joins to
- * the posture in force at its own timestamp, not a session-level label. Calls
- * before the first mode stamp stay autonomy NULL ('unknown', never 'default').
+ * Delegates to toolcalls/posture.rebuildAutonomyIntervals: the old DELETE+rebuild
+ * here wiped the widened posture columns (fs_policy, approval_policy,
+ * sandbox_policy, permission_profile) every pass. The toolcalls version upserts
+ * NULL-only, so a stored posture fact from a richer source is never re-derived away.
  */
 export function buildAutonomyIntervals(db: DB): number {
-  db.exec('DELETE FROM autonomy_intervals');
-  const rows = db
-    .prepare(`SELECT session_id, agent_id, ts, permission_mode, status FROM tool_calls
-       WHERE session_id IS NOT NULL ORDER BY session_id, COALESCE(agent_id, 'main'), ts, id`)
-    .all() as { session_id: string; agent_id: string | null; ts: number; permission_mode: string | null; status: string | null }[];
-  const insert = db.prepare(`INSERT OR IGNORE INTO autonomy_intervals
-    (session_id, agent_id, started_at, ended_at, calls, denied, errors, mode_raw, autonomy)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  let n = 0;
-  let cur: { session: string; agent: string; mode: string | null; start: number; end: number; calls: number; denied: number; errors: number } | null = null;
-  const flush = () => {
-    if (!cur) return;
-    insert.run(cur.session, cur.agent === 'main' ? null : cur.agent, cur.start, cur.end, cur.calls, cur.denied, cur.errors, cur.mode, normalizeAutonomy(cur.mode));
-    n++;
-    cur = null;
-  };
-  for (const r of rows) {
-    const agent = r.agent_id ?? 'main';
-    const mode = r.permission_mode ?? null;
-    if (!cur || cur.session !== r.session_id || cur.agent !== agent || cur.mode !== mode) {
-      flush();
-      cur = { session: r.session_id, agent, mode, start: r.ts, end: r.ts, calls: 0, denied: 0, errors: 0 };
-    }
-    cur.end = r.ts;
-    cur.calls++;
-    if (r.status === 'denied') cur.denied++;
-    if (r.status === 'error') cur.errors++;
-  }
-  flush();
-  return n;
+  return rebuildAutonomyIntervals(db);
 }
 
 /** session_identity: bind sessions to principals, with evidence rank. */

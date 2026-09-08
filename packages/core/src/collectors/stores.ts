@@ -449,81 +449,30 @@ export function collectCopilotCli(_db: DB): CollectorResult {
   return { tool: 'copilot_cli', events, filesScanned: files, notes: [] };
 }
 
-// ── VS Code editor stores: chat sessions + Cline/Roo/Kilo tasks ──────────────
+// ── VS Code editor stores ─────────────────────────────────────────────────────
+// Retired (tier 2 deep): the chat-session activity and Cline/Roo/Kilo task legs
+// produced line-index event keys for the same stores the deep editor-stores
+// scanner reads with inode:offset keys — dual-key duplicate rows. The deep
+// scanner (scanners/editor-stores.ts) owns these stores now; this stub keeps
+// the collector registry's coverage row honest.
 export function collectVscodeStores(_db: DB): CollectorResult {
-  const dbPath = join(homedir(), 'Library/Application Support/Code/User/globalStorage/state.vscdb');
-  if (!existsSync(dbPath)) {
-    return { tool: 'vscode_chat', events: [], filesScanned: 0, notes: ['No VS Code state database'], sourceState: 'no_source' };
-  }
-  const events: UsageEvent[] = [];
-  const gsRoot = join(homedir(), 'Library/Application Support/Code/User/globalStorage');
-  let files = 0;
-  try {
-    // The chat session index: one entry per chat, with timestamps — activity.
-    const vscdb = new Database(dbPath, { readonly: true, fileMustExist: true });
-    const raw = vscdb
-      .prepare("SELECT value FROM ItemTable WHERE key = 'chat.ChatSessionStore.index'")
-      .get() as { value: string } | undefined;
-    vscdb.close();
-    if (raw?.value) {
-      files++;
-      const index = JSON.parse(raw.value) as {
-        entries?: Record<string, { sessionId?: string; lastMessageDate?: number; isEmpty?: boolean }>;
-      };
-      for (const [id, entry] of Object.entries(index.entries ?? {})) {
-        if (entry.isEmpty) continue;
-        events.push(activityRow('vscode_chat', id, entry.sessionId ?? id,
-          entry.lastMessageDate ?? 0, `${dbPath}#chat:${id}`, null, 'vs code chat session'));
-      }
-    }
-    // Cline / Roo / Kilo tasks: globalStorage/<ext>/tasks/*.json
-    const TASK_EXT_DIRS = [/^saoudrizwan\.claude-dev/, /^rooveterinaryinc\.roo-cline/, /^kilocode\.kilo-code/];
-    for (const e of readdirSync(gsRoot, { withFileTypes: true })) {
-      if (!e.isDirectory() || !TASK_EXT_DIRS.some((re) => re.test(e.name))) continue;
-      const tasksDir = join(gsRoot, e.name, 'tasks');
-      if (!existsSync(tasksDir)) continue;
-      for (const t of readdirSync(tasksDir, { withFileTypes: true })) {
-        if (!t.isDirectory()) continue;
-        const ui = join(tasksDir, t.name, 'ui_messages.json');
-        const ap = join(tasksDir, t.name, 'api_conversation_history.json');
-        const src = existsSync(ui) ? ui : existsSync(ap) ? ap : null;
-        if (!src) continue;
-        files++;
-        events.push(activityRow('clines', `${e.name}/${t.name}`, t.name,
-          Math.trunc(statSync(src).mtimeMs), src, null,
-          `${e.name.split('.')[0]} task (vendor totals, no per-call tokens)`));
-      }
-    }
-  } catch {
-    return { tool: 'vscode_chat', events, filesScanned: files, notes: ['state.vscdb unreadable'] };
-  }
-  if (files === 0) {
-    return { tool: 'vscode_chat', events, filesScanned: 0, notes: ['No chat sessions or agent tasks in editor stores'], sourceState: 'no_source' };
-  }
-  return { tool: 'vscode_chat', events, filesScanned: files, notes: [] };
+  return {
+    tool: 'vscode_chat',
+    events: [],
+    filesScanned: 0,
+    notes: ['editor stores owned by the editor-stores scanner (tier 2 deep)'],
+  };
 }
 
-// ── Ollama local: activity rows from the runtime's own server log ────────────
+// ── Ollama local ─────────────────────────────────────────────────────────────
+// Retired (tier 2 deep): the deep reader uses an '#activity'-suffixed cursor key
+// so the rows coexist, but this bare collector_state source_path row duplicated
+// them. scanners/editor-stores.ts owns the Ollama server log now.
 export function collectOllamaLog(_db: DB): CollectorResult {
-  const logPath = join(homedir(), '.ollama', 'logs', 'server.log');
-  if (!existsSync(logPath)) {
-    return { tool: 'ollama_local', events: [], filesScanned: 0, notes: ['No Ollama server log'], sourceState: 'no_source' };
-  }
-  const events: UsageEvent[] = [];
-  try {
-    const lines = readFileSync(logPath, 'utf8').split('\n');
-    for (const [i, line] of lines.entries()) {
-      // Request lines name the model; the log carries no token figures.
-      const m = line.match(/"?model"?[:=]\s*"?([\w:.\/-]+)"?/i);
-      const ts = line.match(/^time="([^"]+)"/)?.[1];
-      if (!m) continue;
-      events.push(activityRow('ollama_local', `${i}`, null,
-        ts ? Date.parse(ts) || 0 : 0, `${logPath}#${i}`, m[1] ?? null,
-        'ollama local request (log carries no token figures)'));
-      if (events.length > 2000) break; // a huge log is not a licence to hang the poll
-    }
-  } catch {
-    return { tool: 'ollama_local', events, filesScanned: 1, notes: ['Ollama log unreadable'] };
-  }
-  return { tool: 'ollama_local', events: events.length ? events : [], filesScanned: 1, notes: [] };
+  return {
+    tool: 'ollama_local',
+    events: [],
+    filesScanned: 0,
+    notes: ['ollama log owned by the editor-stores scanner (tier 2 deep)'],
+  };
 }

@@ -36,7 +36,7 @@ export interface PeopleViewPolicy {
 /** Reads the people_view block from the identity policy files (admin wins, user refines). */
 export function loadPeopleViewPolicy(files: string[] = paths.identityPolicyPaths()): PeopleViewPolicy {
   for (let i = files.length - 1; i >= 0; i--) {
-    const p = files[i];
+    const p = files[i]!;
     if (!existsSync(p)) continue;
     try {
       const raw = readFileSync(p, 'utf8');

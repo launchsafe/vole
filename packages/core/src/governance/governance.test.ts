@@ -406,7 +406,7 @@ test('the scanner is off until the switch is on, and the toggle is ledgered', ()
   writeFileSync(f, 'claude x\n');
   scanShellHistoryFile(db, f, 1000);
   assert.equal(eraseShellHistoryRows(db), 1);
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM ai_surfaces WHERE surface_key LIKE 'shell_history:%'").get().n, 0);
+  assert.equal((db.prepare("SELECT COUNT(*) AS n FROM ai_surfaces WHERE surface_key LIKE 'shell_history:%'").get() as { n: number }).n, 0);
 });
 
 test('the AI dictionary covers hosts, key-name shapes and CLIs', () => {

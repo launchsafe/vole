@@ -76,7 +76,7 @@ function parseToml(text: string): { version: number; detectors: RawDetector[] } 
     const section = line.match(/^\[\[(\w+)\]\]$/);
     if (section) {
       current = section[1] === 'detector'
-        ? { id: '', class: '', provider: null, keywords: [], pattern: '', severity: 'warn', note: '', exampleHashes: [] }
+        ? { id: '', class: '', provider: null, keywords: [], pattern: '', severity: 'warn', note: '', examples: [] }
         : null;
       if (current) detectors.push(current);
       continue;

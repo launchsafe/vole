@@ -106,7 +106,7 @@ export function parseCCRConfig(text: string): Route[] {
       return [];
     }
   }
-  const providers = new Map<string, { api_base: string | null; key: number }>();
+  const providers = new Map<string, { api_base: string | null; key: number | null }>();
   for (const p of cfg.Providers ?? []) {
     if (!p?.name) continue;
     providers.set(p.name, { api_base: p.api_base_url ?? null, key: p.api_key ? keyPresence(p.api_key) : null });

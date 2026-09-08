@@ -393,7 +393,7 @@ function writeDropAnomaly(db: DB, sink: string, n: number, bytes: number, reason
 export function rederiveDoc(db: DB, doc_id: string, ctx: Parameters<typeof encodeShapeRow>[2]): OutboxDoc | null {
   const shapeName = Object.keys(SHAPES).find((s) => doc_id.startsWith(s + DOC_ID_SEP));
   if (!shapeName) return null;
-  const shape = SHAPES[shapeName];
+  const shape = SHAPES[shapeName]!;
   const rest = doc_id.slice(shapeName.length + 1).split(DOC_ID_SEP);
   const have = existingColumns(db, shape.table);
   const cols = [...new Set([shape.key_column, ...(shape.doc_id_columns ?? []), ...selectColumns(shape.table)])]
@@ -412,7 +412,7 @@ export function rederiveDoc(db: DB, doc_id: string, ctx: Parameters<typeof encod
       // table has no tool column).
       for (let e = n + 1; e < rest.length; e++) {
         row = db.prepare(
-          `SELECT ${cols.join(', ')} FROM ${shape.table} WHERE ${shape.key_column} = ? AND ${shape.doc_id_columns[0]} = ?${liveClause}`,
+          `SELECT ${cols.join(', ')} FROM ${shape.table} WHERE ${shape.key_column} = ? AND ${shape.doc_id_columns[0]!} = ?${liveClause}`,
         ).get(keyValue, rest[e]) as Record<string, unknown> | undefined;
         if (row) break;
       }

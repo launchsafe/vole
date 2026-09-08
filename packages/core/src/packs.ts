@@ -48,7 +48,7 @@ export function registerPack(db: DB, pack: Pack): void {
  */
 export function stampContentRev(db: DB, pack: Pack): number {
   const prev = (db.prepare('SELECT MAX(version) AS v FROM content_packs WHERE kind = ?').get(pack.kind) as { v: number | null }).v;
-  return stamp(db, pack, prev ?? pack.version);
+  return stamp(db, prev ?? pack.version);
 }
 
 import { stampContentRev as stamp } from './packs/rescore';
