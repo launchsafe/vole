@@ -63,4 +63,69 @@ export const paths = {
   devinAcpMessages: () =>
     process.env.VOLE_DEVIN_MESSAGES ??
     join(home(), 'Library', 'Application Support', 'Devin', 'User', 'acp-messages'),
+
+  // ── Foundation path constants ────────────────────────────────────────────
+  //
+  // The admin-authored policy/pack layout and the per-source env overrides the
+  // remaining features read. Everything under the managed root wins over the
+  // per-user file, mirroring the surfacePolicyPaths precedence. All of these are
+  // LOCAL disk reads; nothing here phones home (the network adapters remain
+  // opt-in and default-off under their own flags).
+
+  /** Managed pack/policy root — admin-owned, read-only to the user. */
+  managedRoot: () => join('/Library', 'Application Support', 'Vole'),
+
+  /** Versioned content packs (DLP detectors, pricing, assets, terms, noise). */
+  packPaths: (): string[] => [
+    join('/Library', 'Application Support', 'Vole', 'packs'),
+    join(home(), '.vole', 'packs'),
+  ],
+
+  /** Identity policy: org UUIDs, repo owners, sanctioned account classes, lifecycle[]. */
+  identityPolicyPaths: (): string[] => [
+    join('/Library', 'Application Support', 'Vole', 'identity.json'),
+    join(home(), '.vole', 'policy', 'identity.json'),
+  ],
+
+  /** The admin-authored asset register (tier 6 crown jewels). */
+  assetsPolicyPaths: (): string[] => [
+    join('/Library', 'Application Support', 'Vole', 'assets.json'),
+    join(home(), '.vole', 'policy', 'assets.json'),
+  ],
+
+  /** The inalienable exclusion floor for personal work (tier 3). */
+  exclusionPaths: (): string[] => [
+    join('/Library', 'Application Support', 'Vole', 'exclude.json'),
+    join(home(), '.vole', 'policy', 'exclude.json'),
+  ],
+
+  /** Rule-threshold and retention policy (tier 6 Policy screen, tier 8 retention). */
+  rulePolicyPaths: (): string[] => [
+    join('/Library', 'Application Support', 'Vole', 'policy.json'),
+    join(home(), '.vole', 'policy', 'policy.json'),
+  ],
+
+  /** Declared lawful-basis / pilot-mode record (tier 3 first-run gate, tier 3 pilot). */
+  basisRecord: () => process.env.VOLE_BASIS ?? join(home(), '.vole', 'basis.json'),
+
+  /** Approved-baseline snapshot (tier 6: `vole posture baseline`). */
+  baseline: () => process.env.VOLE_BASELINE ?? join(home(), '.vole', 'baseline.json'),
+
+  /** Declared billing-unit bridge (tier 8: credits, seats, premium requests). */
+  unitsOverride: () => process.env.VOLE_UNITS ?? join(home(), '.vole', 'units.json'),
+
+  /** Budget declarations (tier 8: budget burn-down). */
+  budgetPaths: (): string[] => [
+    join('/Library', 'Application Support', 'Vole', 'budgets.json'),
+    join(home(), '.vole', 'budgets.json'),
+  ],
+
+  /**
+   * Agent home override: CLAUDE_CONFIG_DIR / CODEX_HOME redirect where an agent
+   * keeps its state. The collectors honor these (the evidence text already
+   * claimed they did); a home resolving outside every known agent_root is the
+   * agent_home_moved signal.
+   */
+  claudeConfigDir: () => process.env.CLAUDE_CONFIG_DIR ?? join(home(), '.claude'),
+  codexHome: () => process.env.CODEX_HOME ?? join(home(), '.codex'),
 };
