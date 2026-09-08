@@ -13,7 +13,7 @@
     "seed": "tsx src/cli/seed.ts",
     "seed:purge": "tsx src/cli/seed.ts --purge",
     "test": "node --import tsx --test 'src/**/*.test.ts'",
-    "verify": "tsx src/cli/verify.ts",
+    "verify": "node --import tsx src/cli/verify.ts",
     "typecheck": "tsc --noEmit",
     "build:sea": "node scripts/build-sea.mjs",
     "export": "tsx src/cli/export.ts",
