@@ -200,9 +200,8 @@ enum Labels {
         "cross_scope_read_then_publish": "Cross-scope publish", "subagent_inherited_bypass": "Inherited bypass",
         "scope_drift": "Scope drift", "context_edges": "External fetch",
         "sensitive_read_unasked": "Sensitive read", "agent_wrote_persistence": "Persistence write",
-        "agent_self_authorised": "Self-authorised", "scope_drift": "Scope drift",
+        "agent_self_authorised": "Self-authorised",
         "install_after_ingress": "Install after fetch", "unattended_run": "Unattended run",
-        "context_edges": "External fetch",
     ]
     static func confidence(_ c: String) -> String {
         c == "exact" ? "exact" : "no tokens"
@@ -241,4 +240,10 @@ func runSelfCheck() {
     let ms = 1_700_000_123_456
     let snapped = (ms / DateRange.h24.bucketMs) * DateRange.h24.bucketMs
     assert(snapped <= ms && ms - snapped < 3_600_000)
+    // A dictionary literal with duplicate keys compiles as a WARNING but TRAPS at
+    // runtime when the dictionary first initializes (Labels.rule crashed the Triage
+    // pane in the shipped 0.2.2 build). Touching the label tables here fails fast at
+    // DEBUG launch instead of in a release build's UI.
+    assert(Labels.rule.count >= 35)
+    assert(Labels.tool.count == Labels.toolShort.count)
 }
