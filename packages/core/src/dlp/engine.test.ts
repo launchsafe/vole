@@ -297,7 +297,12 @@ test('scanner: end-to-end pass writes widening rows, cursor state and incidents'
   assert.equal(rotated.status, 'rotated');
 
   writeFileSync(join(sinkDir, 'f2.txt'), 'again AKIAABCDEFGHIJKLMNOP\n');
-  utimesSync(join(sinkDir, 'f2.txt'), new Date(), new Date());
+  // The tail pass skips anything with mtime <= the last pass's lastSeenAt, and
+  // both are millisecond-truncated: 'now' here can land in the SAME millisecond
+  // as the pass above and be skipped, which is a timing race, not a behaviour.
+  // Stamp it unambiguously after that watermark.
+  const seenAfter = new Date(Date.now() + 60_000);
+  utimesSync(join(sinkDir, 'f2.txt'), seenAfter, seenAfter);
   dlpScanner.run();
   const after2 = db.prepare("SELECT status FROM secret_sightings WHERE fingerprint = ?").get(fp) as { status: string };
   assert.equal(after2.status, 'reappeared');
