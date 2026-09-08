@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { DB } from '../db';
-import type { Anomaly, Severity } from '../types';
+import type { DB } from './db';
+import type { Anomaly, Severity } from './types';
 import { paths } from './paths';
 import { originSlug } from './repos/roots';
 import { globToRegex, hostOf, isPlaceholderTarget, nearMatchHost, portOf, sha256hex } from './repos/util';
@@ -95,7 +95,7 @@ export function loadAssetRegister(text: string, sourceFile: string | null = null
       refuse('match must be a non-empty string (a structured object only for class entries)');
       return;
     }
-    if (kind === 'dsn' && portOf(match) === null) {
+    if (kind === 'dsn' && portOf(match ?? '') === null) {
       refuse(`dsn match "${match}" carries no port — a dsn entry is host+port so a host suffix cannot masquerade as an exact DSN`);
       return;
     }

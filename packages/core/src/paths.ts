@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 
 /**
  * Source locations default to the standard per-user install paths of each tool, resolved
@@ -11,7 +11,7 @@ import { join } from 'node:path';
  *   2. VOLE_HOME_OVERRIDE relocates the entire default layout under one root (tests use
  *      it to point every source at fixtures instead of the real home directory).
  */
-const home = () => process.env.VOLE_HOME_OVERRIDE ?? homedir();
+export const home = () => process.env.VOLE_HOME_OVERRIDE ?? homedir();
 
 export const paths = {
   /** Where Vole stores its own database. */
@@ -127,5 +127,109 @@ export const paths = {
    * agent_home_moved signal.
    */
   claudeConfigDir: () => process.env.CLAUDE_CONFIG_DIR ?? join(home(), '.claude'),
+  kiroHome: () => process.env.VOLE_KIRO_HOME ?? join(process.env.VOLE_HOME_OVERRIDE ?? homedir(), '.kiro'),
+  /**
+   * Every Claude Code transcript root — always a list, because every caller walks
+   * it. Returning a bare string made `for (const root of roots)` iterate the path's
+   * CHARACTERS, and `existsSync('/')` is true, so the vendor pass walked the whole
+   * filesystem. VOLE_CLAUDE_PROJECT_ROOTS may name several, separated as PATH is.
+   */
+  claudeCodeProjectRoots: (): string[] =>
+    process.env.VOLE_CLAUDE_PROJECT_ROOTS?.split(delimiter).filter(Boolean) ?? [paths.claudeCodeProjects()],
   codexHome: () => process.env.CODEX_HOME ?? join(home(), '.codex'),
 };
+
+// ── Agent-home resolution (tier 2 deep) ──────────────────────────────────────
+
+/** Env vars that redirect an agent's home — re-checked every pass. */
+export const AGENT_HOME_ENV_VARS = ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GEMINI_HOME'] as const;
+
+export interface AgentHomeRoot {
+  root: string;
+  app: string;
+  path: string;
+  tool: string;
+  granted_by: string;
+  envVar?: string;
+}
+
+/** All agent homes in play: the defaults plus every redirected one. */
+export function agentHomes(): AgentHomeRoot[] {
+  const defaults: Record<string, string> = {
+    CLAUDE_CONFIG_DIR: join(process.env.VOLE_HOME_OVERRIDE ?? homedir(), '.claude'),
+    CODEX_HOME: join(process.env.VOLE_HOME_OVERRIDE ?? homedir(), '.codex'),
+    GEMINI_HOME: join(process.env.VOLE_HOME_OVERRIDE ?? homedir(), '.gemini'),
+  };
+  const out: AgentHomeRoot[] = [];
+  for (const [env, def] of Object.entries(defaults)) {
+    const val = process.env[env] ?? def;
+    if (existsSync(val)) {
+      const app = env.replace('_HOME', '').replace('_CONFIG_DIR', '').toLowerCase();
+      out.push({ root: val, app, path: val, tool: app, granted_by: process.env[env] ? `env:${env}` : 'default', envVar: env });
+    }
+  }
+  // rc-declared and policy-declared homes join too
+  for (const r of shellRcAgentHomes()) {
+    if (!out.some((o) => o.path === r.path)) out.push(r);
+  }
+  for (const e of policyExtraRoots()) {
+    const root = typeof e === 'string' ? e : e.root;
+    if (root && !out.some((o) => o.path === root)) {
+      out.push({ root, app: 'policy', path: root, tool: typeof e === 'object' && e.tool ? e.tool : 'policy', granted_by: 'policy' });
+    }
+  }
+  return out;
+}
+
+/** Editor roots: every editor home with globalStorage (marker test, not names). */
+export interface EditorRoot { root: string; app: string; marker?: string }
+
+export function editorRoots(): EditorRoot[] {
+  const out: { root: string; app: string }[] = [];
+  try {
+    const as = join(process.env.VOLE_HOME_OVERRIDE ?? homedir(), 'Library', 'Application Support');
+    for (const name of readdirSync(as)) {
+      if (existsSync(join(as, name, 'User', 'globalStorage', 'storage.json'))) {
+        out.push({ root: join(as, name), app: name });
+      }
+    }
+  } catch {
+    /* unreadable */
+  }
+  return out;
+}
+
+/** Agent-home paths parsed from shell rc files — the redirect nobody declares. */
+export function shellRcAgentHomes(): AgentHomeRoot[] {
+  const out: AgentHomeRoot[] = [];
+  for (const rc of ['.zshrc', '.bashrc', '.zprofile', '.bash_profile', '.profile']) {
+    const p = join(process.env.VOLE_HOME_OVERRIDE ?? homedir(), rc);
+    if (!existsSync(p)) continue;
+    try {
+      const text = readFileSync(p, 'utf8');
+      for (const v of AGENT_HOME_ENV_VARS) {
+        const m = text.match(new RegExp(`^(?:export\\s+)?${v}=["']?([^"'#\\s]+)`, 'm'));
+        if (m?.[1]) {
+          out.push({ root: m[1], app: v.toLowerCase(), path: m[1], tool: v.toLowerCase(), granted_by: 'rc:' + rc, envVar: v });
+        }
+      }
+    } catch {
+      /* unreadable */
+    }
+  }
+  return out;
+}
+
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+
+export function policyExtraRoots(): { root: string; tool: string }[] {
+  try {
+    const policy = join(process.env.VOLE_HOME_OVERRIDE ?? homedir(), '.vole', 'policy', 'policy.json');
+    const alt = join(process.env.VOLE_HOME_OVERRIDE ?? homedir(), '.vole', 'policy.json');
+    if (!existsSync(policy)) return [];
+    const cfg = JSON.parse(readFileSync(policy, 'utf8')) as { extra_roots?: ({ root: string; tool: string } | string)[] };
+    return (cfg.extra_roots ?? []).map((e) => typeof e === 'string' ? { root: e, tool: 'policy' } : e);
+  } catch {
+    return [];
+  }
+}

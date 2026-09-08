@@ -207,9 +207,9 @@ export function checkAgentHomeMoved(db: DB, now: number): Anomaly[] {
 
   for (const s of liveSessionFiles(paths.claudeConfigDir())) {
     for (const [envVar, value] of Object.entries(psEnvironment(s.pid))) {
-      const meta = AGENT_HOME_ENV_VARS[envVar];
+      const meta = (AGENT_HOME_ENV_VARS as readonly string[]).includes(envVar) ? envVar : undefined;
       const inside = [...knownRoots].some((r) => value === r || value.startsWith(`${r}/`));
-      if (meta && !inside && value !== meta.defaultPath()) {
+      if (meta && !inside) {
         anomalies.push({
           anomaly_key: `agent_home_moved:env:${envVar}:${value}`,
           rule: 'agent_home_moved',

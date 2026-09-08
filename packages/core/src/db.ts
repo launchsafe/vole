@@ -1,4 +1,5 @@
 import { Database } from './sqlite';
+import { createHash } from 'node:crypto';
 import { mkdirSync, existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { hostname, userInfo } from 'node:os';
@@ -976,6 +977,8 @@ export const MIGRATIONS: Migration[] = [
           in_env_trace_upload       INTEGER,
           in_cfg_telemetry_trace_upload INTEGER,
           in_remote_trace_upload_enabled INTEGER,
+          in_requirement_pin        INTEGER,
+          telemetry_source          TEXT,
           has_remote_settings       INTEGER,
           ts                        INTEGER
         );`);
@@ -1337,6 +1340,22 @@ export const MIGRATIONS: Migration[] = [
       return 0;
     },
   },
+  {
+    version: 27,
+    name: 'tier8-lifecycle-part2',
+    kind: 'ddl',
+    apply: () => 0,
+  },
+  {
+    version: 28,
+    name: 'drop-export-seq-outbox-cursor',
+    kind: 'ddl',
+    apply: (db) => {
+      db.exec('DROP TABLE IF EXISTS export_seq');
+      return 0;
+    },
+  },
+
 ]
 ;
 
@@ -1666,6 +1685,8 @@ export interface CollectorState {
   last_offset: number;
   last_mtime: number | null;
   last_scanned_at: number | null;
+  prefix_sha256?: string;
+  head_sha256?: string;
 }
 
 export interface CollectorRunRow {
@@ -1741,6 +1762,19 @@ export function scanDue(db: DB, scanner: string, cadenceMs: number, now = Date.n
   return now - row.last_started_at >= cadenceMs;
 }
 
+/**
+ * The note boundary: scan notes are stored short, single-line and deterministic.
+ * A long or multiline note degrades to a digest stub — the shape rule from the
+ * content boundary, applied to the scanner's own bookkeeping.
+ */
+export function boundNote(notes: string | null): string | null {
+  if (notes === null) return null;
+  const oneLine = notes.replace(/\s+/g, ' ').trim();
+  if (oneLine.length <= 200) return oneLine;
+  const digest = createHash('sha256').update(notes).digest('hex').slice(0, 12);
+  return `${oneLine.slice(0, 100)}… [digest:${digest}]`;
+}
+
 export function recordScan(
   db: DB,
   scanner: string,
@@ -1759,7 +1793,7 @@ export function recordScan(
        last_duration_ms = excluded.last_duration_ms,
        ok = excluded.ok,
        notes = excluded.notes`,
-  ).run(scanner, cadenceMs, startedAt, durationMs, ok ? 1 : 0, notes);
+  ).run(scanner, cadenceMs, startedAt, durationMs, ok ? 1 : 0, boundNote(notes));
 }
 
 export function latestScans(db: DB): ScanStateRow[] {

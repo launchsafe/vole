@@ -140,7 +140,7 @@ export function collectContextImports(db: DB, now = Date.now()): { rows: number;
       dest_thread_id: r.imported_thread_id || null,
       imported_at: r.imported_at,
       source_bytes: sourceBytes,
-      source_present: present,
+      source_present: present ? 1 : 0,
     };
     upsert.run(row.event_key, row.source_tool, row.source_path_hmac, row.source_dir_prefix,
       row.content_sha256, row.dest_tool, row.dest_thread_id, row.imported_at,

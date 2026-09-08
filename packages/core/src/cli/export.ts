@@ -164,14 +164,14 @@ async function main(): Promise<void> {
       const gate = egress({ caller: 'vole export --drain', destination: sinkId, purpose: 'export outbox drain', ts: Date.now() });
       if (!gate.allowed) throw new Error('VOLE_NO_EGRESS=1 — nothing leaves this machine');
     }
-    const result = await drainOutbox(db, sinkId, (doc_id) => rederiveDoc(db, doc_id, c), async (docs) => {
+    const result = await drainOutbox(db, sinkId, (doc_id) => rederiveDoc(db, doc_id, c), (async (docs: { doc_id: string; payload: string }[]) => {
       const encoded = docs.map((d) => ({ doc_id: d.doc_id, bytes: d.payload + '\n' }));
       return {
         ok: send, // dry run: succeed locally without touching the network
         witness: send ? `local:${encoded.length}` : null,
         error: send ? undefined : 'dry-run (pass --send to deliver)',
       };
-    });
+    }) as unknown as import('../export/outbox').SinkSender);
     console.log(JSON.stringify({ sink: sinkId, ...result, cursor: changeCursor(db, sinkId) }, null, 1));
     return;
   }
@@ -225,7 +225,7 @@ async function main(): Promise<void> {
       [`${out}/fleet/vole-queries.yml`]: fleetQueryPack(),
     };
     for (const k of Object.keys(sentinel.dcrKql)) {
-      files[`${out}/sentinel/${k}.kql`] = sentinel.dcrKql[k];
+      files[`${out}/sentinel/${k}.kql`] = sentinel.dcrKql[k] ?? '';
     }
     for (const [path, content] of Object.entries(files)) {
       mkdirSync(path.split('/').slice(0, -1).join('/'), { recursive: true });

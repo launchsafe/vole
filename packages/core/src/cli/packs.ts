@@ -32,7 +32,7 @@ function main(): void {
     const file = args[1];
     if (!file) usage();
     const allowUnsigned = args.includes('--allow-unsigned');
-    const budget = args.includes('--budget') ? parseInt(args[args.indexOf('--budget') + 1], 10) : undefined;
+    const budget = args.includes('--budget') ? parseInt(args[args.indexOf('--budget') + 1] ?? '0', 10) : 0;
     const r = preflightPack(db, file, { allowUnsigned, budgetBytes: budget });
     if (r.refusal) {
       console.log(`REFUSED: ${r.refusal}`);

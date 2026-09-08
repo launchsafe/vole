@@ -153,7 +153,8 @@ export function unpricedReason(model: string | null): string | null {
  *                       the encoder and read models recognise it.
  * NULL = no dollar definition at all (unpriced rows, activity-only rows).
  */
-export type CostBasis = 'anthropic_list' | 'provider_reported' | 'declared_unit';
+import type { CostBasis } from './types';
+export type { CostBasis };
 
 /** The basis a tool's non-NULL cost_usd carries. NULL = the tool's costs, if any, carry no basis this code can name. */
 export function basisFor(tool: string): CostBasis | null {

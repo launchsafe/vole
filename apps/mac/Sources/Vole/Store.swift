@@ -71,7 +71,7 @@ final class Store {
     private(set) var originUnknownCalls = 0
     private(set) var originUnknownTokens: Int? = nil
     /// The ungated-call KPI (bypass_no_gate), range-scoped.
-    private(set) var ungated: UngatedCallCounts?
+    private(set) var ungated = UngatedCallCounts(calls: 0, totalCalls: 0)
     /// Blast Radius over action_targets + child-ledger corroboration.
     private(set) var blastTargets: [BlastTargetRow] = []
     /// The Files tab's write classes.
@@ -193,20 +193,17 @@ final class Store {
         principals = db.principals()
         devices = db.devices()
         grants = db.grants()
-        let principal = db.byPrincipal()
-        principalSummary = principal.principals
-        originUnknownCalls = principal.originUnknownCalls
-        originUnknownTokens = principal.originUnknownTokens
-        ungated = db.ungatedCalls(range)
+        principalSummary = db.principalSummary(range)
+        ungated = db.ungatedCallCounts(range)
         blastTargets = db.blastTargets(range)
-        writeClasses = db.filesByWriteClass(range)
-        ingressHosts = db.ingressBand(range)
-        autonomyIntervals = db.postureRibbon(range)
-        serverTools = db.serverToolBilling(range)
-        observationLags = db.observationLag(range)
+        writeClasses = db.writeClasses(range)
+        ingressHosts = db.ingressHosts(range)
+        autonomyIntervals = db.autonomyIntervals(range)
+        serverTools = db.serverTools(range)
+        observationLags = db.observationLags(range)
         bulkUploads = db.bulkEgress()
-        mcpServers = db.mcpServersGroup()
-        fieldDictionary = db.fieldDictionary()
+        mcpServers = db.mcpServers()
+                                fieldDictionary = db.fieldDictionary()
         let beats = db.collectorHeartbeats()
         heartbeats = beats
         // With per-collector heartbeats, liveness is "any collector completed a pass

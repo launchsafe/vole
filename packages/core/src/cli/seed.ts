@@ -236,7 +236,7 @@ if (storyArg === '--story=enterprise') {
     ['Incidents', 'the quota-exhausted day beside the rule thresholds that fired it'],
     ['Evidence bundle', 'the export preview with the not-covered list — and seed rows refused'],
   ];
-  for (const [name, caption] of stops) console.log(`  ${name.padEnd(18)} ${caption}`);
+  for (const [name = '', caption = ''] of stops) console.log(`  ${name.padEnd(18)} ${caption}`);
   console.log('Purge at any time with: pnpm seed:purge');
   process.exit(0);
 }

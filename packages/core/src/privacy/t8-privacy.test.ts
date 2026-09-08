@@ -74,7 +74,7 @@ test('purposes: the union is closed and the builder defaults to live-only', () =
 
 test('purposes: subject columns are denied to cost_allocation/capacity, allowed to dsar', () => {
   assert.throws(() => assertColumnsAllowed('cost_allocation', ['tool', 'user']));
-  assert.throws(() => where('capacity', { user: 'x' }));
+  assert.throws(() => where('capacity', { user: 'x' } as never));
   assert.doesNotThrow(() => assertColumnsAllowed('dsar', ['user', 'machine', 'subject_id']));
   assert.throws(() => assertGroupByAllowed('cost_allocation', ['user']));
   assert.doesNotThrow(() => assertGroupByAllowed('security_incident', ['user']));
@@ -112,8 +112,8 @@ test('kanon: k from policy, distinct subjects, deterministic grid', () => {
   assert.equal(policyK({ k: 11 }), 11);
   assert.equal(policyK({ k: 1 }), 5, 'k < 2 is not a k');
   insertEvents(db, [
-    ev({ event_key: 'k1', ts: NOW, session_id: 's1', total_tokens: 15, user: 'a', machine: 'm1' }),
-    ev({ event_key: 'k2', ts: NOW, session_id: 's2', total_tokens: 15, user: 'b', machine: 'm1' }),
+    ev({ event_key: 'k1', ts: NOW, session_id: 's1', total_tokens: 15 }),
+    ev({ event_key: 'k2', ts: NOW, session_id: 's2', total_tokens: 15 }),
   ]);
   db.prepare(`UPDATE usage_events SET subject_id = 'p:a' WHERE event_key = 'k1'`).run();
   db.prepare(`UPDATE usage_events SET subject_id = 'p:b' WHERE event_key = 'k2'`).run();

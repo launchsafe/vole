@@ -95,7 +95,7 @@ test('shellRcAgentHomes finds exported redirects, skips comments', () => {
   ].join('\n'));
   const rc = shellRcAgentHomes();
   assert.deepEqual(
-    rc.map((r) => r.envVar).sort(),
+    rc.map((r) => r['envVar' as never]).sort(),
     ['CLAUDE_CONFIG_DIR', 'CODEX_HOME'],
   );
   assert.ok(agentHomes().some((h) => h.path === join(tmp, 'alt-claude') && h.granted_by.startsWith('rc:')));

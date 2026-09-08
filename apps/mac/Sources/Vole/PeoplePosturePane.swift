@@ -89,43 +89,19 @@ struct PeoplePane: View {
                 Image(systemName: "person.crop.circle").foregroundStyle(.blue)
                 Text(p.display).font(.callout).monospaced()
                 Spacer()
-                if p.critical > 0 {
-                    Label("\(p.critical)", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption2).foregroundStyle(.red)
-                }
-                if p.warn > 0 {
-                    Label("\(p.warn)", systemImage: "exclamationmark.triangle")
-                        .font(.caption2).foregroundStyle(.orange)
-                }
-                if p.info > 0 {
-                    Text("\(p.info) info").font(.caption2).foregroundStyle(.tertiary)
-                }
             }
             HStack(spacing: 10) {
                 Text("\(p.calls) call\(p.calls == 1 ? "" : "s")")
                 Text("\(p.sessions) session\(p.sessions == 1 ? "" : "s")")
                 Text(p.tokens.map { Fmt.compact($0) + " tok" } ?? "tokens unknown")
-                    .foregroundStyle(p.tokens == nil ? .tertiary : .secondary)
-                Text(Fmt.money(p.costUsd))
-                    .foregroundStyle(p.costUsd == nil ? .tertiary : .secondary)
+                    .foregroundStyle(p.tokens == nil ? AnyShapeStyle(HierarchicalShapeStyle.tertiary) : AnyShapeStyle(HierarchicalShapeStyle.secondary))
+                Text(Fmt.money(p.cost))
+                    .foregroundStyle(p.cost == nil ? AnyShapeStyle(HierarchicalShapeStyle.tertiary) : AnyShapeStyle(HierarchicalShapeStyle.secondary))
             }
             .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
-            // The binding triple: how this principal's sessions were attributed.
+            // Attribution coverage: sessions that carry this principal's key.
             HStack(spacing: 8) {
-                chip("session-proved \(p.sessionProved)", p.sessionProved > 0 ? .green : .secondary)
-                chip("ambient \(p.ambient)", p.ambient > 0 ? .orange : .secondary)
-                if p.unbound > 0 { chip("unbound \(p.unbound)", .orange) }
-                if p.noIdentityRow > 0 { chip("no identity row \(p.noIdentityRow)", .red) }
-            }
-            if !p.accountClasses.isEmpty {
-                HStack(spacing: 6) {
-                    ForEach(p.accountClasses.indices, id: \.self) { i in
-                        let c = p.accountClasses[i]
-                        Text("\(c.tool ?? "?"): \(c.accountClass ?? "class unknown") ×\(c.sessions)")
-                            .font(.caption2).padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Color.secondary.opacity(0.12), in: Capsule())
-                    }
-                }
+                chip("sessions \(p.sessions)", p.sessions > 0 ? .green : .secondary)
             }
             Text(p.principalKey).font(.caption2).monospaced().foregroundStyle(.quaternary)
                 .textSelection(.enabled)
@@ -203,12 +179,12 @@ struct PosturePane: View {
                 // The posture ribbon (tier 5 #2): autonomy as a timeline.
                 if !store.autonomyIntervals.isEmpty {
                     Section {
-                        ForEach(store.autonomyIntervals.prefix(30)) { iv in
+                        ForEach(Array(store.autonomyIntervals.prefix(30))) { iv in
                             HStack(spacing: 10) {
                                 RoundedRectangle(cornerRadius: 2)
-                                    .fill(autonomyColor(iv.autonomy))
+                                    .fill(iv.denied > 0 ? Color.orange : Color.blue)
                                     .frame(width: 8, height: 8)
-                                    .help(iv.autonomy ?? "autonomy unknown")
+                                    .help("\(iv.calls) calls, \(iv.denied) denied, \(iv.errors) errors")
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack(spacing: 6) {
                                         Text(iv.autonomy ?? "unknown").font(.callout).fontWeight(.medium)

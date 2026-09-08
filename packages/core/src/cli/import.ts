@@ -22,7 +22,7 @@
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { home } from '../paths';
+import { homedir } from 'node:os';
 import { openDb, insertEvents } from '../db';
 import type { UsageEvent } from '../types';
 
@@ -149,7 +149,7 @@ function readContext(dir: string): ContextRow {
   return row;
 }
 
-const contextsRoot = join(home(), '.vole', 'contexts');
+const contextsRoot = join(homedir(), '.vole', 'contexts');
 const contexts: { dir: string; row: ContextRow }[] = [];
 if (existsSync(contextsRoot)) {
   for (const ctx of readdirSync(contextsRoot)) {

@@ -23,9 +23,9 @@ const REGISTER_TEXT = JSON.stringify({
   version: 7,
   entries: [
     { asset_id: 'prod-db', tier: 1, kind: 'dsn', match: 'launchsafe-db-do-user-35002029-0.e.db.ondigitalocean.com:25060', owner: 'platform', basis: 'customer database, DPA scope' },
-    { asset_id: 'corp-domain', tier: 2, kind: 'domain', match: 'internal.corp.example', basis: 'internal services' },
-    { asset_id: 'platform-repo', tier: 2, kind: 'repo', match: 'github.com/acme/*', owner: 'acme', basis: 'the monorepo' },
-    { asset_id: 'customer-data', tier: 1, kind: 'path', match: '/data/customers/*.csv', basis: 'customer exports' },
+    { asset_id: 'corp-domain', tier: 2, kind: 'domain' as const, match: 'internal.corp.example', basis: 'internal services' },
+    { asset_id: 'platform-repo', tier: 2, kind: 'repo' as const, match: 'github.com/acme/*', owner: 'acme', basis: 'the monorepo' },
+    { asset_id: 'customer-data', tier: 1, kind: 'path' as const, match: '/data/customers/*.csv', basis: 'customer exports' },
     { asset_id: 'vault-store', tier: 1, kind: 'store', match: '/vault/prod', basis: 'production secrets' },
   ],
 });
@@ -44,11 +44,11 @@ test('loadAssetRegister refuses the entry kinds it must refuse', () => {
   const reg = loadAssetRegister(JSON.stringify({
     entries: [
       { asset_id: 'live', tier: 1, kind: 'literal', match: 'sk-live-123' },
-      { asset_id: 'plain', tier: 1, kind: 'class', match: { literal: 'not-an-hmac' } },
-      { asset_id: 'ok-class', tier: 1, kind: 'class', match: { literal: 'a'.repeat(64) } },
+      { asset_id: 'plain', tier: 1, kind: 'class' as const, match: { literal: 'not-an-hmac' } },
+      { asset_id: 'ok-class', tier: 1, kind: 'class' as const, match: { literal: 'a'.repeat(64) } },
       { asset_id: 'no-port', tier: 1, kind: 'dsn', match: 'db.example.com' },
-      { asset_id: 'bad-tier', tier: 9, kind: 'domain', match: 'x.example' },
-      { asset_id: 'empty', tier: 1, kind: 'domain', match: '' },
+      { asset_id: 'bad-tier', tier: 9, kind: 'domain' as const, match: 'x.example' },
+      { asset_id: 'empty', tier: 1, kind: 'domain' as const, match: '' },
     ],
   }));
   assert.equal(reg.entries.length, 1, 'only the HMAC-shaped class entry survives');
@@ -71,20 +71,20 @@ test('loadAssetRegister rejects non-JSON wholesale', () => {
 
 test('resolveAsset follows the chain: repo -> dsn -> domain -> store -> path', () => {
   const reg = loadAssetRegister(REGISTER_TEXT);
-  const repo = resolveAsset(reg, { kind: 'repo', value: 'git@github.com:acme/platform.git' });
+  const repo = resolveAsset(reg, { kind: 'repo' as const, value: 'git@github.com:acme/platform.git' });
   assert.equal(repo?.entry.asset_id, 'platform-repo');
   const dsn = resolveAsset(reg, { kind: 'dsn', value: 'launchsafe-db-do-user-35002029-0.e.db.ondigitalocean.com:25060' });
   assert.equal(dsn?.entry.asset_id, 'prod-db');
-  const domain = resolveAsset(reg, { kind: 'domain', value: 'api.internal.corp.example' });
+  const domain = resolveAsset(reg, { kind: 'domain' as const, value: 'api.internal.corp.example' });
   assert.equal(domain?.entry.asset_id, 'corp-domain');
   assert.equal(domain?.matchedBy, 'domain');
   const store = resolveAsset(reg, { kind: 'store', value: '/vault/prod/secrets/kv' });
   assert.equal(store?.entry.asset_id, 'vault-store');
-  const path = resolveAsset(reg, { kind: 'path', value: '/data/customers/eu.csv' });
+  const path = resolveAsset(reg, { kind: 'path' as const, value: '/data/customers/eu.csv' });
   assert.equal(path?.entry.asset_id, 'customer-data');
   // an unregistered DSN-shaped host resolves to nothing (shape near-misses stay near-misses)
   assert.equal(resolveAsset(reg, { kind: 'dsn', value: 'db-xxxx.b.db.ondigitalocean.com:25060' }), null);
-  assert.equal(resolveAsset(reg, { kind: 'path', value: '/data/other.txt' }), null);
+  assert.equal(resolveAsset(reg, { kind: 'path' as const, value: '/data/other.txt' }), null);
 });
 
 // ── criticality as the second severity input ────────────────────────────────
@@ -219,7 +219,7 @@ test('preflightRegister: rows, dead entries, near-matches and the worksheet head
     entries: [
       { asset_id: 'prod-db2', tier: 1, kind: 'dsn', match: 'launchsafe-db-do-user-35002029-1.e.db.ondigitalocean.com:25060', basis: 'landing db' },
       { asset_id: 'prod-db', tier: 1, kind: 'dsn', match: 'launchsafe-db-do-user-35002029-0.e.db.ondigitalocean.com:25060', basis: 'customer db' },
-      { asset_id: 'dead', tier: 3, kind: 'domain', match: 'never.seen.example', basis: 'nothing' },
+      { asset_id: 'dead', tier: 3, kind: 'domain' as const, match: 'never.seen.example', basis: 'nothing' },
     ],
   }));
   const report = preflightRegister(db, candidate);
@@ -241,7 +241,7 @@ test('proposeAsset writes only to assets.proposed.json, never the signed pack', 
   const dir = join(tmpdir(), `vole-propose-${Date.now()}`);
   process.env.VOLE_HOME_OVERRIDE = dir;
   try {
-    const entry = { asset_id: 'cand', tier: 2, kind: 'domain', match: 'new.corp.example', basis: 'proposed' };
+    const entry = { asset_id: 'cand', tier: 2, kind: 'domain' as const, match: 'new.corp.example', basis: 'proposed' };
     proposeAsset(entry);
     proposeAsset({ ...entry, asset_id: 'cand2' });
     const text = readFileSync(proposedAssetPath(), 'utf8');

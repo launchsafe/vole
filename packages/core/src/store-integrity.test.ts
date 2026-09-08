@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Database } from './sqlite';
 import { SCHEMA } from './schema';
-import { openDb, resetDbCache, recordScan, boundNote, schemaInfo } from './db';
+import { openDb, resetDbCache, recordScan, schemaInfo, boundNote } from './db';
 import { upsertSurface } from './scanners/ai-surfaces';
 import { reconcileClaudeToolCalls } from './toolcalls/reconcile';
 import { localIdentifiers, reIdentificationScan, redactIdentifiers } from './cli/support';
@@ -66,7 +66,7 @@ test('boundNote: long or multiline notes stay short, single-line and determinist
   assert.equal(boundNote(short), short);
   assert.equal(boundNote(null), null);
   const long = 'a'.repeat(1011);
-  const bounded = boundNote(long)!;
+  const bounded = boundNote(long)!
   assert.ok(bounded.length <= 512, `bounded length ${bounded.length}`);
   assert.ok(!bounded.includes('\n'));
   assert.equal(bounded, boundNote(long)); // deterministic — epochs still compare
@@ -212,12 +212,12 @@ test('redactIdentifiers: home paths and usernames never ride, and the scan passe
     n: 5,
     keep: null,
   };
-  const redacted = redactIdentifiers(payload, ids);
+  const redacted = redactIdentifiers(payload, ids) as typeof payload;
   const hits = reIdentificationScan(redacted, ids);
   assert.deepEqual(hits, []);
   assert.ok(!JSON.stringify(redacted).includes(home));
   // Deterministic: the same source redacts to the same value (sync dedupe keys).
-  assert.deepEqual(redacted, redactIdentifiers(payload, ids));
+  assert.deepEqual(redacted, redactIdentifiers(payload, ids) as typeof payload);
   // Unredacted, the same payload fails the scan — the gate stays strict.
   assert.ok(reIdentificationScan(payload, ids).length > 0);
 });

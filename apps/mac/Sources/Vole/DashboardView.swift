@@ -608,10 +608,10 @@ struct DashboardView: View {
     private var dashboardPane: some View {
         Form {
             let s = store.summary
+            CoverageStrip(heartbeats: store.heartbeats)
             Section {
-                CoverageStrip(heartbeats: store.heartbeats)
-            } footer: {
                 Text("One chip per collector, from its latest pass. Grey means the tool's artifacts do not exist on this Mac — absence, never zero usage.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             // Security first (#38): a security buyer's questions lead; cost follows.
             Section {
@@ -634,11 +634,10 @@ struct DashboardView: View {
                 // The ungated-call KPI (tier 5 #8): calls that ran with no gate at all,
                 // beside tokens and cost. Zero is a real figure; the denominator rides
                 // in the tooltip so the count can never imply more coverage than it has.
-                if let u = store.ungated {
-                    metricRow("Ungated Tool Calls", u.calls > 0 ? "\(u.calls)" : "0",
-                              "exclamationmark.shield", u.calls > 0 ? .red : .secondary)
-                        .help("Calls with no permission gate at all (bypass_no_gate) in this range, of \(u.totalCalls) recorded tool calls.")
-                }
+                let u = store.ungated
+                metricRow("Ungated Tool Calls", "\(u.calls)",
+                          "exclamationmark.shield", u.calls > 0 ? .red : .secondary)
+                    .help("Calls with no permission gate at all (bypass_no_gate) in this range, of \(u.totalCalls) recorded tool calls.")
                 if let speed = store.tokenSpeed {
                     metricRow("Burn Rate", "\(Fmt.compactDbl(speed.perMin))/min", "speedometer", .orange)
                     metricRow("Peak Minute (24h)", "\(Fmt.compactDbl(speed.peakPerMin))/min", "chart.bar.fill", .secondary)
@@ -919,7 +918,7 @@ struct DashboardView: View {
                 // Server-tool billing (tier 8 #33): billed per request, not per token.
                 if !store.serverTools.isEmpty {
                     Section {
-                        ForEach(store.serverTools) { t in
+                        ForEach(Array(store.serverTools), id: \.id) { t in
                             LabeledContent(serverToolLabel(t.linkKind)) {
                                 Text("\(t.requests)").monospacedDigit()
                             }

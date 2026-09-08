@@ -58,8 +58,9 @@ struct BehaviourPane: View {
     }
 
     private func fetchLine(_ h: IngressHostRow) -> String {
-        let calls = "\(h.calls) fetch\(h.calls == 1 ? "" : "es")"
-        return h.statusUnknown > 0 ? "\(calls) · \(h.statusUnknown) with unknown status" : calls
+        let count = h.calls
+        let unknown = h.statusUnknown > 0 ? " · \(h.statusUnknown) with no status" : ""
+        return "\(count) fetch\(count == 1 ? "" : "es")\(unknown) · last \(Fmt.rel(h.lastTs))"
     }
 
     private var callsTab: some View {
@@ -85,7 +86,7 @@ struct BehaviourPane: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Agent tree — top sessions by activity")
                         .font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
-                    ForEach(store.agentEdges.prefix(6)) { e in
+                    ForEach(Array(store.agentEdges.prefix(6))) { e in
                         HStack(spacing: 8) {
                             Image(systemName: e.agent == "main" ? "person.fill" : "arrow.triangle.branch")
                                 .font(.caption2)
@@ -114,7 +115,7 @@ struct BehaviourPane: View {
                 Text("No file writes recorded in this range.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                ForEach(store.writeClasses) { w in
+                ForEach(Array(store.writeClasses), id: \.id) { w in
                     HStack(spacing: 10) {
                         Image(systemName: "doc.badge.plus").foregroundStyle(.secondary)
                         Text(w.writeClass).font(.callout.monospaced())
@@ -144,7 +145,7 @@ struct BehaviourPane: View {
                 Text("No fetch ingress recorded in this range.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
-                ForEach(ingressRanked) { h in
+                ForEach(Array(ingressRanked), id: \.id) { h in
                     ingressRow(h)
                 }
             }
@@ -280,7 +281,7 @@ struct BlastRadiusPane: View {
                 }
 
                 Section {
-                    ForEach(store.blastTargets) { t in targetRow(t) }
+                    ForEach(Array(store.blastTargets), id: \.id) { t in targetRow(t) }
                 } header: {
                     Text("By Target")
                 } footer: {

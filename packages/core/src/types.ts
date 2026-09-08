@@ -15,7 +15,9 @@ export type Tool =
   | 'aider'
   | 'vscode_chat'
   | 'clines'
-  | 'ollama_local';
+  | 'ollama_local'
+  | 'vole'
+  | 'kiro';
 
 /**
  * How much we actually know about a row's numbers. Only two states — there is no
@@ -150,6 +152,10 @@ export type AnomalyRule =
   | 'untrusted_execution' // tier6: workspace-trust flip
   | 'security_envelope_changed' // tier6
   | 'noise_budget_exceeded' // tier7
+  | 'sandbox_claim_violated' // tier5
+  | 'network_claim_violated' // tier5
+  | 'secret_reappeared_after_rotation' // tier4
+  | 'evidence_expiring' // tier4
   | 'source_rewritten' // tier7: chained prefix digest mismatch
   | 'log_source_stopped' // tier7: dead-man's switch
   | 'export_drop' // tier7: outbox dropped a document
@@ -228,7 +234,9 @@ export interface CollectorResult {
 export type CostBasis =
   | 'list_equivalent' // computed from published list rates (computeCost)
   | 'provider_reported' // the vendor's own local figure (OpenCode d.cost)
-  | 'free_tier'; // a genuinely-free model, not an unknown rate
+  | 'free_tier' // a genuinely-free model, not an unknown rate
+  | 'anthropic_list' // alias for list_equivalent (pricing.ts)
+  | 'declared_unit'; // a declared billing-unit bridge
 
 /** Account class resolved from the auth path (tier 3) — never from model names. */
 export type AccountClass =

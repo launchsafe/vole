@@ -115,7 +115,7 @@ export function ensureStoreEpoch(db: DB, collectorVersion: string): StoreEpochRo
   const existing = db.prepare('SELECT * FROM store_epoch LIMIT 1').get() as StoreEpochRow | undefined;
   if (existing) return existing;
   const firstEvent = (db.prepare('SELECT MIN(ts) AS t FROM usage_events').get() as { t: number | null }).t;
-  const lastSeq = (db.prepare('SELECT MAX(last_anomaly_id) AS s FROM export_seq').get() as { s: number | null }).s;
+  const lastSeq = (() => { try { return (db.prepare('SELECT MAX(last_anomaly_id) AS s FROM export_seq').get() as { s: number | null }).s; } catch { return null; } })();
   let device: string | null = null;
   try {
     // Same stable identity the tier-3 machinery uses, without importing the
@@ -243,4 +243,14 @@ function main(): void {
 
 if (process.argv[1]?.endsWith('support.ts')) {
   main();
+}
+
+export function redactIdentifiers(payload: unknown, identifiers: string[]): unknown {
+  const json = JSON.stringify(payload);
+  let out = json;
+  for (const id of identifiers) {
+    if (!id) continue;
+    out = out.split(id).join('[redacted]');
+  }
+  return JSON.parse(out);
 }

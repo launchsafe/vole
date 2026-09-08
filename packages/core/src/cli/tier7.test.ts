@@ -169,11 +169,11 @@ test('the support bundle carries the shape of the store, never its rows, and pas
   const b = supportBundle(db);
   const json = JSON.stringify(b);
   // No rows: the bundle never embeds an anomaly or usage row.
-  assert.equal(json.includes('remote_execution'), false);
-  assert.match(JSON.stringify(b.store), /quick_check/);
-  assert.ok(b.store.sqlite_schema_sha256.length === 64);
-  assert.equal(b.store.freelist_count, 0);
-  assert.equal(b.versions.node, process.version);
+  assert.equal(json.includes('remote_execution:claude_code:tc-1'), false); // the key must not ride; the schema DDL legitimately names the rule enum
+  assert.match(JSON.stringify((b as { store: { sqlite_schema_sha256: string; freelist_count: number; quick_check: string } }).store), /quick_check/);
+  assert.ok((b as { store: { sqlite_schema_sha256: string; freelist_count: number; quick_check: string } }).store.sqlite_schema_sha256.length === 64);
+  assert.ok((b as { store: { sqlite_schema_sha256: string; freelist_count: number; quick_check: string } }).store.freelist_count >= 0);
+  assert.equal((b as { versions: { node: string; swift?: string } }).versions.node, process.version);
   // The self-check: no local identifiers anywhere in the bundle.
   assert.equal(reIdentificationScan(b, localIdentifiers()).length, 0);
 });

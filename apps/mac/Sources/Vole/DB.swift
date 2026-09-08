@@ -108,6 +108,128 @@ struct ToolCallEntry: Identifiable {
     var id: String { "\(tool):\(name):\(ts)" }
 }
 
+
+/// One autonomy interval: a session's agent-run timeline segment.
+/// Mirrors queries.ts postureRibbon — the parity dump diffs the two.
+struct AutonomyInterval: Identifiable {
+    let sessionID: String
+    let autonomy: String?
+    let startedAt: Int
+    let endedAt: Int
+    let calls: Int
+    let denied: Int
+    let errors: Int
+    let modeRaw: String?
+    var id: String { "\(sessionID):\(startedAt)" }
+}
+
+/// One server-tool billing counter (event_links): billed per request, not per token.
+/// Mirrors queries.ts serverToolBilling.
+struct ServerToolRow: Identifiable {
+    let linkKind: String
+    let requests: Int
+    var id: String { linkKind }
+}
+
+/// One observation-lag measurement per tool (observed_at - ts).
+/// Mirrors queries.ts observationLag; nil percentiles mean unknown, never zero.
+struct LagRow: Identifiable {
+    let tool: String
+    let p50Ms: Double?
+    let p95Ms: Double?
+    let observedRows: Int
+    var id: String { tool }
+}
+
+/// One bulk upload with its telemetry decision. Mirrors queries.ts bulkEgress.
+struct BulkEgressEntry: Identifiable {
+    let uploadKey: String
+    let repoPath: String?
+    let turn: Int?
+    let maxFileBytes: Int?
+    let sizeBytes: Int?
+    let gcsPath: String?
+    let blobs: Int?
+    let uploadsEnabled: Int?
+    let uploadReason: String?
+    let telemetrySource: String?
+    var id: String { uploadKey }
+}
+
+/// One configured MCP server grouped by identity. Mirrors queries.ts mcpServersGroup.
+struct McpServerRow: Identifiable {
+    let serverName: String
+    let mcpIdentity: String
+    let clients: Int
+    let transport: String?
+    let enabled: Int?
+    var id: String { "\(serverName):\(mcpIdentity):\(transport ?? "-")" }
+}
+
+/// The tool-call ledger's ingress host ranking.
+struct IngressHostEntry: Identifiable {
+    let host: String
+    let hits: Int
+    let lastTs: Int
+    var id: String { host }
+}
+
+/// One remote target from action_targets, with the child ledgers' scope reach.
+/// Mirrors queries.ts blastRadius.
+struct BlastTargetRow: Identifiable {
+    let targetKind: String
+    let targetLabel: String?
+    let locality: String?
+    let envClass: String?
+    let calls: Int
+    let writes: Int
+    let vcsActions: Int
+    let packageExecs: Int
+    var id: String { "\(targetKind):\(targetLabel ?? "-"):\(locality ?? "-"):\(envClass ?? "-")" }
+}
+
+/// One write class from file_writes, with the unresolved-path count carried on
+/// every row (counted, never dropped). Mirrors queries.ts filesByWriteClass.
+struct WriteClassRow: Identifiable {
+    let writeClass: String
+    let writes: Int
+    let unresolved: Int
+    var id: String { writeClass }
+}
+
+/// One external host that sent bytes into a session (fetch_ingress).
+/// Mirrors queries.ts ingressBand; NULL bytes/status mean unknown, never zero.
+struct IngressHostRow: Identifiable {
+    let urlHost: String?
+    let calls: Int
+    let bytes: Int?
+    let statusUnknown: Int
+    let lastTs: Int
+    var id: String { urlHost ?? "(no host)" }
+}
+
+/// The People-view summary: a principal with their scoped figures.
+struct PrincipalSummaryRow: Identifiable {
+    let principalKey: String
+    let display: String
+    let sessions: Int
+    let calls: Int
+    let tokens: Int?
+    let cost: Double?
+    let firstSeen: Int
+    let lastSeen: Int
+    var id: String { principalKey }
+}
+
+/// The ungated-call KPI (bypass_no_gate): counts by authority state.
+/// Calls that ran with no permission gate at all, over the calls recorded in
+/// range. Mirrors queries.ts ungatedCalls — zero is a real figure, so this is
+/// never optional: "0 of 0" and "no data" are different sentences.
+struct UngatedCallCounts: Equatable {
+    let calls: Int
+    let totalCalls: Int
+}
+
 /// A pseudonymous principal — an HMAC, a label, never a name.
 struct PrincipalEntry: Identifiable {
     let principalKey: String
@@ -146,14 +268,6 @@ struct AgentEdge: Identifiable {
     let last: Int
     let errors: Int
     var id: String { "\(session):\(agent)" }
-}
-
-/// One Blast Radius destination (a command shape that leaves the laptop).
-struct BlastEntry: Identifiable {
-    let shape: String
-    let calls: Int
-    let last: Int
-    var id: String { shape }
 }
 
 /// One model's measured generation speed, with its coverage.
@@ -252,6 +366,23 @@ private func jstr(_ s: String) -> String {
     s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "\n", with: "\\n")
 }
 
+/// A JSON string-or-null and a JSON int-or-null. The parity diff treats a missing
+/// figure as null on both sides — never 0, never "".
+private func jtext(_ s: String?) -> String { s.map { "\"\(jstr($0))\"" } ?? "null" }
+private func jint(_ n: Int?) -> String { n.map(String.init) ?? "null" }
+
+/// A column emitted with SQLite's own type. `ai_surfaces.sanctioned` is declared
+/// INTEGER but holds 'true' — better-sqlite3 hands the TS side that TEXT verbatim,
+/// so reading it as an Int here would print `0` against the TS side's `"true"`.
+private func jcol(_ s: OpaquePointer, _ i: Int32) -> String {
+    switch sqlite3_column_type(s, i) {
+    case SQLITE_NULL: return "null"
+    case SQLITE_INTEGER: return String(colInt(s, i))
+    case SQLITE_FLOAT: return jnum(sqlite3_column_double(s, i))
+    default: return jtext(colText(s, i))
+    }
+}
+
 // MARK: - Database  (read-only; the TS collector owns writes)
 
 final class DB {
@@ -260,7 +391,7 @@ final class DB {
     /// depends on the two agreeing about what "current" means. The read-model
     /// parity check asserts this against the fixture store (always at the TS head),
     /// so a forgotten bump fails CI instead of shipping a gate that blocks users.
-    static let knownSchemaVersion = 26
+    static let knownSchemaVersion = 28
 
     private var handle: OpaquePointer?
     let path: String
@@ -312,6 +443,14 @@ final class DB {
         defer { sqlite3_finalize(stmt) }
         for (i, v) in binds.enumerated() { sqlite3_bind_int64(stmt, Int32(i + 1), Int64(v)) }
         while sqlite3_step(stmt) == SQLITE_ROW { row(stmt!) }
+    }
+
+    /// One COUNT(*)-shaped answer. The child-ledger totals a Blast Radius row
+    /// carries are all this shape, and a missing table must read 0, never crash.
+    private func scalar(_ sql: String, _ bind: Int) -> Int {
+        var n = 0
+        run(sql, [bind]) { n = colInt($0, 0) }
+        return n
     }
 
     /// Typed binds for the read models: without text binds, no drill-down keyed on
@@ -675,6 +814,206 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
     }
 
     /// Principals: pseudonymous, never a name or email.
+    /// Blast Radius: action_targets with the child ledgers' scope reach.
+    /// The Swift twin of queries.ts blastRadius — same grouping, same tie-break.
+    func blastTargets(_ r: DateRange) -> [BlastTargetRow] {
+        let from = r.startMs()
+        let writes = scalar("SELECT COUNT(*) FROM file_writes WHERE ts >= ?", from)
+        let vcs = scalar("SELECT COUNT(*) FROM vcs_actions WHERE ts >= ?", from)
+        let pkgs = scalar("SELECT COUNT(*) FROM package_execs WHERE ts >= ?", from)
+        var out: [BlastTargetRow] = []
+        run("""
+            SELECT target_kind, target_label, locality, env_class, COUNT(DISTINCT call_key) AS calls
+            FROM action_targets WHERE last_seen >= ?
+            GROUP BY target_kind, target_label, locality, env_class
+            """, [from]) { row in
+            out.append(BlastTargetRow(
+                targetKind: colText(row, 0) ?? "?",
+                targetLabel: colText(row, 1),
+                locality: colText(row, 2),
+                envClass: colText(row, 3),
+                calls: colInt(row, 4),
+                writes: writes, vcsActions: vcs, packageExecs: pkgs))
+        }
+        return out.sorted { $0.calls == $1.calls ? $0.targetKind < $1.targetKind : $0.calls > $1.calls }
+    }
+
+    /// The Files tab: writes split by write_class, unresolved paths counted on
+    /// every row — never dropped. The twin of queries.ts filesByWriteClass.
+    func writeClasses(_ r: DateRange) -> [WriteClassRow] {
+        let from = r.startMs()
+        let unresolved = scalar("SELECT COUNT(*) FROM file_writes WHERE ts >= ? AND path IS NULL", from)
+        var out: [WriteClassRow] = []
+        run("""
+            SELECT COALESCE(write_class, 'unresolved') AS write_class, COUNT(*) AS n
+            FROM file_writes WHERE ts >= ? GROUP BY write_class ORDER BY n DESC
+            """, [from]) { row in
+            out.append(WriteClassRow(
+                writeClass: colText(row, 0) ?? "unresolved",
+                writes: colInt(row, 1),
+                unresolved: unresolved))
+        }
+        return out
+    }
+
+    /// The ingress band: fetch ingress by host, NULL status counted as unknown —
+    /// never zero. The twin of queries.ts ingressBand (lastTs is app-only chrome).
+    func ingressHosts(_ r: DateRange) -> [IngressHostRow] {
+        let from = r.startMs()
+        var out: [IngressHostRow] = []
+        run("""
+            SELECT url_host, COUNT(*) AS calls, SUM(bytes) AS bytes,
+                   SUM(CASE WHEN status IS NULL THEN 1 ELSE 0 END) AS statusUnknown,
+                   COALESCE(MAX(ts), 0) AS lastTs
+            FROM fetch_ingress WHERE ts >= ? GROUP BY url_host ORDER BY calls DESC
+            """, [from]) { row in
+            out.append(IngressHostRow(
+                urlHost: colText(row, 0),
+                calls: colInt(row, 1),
+                bytes: colIntOpt(row, 2),
+                statusUnknown: colInt(row, 3),
+                lastTs: colInt(row, 4)))
+        }
+        return out
+    }
+
+    /// The posture ribbon: the autonomy timeline, newest intervals first.
+    /// The twin of queries.ts postureRibbon.
+    func autonomyIntervals(_ r: DateRange, limit: Int = 200) -> [AutonomyInterval] {
+        let from = r.startMs()
+        var out: [AutonomyInterval] = []
+        run("""
+            SELECT session_id, autonomy, started_at, ended_at, calls, denied, errors, mode_raw
+            FROM autonomy_intervals WHERE ended_at >= ? ORDER BY ended_at DESC LIMIT ?
+            """, [from, limit]) { row in
+            out.append(AutonomyInterval(
+                sessionID: colText(row, 0) ?? "?",
+                autonomy: colText(row, 1),
+                startedAt: colInt(row, 2),
+                endedAt: colInt(row, 3),
+                calls: colInt(row, 4),
+                denied: colInt(row, 5),
+                errors: colInt(row, 6),
+                modeRaw: colText(row, 7)))
+        }
+        return out
+    }
+
+    /// Server-tool billing: the event_links counters the vendor bills as its own
+    /// line item. The twin of queries.ts serverToolBilling.
+    func serverTools(_ r: DateRange) -> [ServerToolRow] {
+        let from = r.startMs()
+        var out: [ServerToolRow] = []
+        run("""
+            SELECT link_kind, SUM(CAST(link_id AS INTEGER)) AS requests FROM event_links
+            WHERE link_kind IN ('web_search_requests','web_fetch_requests') AND first_seen >= ?
+            GROUP BY link_kind
+            """, [from]) { row in
+            out.append(ServerToolRow(linkKind: colText(row, 0) ?? "?", requests: colInt(row, 1)))
+        }
+        return out
+    }
+
+    /// Observation lag per tool: observed_at minus ts over live rows. The
+    /// percentile pick is queries.ts's exactly — index floor(p/100 * n), clamped —
+    /// because a different rounding rule is a parity diff, not a nicety.
+    func observationLags(_ r: DateRange) -> [LagRow] {
+        let from = r.startMs()
+        var byTool: [String: [Double]] = [:]
+        run("""
+            SELECT tool, observed_at - ts AS lag FROM usage_events
+            WHERE ts >= ? AND observed_at IS NOT NULL AND source = 'live'
+            """, [from]) { row in
+            byTool[colText(row, 0) ?? "?", default: []].append(Double(colInt(row, 1)))
+        }
+        func pct(_ sorted: [Double], _ p: Double) -> Double? {
+            guard !sorted.isEmpty else { return nil }
+            return sorted[min(sorted.count - 1, Int((p / 100) * Double(sorted.count)))]
+        }
+        return byTool.map { tool, lags -> LagRow in
+            let sorted = lags.sorted()
+            return LagRow(tool: tool, p50Ms: pct(sorted, 50), p95Ms: pct(sorted, 95), observedRows: sorted.count)
+        }.sorted { $0.tool < $1.tool }
+    }
+
+    /// Bulk uploads joined to their telemetry decision. The twin of queries.ts bulkEgress.
+    func bulkEgress() -> [BulkEgressEntry] {
+        var out: [BulkEgressEntry] = []
+        run("""
+            SELECT b.upload_key, b.repo_path, b.turn, b.max_file_bytes, b.size_bytes, b.gcs_path, b.blobs,
+                   d.uploads_enabled, d.upload_reason, d.telemetry_source
+            FROM bulk_uploads b LEFT JOIN upload_decisions d ON d.upload_key = b.upload_key
+            ORDER BY b.started_at DESC
+            """) { row in
+            out.append(BulkEgressEntry(
+                uploadKey: colText(row, 0) ?? "?",
+                repoPath: colText(row, 1),
+                turn: colIntOpt(row, 2),
+                maxFileBytes: colIntOpt(row, 3),
+                sizeBytes: colIntOpt(row, 4),
+                gcsPath: colText(row, 5),
+                blobs: colIntOpt(row, 6),
+                uploadsEnabled: colIntOpt(row, 7),
+                uploadReason: colText(row, 8),
+                telemetrySource: colText(row, 9)))
+        }
+        return out
+    }
+
+    /// Configured MCP servers grouped by identity. The twin of queries.ts mcpServersGroup.
+    func mcpServers() -> [McpServerRow] {
+        var out: [McpServerRow] = []
+        run("""
+            SELECT server_name, mcp_identity, COUNT(DISTINCT client) AS clients, transport, MAX(enabled) AS enabled
+            FROM posture_mcp_servers GROUP BY server_name, mcp_identity, transport
+            ORDER BY server_name
+            """) { row in
+            out.append(McpServerRow(
+                serverName: colText(row, 0) ?? "?",
+                mcpIdentity: colText(row, 1) ?? "?",
+                clients: colInt(row, 2),
+                transport: colText(row, 3),
+                enabled: colIntOpt(row, 4)))
+        }
+        return out
+    }
+
+    func principalSummary(_ r: DateRange) -> [PrincipalSummaryRow] {
+        let from = r.startMs()
+        var out: [PrincipalSummaryRow] = []
+        run("""
+            SELECT p.principal_key, p.display,
+                   (SELECT COUNT(DISTINCT u.session_id) FROM usage_events u WHERE u.session_id = si.session_id AND u.ts >= ?),
+                   (SELECT COUNT(*) FROM usage_events u WHERE u.session_id = si.session_id AND u.ts >= ?),
+                   (SELECT SUM(u.total_tokens) FROM usage_events u WHERE u.session_id = si.session_id AND u.ts >= ?),
+                   (SELECT SUM(u.cost_usd) FROM usage_events u WHERE u.session_id = si.session_id AND u.ts >= ?),
+                   p.first_seen, p.last_seen
+            FROM principals p
+            LEFT JOIN session_identity si ON si.principal_key = p.principal_key
+            GROUP BY p.principal_key ORDER BY p.last_seen DESC
+            """, [from, from, from, from]) { row in
+            out.append(PrincipalSummaryRow(
+                principalKey: colText(row, 0) ?? "?",
+                display: colText(row, 1) ?? "?",
+                sessions: colInt(row, 2),
+                calls: colInt(row, 3),
+                tokens: colIntOpt(row, 4),
+                cost: colDblOpt(row, 5),
+                firstSeen: colInt(row, 6),
+                lastSeen: colInt(row, 7)))
+        }
+        return out
+    }
+
+    /// The twin of queries.ts ungatedCalls: the bypass_no_gate count and the
+    /// denominator it must always be read against.
+    func ungatedCallCounts(_ r: DateRange) -> UngatedCallCounts {
+        let from = r.startMs()
+        return UngatedCallCounts(
+            calls: scalar("SELECT COUNT(*) FROM tool_calls WHERE ts >= ? AND authorization_basis = 'bypass_no_gate'", from),
+            totalCalls: scalar("SELECT COUNT(*) FROM tool_calls WHERE ts >= ?", from))
+    }
+
     func principals() -> [PrincipalEntry] {
         var out: [PrincipalEntry] = []
         run("SELECT principal_key, display, first_seen, last_seen FROM principals ORDER BY last_seen DESC") { row in
@@ -734,25 +1073,6 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
         return out
     }
 
-    /// Blast Radius: every destination the agents touched, from command shapes.
-    func blastRadius() -> [BlastEntry] {
-        var out: [BlastEntry] = []
-        run("""
-            SELECT shape, COUNT(*) AS calls, MAX(ts) AS last
-            FROM tool_calls WHERE shape IS NOT NULL
-              AND (shape LIKE 'ssh%' OR shape LIKE 'scp%' OR shape LIKE 'rsync%'
-                   OR shape LIKE 'docker exec%' OR shape LIKE 'docker run%'
-                   OR shape LIKE 'kubectl%' OR shape LIKE 'curl%' OR shape LIKE 'psql -h%'
-                   OR shape LIKE 'mysql -h%')
-            GROUP BY shape ORDER BY calls DESC
-            """) { row in
-            out.append(BlastEntry(
-                shape: colText(row, 0) ?? "?",
-                calls: colInt(row, 1),
-                last: colInt(row, 2)))
-        }
-        return out
-    }
 
     /// The migration ledger — the upgrade boundary: a row with no applied_at
     /// predates the ledger itself and must render as 'unknown', never a date.
@@ -797,7 +1117,9 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
         lines.append("    \"byTool\": [")
         let tools = s.byTool.sorted { $0.calls == $1.calls ? $0.tool < $1.tool : $0.calls > $1.calls }
         for (i, t) in tools.enumerated() {
-            lines.append("      {\"tool\": \"\(t.tool)\", \"calls\": \(t.calls), \"tokens\": \(t.tokens.map(String.init) ?? \"null\"), \"cost\": \(jnum(t.cost)), \"confidence\": \"\(t.confidence)\", \"activityOnlyCalls\": \(t.activityOnlyCalls)}\(i == tools.count - 1 ? \"\" : \",\")")
+            let tokStr = t.tokens.map(String.init) ?? "null"
+            let comma = i == tools.count - 1 ? "" : ","
+            lines.append("      {\"tool\": \"\(t.tool)\", \"calls\": \(t.calls), \"tokens\": \(tokStr), \"cost\": \(jnum(t.cost)), \"confidence\": \"\(t.confidence)\", \"activityOnlyCalls\": \(t.activityOnlyCalls)}\(comma)")
         }
         lines.append("    ]")
         lines.append("  },")
@@ -805,11 +1127,69 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
             .sorted { $0.windowStart == $1.windowStart ? $0.id < $1.id : $0.windowStart > $1.windowStart }
         lines.append("  \"incidents\": [")
         for (i, x) in inc.enumerated() {
-            lines.append("    {\"id\": \(x.id), \"anomaly_key\": \"\(jstr(x.anomalyKey))\", \"rule\": \"\(jstr(x.rule))\", \"severity\": \"\(x.severity)\", \"tool\": \"\(jstr(x.tool))\", \"session_id\": \(x.sessionID.map { \"\\(jstr($0))\" } ?? \"null\"), \"model\": \(x.model.map { \"\\(jstr($0))\" } ?? \"null\"), \"window_start\": \(x.windowStart), \"window_end\": \(x.windowEnd), \"title\": \"\(jstr(x.title))\", \"detail\": \"\(jstr(x.detail))\", \"observed\": \(jnum(x.observed)), \"baseline\": \(jnum(x.baseline)), \"threshold\": \(jnum(x.threshold)), \"confidence\": \"\(x.confidence)\", \"source\": \"\(x.source)\", \"detected_at\": \(x.detectedAt)}\(i == inc.count - 1 ? \"\" : \",\")")
+            let sidStr = x.sessionID.map { "\"\(jstr($0))\"" } ?? "null"
+            let mdlStr = x.model.map { "\"\(jstr($0))\"" } ?? "null"
+            let comma2 = i == inc.count - 1 ? "" : ","
+            lines.append("    {\"id\": \(x.id), \"anomaly_key\": \"\(jstr(x.anomalyKey))\", \"rule\": \"\(jstr(x.rule))\", \"severity\": \"\(x.severity)\", \"tool\": \"\(jstr(x.tool))\", \"session_id\": \(sidStr), \"model\": \(mdlStr), \"window_start\": \(x.windowStart), \"window_end\": \(x.windowEnd), \"title\": \"\(jstr(x.title))\", \"detail\": \"\(jstr(x.detail))\", \"observed\": \(jnum(x.observed)), \"baseline\": \(jnum(x.baseline)), \"threshold\": \(jnum(x.threshold)), \"confidence\": \"\(x.confidence)\", \"source\": \"\(x.source)\", \"detected_at\": \(x.detectedAt)}\(comma2)")
         }
-        lines.append("  ]")
+        lines.append("  ],")
+
+        // ── the deep-completion read models: the same contract, extended ──
+        // Each block is the twin of the matching entry in readmodel-dump.ts; the
+        // CI diff is the only thing keeping the two readers honest.
+        let ug = ungatedCallCounts(.all)
+        lines.append("  \"ungatedCalls\": {\"calls\": \(ug.calls), \"totalCalls\": \(ug.totalCalls)},")
+
+        lines.append(jsonList("filesByWriteClass", writeClasses(.all)) { w in
+            "{\"write_class\": \(jtext(w.writeClass)), \"writes\": \(w.writes), \"unresolved\": \(w.unresolved)}"
+        })
+        lines.append(jsonList("ingressBand", ingressHosts(.all)) { h in
+            "{\"url_host\": \(jtext(h.urlHost)), \"calls\": \(h.calls), \"bytes\": \(jint(h.bytes)), \"statusUnknown\": \(h.statusUnknown)}"
+        })
+        lines.append(jsonList("postureRibbon", autonomyIntervals(.all, limit: 50)) { a in
+            "{\"session_id\": \(jtext(a.sessionID)), \"autonomy\": \(jtext(a.autonomy)), \"started_at\": \(a.startedAt), \"ended_at\": \(a.endedAt), \"calls\": \(a.calls), \"denied\": \(a.denied), \"errors\": \(a.errors), \"mode_raw\": \(jtext(a.modeRaw))}"
+        })
+        lines.append(jsonList("serverToolBilling", serverTools(.all)) { t in
+            "{\"link_kind\": \(jtext(t.linkKind)), \"requests\": \(t.requests)}"
+        })
+        lines.append(jsonList("observationLag", observationLags(.all)) { l in
+            "{\"tool\": \(jtext(l.tool)), \"p50_ms\": \(jnum(l.p50Ms)), \"p95_ms\": \(jnum(l.p95Ms)), \"observed_rows\": \(l.observedRows)}"
+        })
+        lines.append(jsonList("bulkEgress", bulkEgress()) { b in
+            "{\"upload_key\": \(jtext(b.uploadKey)), \"repo_path\": \(jtext(b.repoPath)), \"turn\": \(jint(b.turn)), \"max_file_bytes\": \(jint(b.maxFileBytes)), \"size_bytes\": \(jint(b.sizeBytes)), \"gcs_path\": \(jtext(b.gcsPath)), \"blobs\": \(jint(b.blobs)), \"uploads_enabled\": \(jint(b.uploadsEnabled)), \"upload_reason\": \(jtext(b.uploadReason)), \"telemetry_source\": \(jtext(b.telemetrySource))}"
+        })
+        lines.append(jsonList("mcpServers", mcpServers()) { m in
+            "{\"server_name\": \(jtext(m.serverName)), \"mcp_identity\": \(jtext(m.mcpIdentity)), \"clients\": \(m.clients), \"transport\": \(jtext(m.transport)), \"enabled\": \(jint(m.enabled))}"
+        })
+        lines.append(jsonList("blastRadius", blastTargets(.all)) { b in
+            "{\"target_kind\": \(jtext(b.targetKind)), \"target_label\": \(jtext(b.targetLabel)), \"locality\": \(jtext(b.locality)), \"env_class\": \(jtext(b.envClass)), \"calls\": \(b.calls), \"writes\": \(b.writes), \"vcs_actions\": \(b.vcsActions), \"package_execs\": \(b.packageExecs)}"
+        })
+        lines.append(jsonList("aiSurfaces", aiSurfacesDump(), trailingComma: false) { $0 })
+
         lines.append("}")
         return lines.joined(separator: "\n")
+    }
+
+    /// `"key": [ … ]` with one rendered element per row. Formatting is irrelevant
+    /// (CI diffs `jq -S` on both sides) — the keys and the values are the contract.
+    private func jsonList<T>(_ key: String, _ rows: [T], trailingComma: Bool = true,
+                             _ render: (T) -> String) -> String {
+        let items = rows.map { "    " + render($0) }.joined(separator: ",\n")
+        let inner = rows.isEmpty ? "" : "\n" + items + "\n  "
+        return "  \"\(key)\": [\(inner)]\(trailingComma ? "," : "")"
+    }
+
+    /// ai_surfaces for the parity dump: every column emitted with SQLite's own
+    /// type, because `sanctioned` holds TEXT behind an INTEGER declaration.
+    private func aiSurfacesDump() -> [String] {
+        var out: [String] = []
+        run("""
+            SELECT surface_key, kind, name, path, sanctioned, version, first_seen, last_seen
+            FROM ai_surfaces ORDER BY surface_key LIMIT 50
+            """) { row in
+            out.append("{\"surface_key\": \(jcol(row, 0)), \"kind\": \(jcol(row, 1)), \"name\": \(jcol(row, 2)), \"path\": \(jcol(row, 3)), \"sanctioned\": \(jcol(row, 4)), \"version\": \(jcol(row, 5)), \"first_seen\": \(jcol(row, 6)), \"last_seen\": \(jcol(row, 7))}")
+        }
+        return out
     }
 
     /// One heartbeat per collector — its latest pass, written even when the pass found

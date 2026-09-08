@@ -179,13 +179,6 @@ function runOnce(): void {
       source_state: r.sourceState ?? 'ok',
       ok: r.sourceState === 'error' ? 0 : 1,
       notes: r.notes.length ? r.notes.join(' | ') : null,
-      clock: {
-        wall_ms: clock.wall_ms,
-        boot_epoch: clock.boot_epoch,
-        rss_peak_bytes: clock.rss_peak_bytes,
-        cpu_user_ms: clock.cpu_user_ms,
-        cpu_sys_ms: clock.cpu_sys_ms,
-      },
     });
 
     if (verbose && r.toolCalls?.length) {
