@@ -1,0 +1,146 @@
+# The DLP detector pack — data, not code (tier 4, #117).
+#
+# Detectors are rows so the rule set is inspectable and diffable rather than
+# buried in a parse loop: a bump is a reviewable diff, the pack carries a
+# sha256 over its canonical rows, and the pack version is stamped on every
+# scan-state row so a bump can queue a re-scan of retained evidence.
+#
+# Vocabulary (single-quoted TOML strings are raw — regexes pass through
+# verbatim, no double escaping):
+#   class      credential | payment_card | iban | bank_account | jwt | private_key
+#   provider   vendor namespace for credential shapes; NULL for data classes
+#   keywords   prefilter: at least one must appear in the buffer (case-folded);
+#              an EMPTY list means "always run" (data classes have no keyword)
+#   pattern    the value shape, one capture group, JS regex, global flag applied
+#   validator  offline checksum: luhn | mod97 | mod11 | crc32_tail | jwt | pem
+#              (informational for crc32_tail — the vendor scheme is not public)
+#   entropy    minimum Shannon entropy per char for catch-alls
+#   stopwords  a value matching this regex is a placeholder, never a finding
+#   examples   salted sha256 hashes of known PUBLIC example values — a match
+#              whose value hashes to one of these is auto-classified a fixture
+
+version = 2
+
+# ── credentials ────────────────────────────────────────────────────────────
+
+[[detector]]
+id = "aws-access-key"
+class = "credential"
+provider = "aws"
+keywords = ["AKIA", "aws"]
+pattern = '\b(AKIA[0-9A-Z]{16})\b'
+severity = "critical"
+note = "AWS access key id — the 20-char AKIA shape"
+examples = ['e289fe111f558a7d8cf00a0a8a4620b7e24f3a7de8c2ac448dc695b7d7c320ca', 'dc8dc2f712e89497e64b81edeac824847cf900beeb377341386fe1f312ca8b3d']
+
+[[detector]]
+id = "openai-api-key"
+class = "credential"
+provider = "openai"
+keywords = ["sk-", "openai", "api_key", "apikey"]
+pattern = '\b(sk-[A-Za-z0-9_-]{20,})(?![A-Za-z0-9_-])'
+stopwords = 'sk-(test|example|your|xxx|placeholder|123456)|sk_(test|proj)|pk_test'
+severity = "critical"
+note = "OpenAI-style API key; sk_test_/pk_test_ shapes are test fixtures, not findings"
+
+[[detector]]
+id = "anthropic-api-key"
+class = "credential"
+provider = "anthropic"
+keywords = ["sk-ant-", "anthropic"]
+pattern = '\b(sk-ant-[A-Za-z0-9_-]{20,})(?![A-Za-z0-9_-])'
+severity = "critical"
+note = "Anthropic API key"
+
+[[detector]]
+id = "github-token"
+class = "credential"
+provider = "github"
+keywords = ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github", "token"]
+pattern = '\b(gh[pousr]_[A-Za-z0-9]{36,})(?![A-Za-z0-9])'
+validator = "crc32_tail"
+severity = "critical"
+note = "GitHub token; the CRC32 tail is computed and recorded, never claimed valid — the vendor scheme is not public"
+
+[[detector]]
+id = "google-api-key"
+class = "credential"
+provider = "google"
+keywords = ["AIza", "google"]
+pattern = '\b(AIza[0-9A-Za-z_-]{35})\b'
+severity = "warn"
+note = "Google API key shape"
+
+[[detector]]
+id = "slack-token"
+class = "credential"
+provider = "slack"
+keywords = ["xox"]
+pattern = '\b(xox[baprs]-[A-Za-z0-9-]{10,})\b'
+severity = "warn"
+note = "Slack token"
+
+[[detector]]
+id = "private-key-block"
+class = "private_key"
+provider = null
+keywords = ["PRIVATE KEY"]
+pattern = '(-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{0,4000}?-----END [A-Z ]*PRIVATE KEY-----|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
+validator = "pem"
+severity = "critical"
+note = "A PEM private key block; the validator checks the DER length when the closing fence is present"
+
+[[detector]]
+id = "high-entropy-assignment"
+class = "credential"
+provider = null
+keywords = ["api_key", "apikey", "secret", "password", "token", "credential", "auth_token"]
+pattern = '\b([A-Za-z0-9_\-]{32,64})\b'
+entropy = 3.5
+stopwords = '(test|example|placeholder|your[_-]?key|changeme|xxxxxxxx)'
+severity = "warn"
+note = "high-entropy value assigned to a credential-shaped name — entropy with stopwords, never a bare length guess"
+
+# ── data classes (validators + salted public-example hashes) ────────────────
+
+[[detector]]
+id = "payment-card"
+class = "payment_card"
+provider = null
+keywords = []
+pattern = '\b([0-9]{13,19})\b'
+validator = "luhn"
+severity = "critical"
+note = "A card number that passes Luhn; test PANs are auto-classified fixtures"
+examples = ['58d4332826352302550e00063ec6e4bb0c2286f684007e038f8ef6ceadf1a3f9', 'e99f0d6d515089b958137ff011cdde09c3418fa8449d3cf4748f48ae62ff261e', 'cd8818918351bb5fde7958c5b1ab639df5613240ad26b81fae76c14f167359cb']
+
+[[detector]]
+id = "iban"
+class = "iban"
+provider = null
+keywords = []
+pattern = '\b([A-Z]{2}[0-9]{2}[A-Z0-9]{11,26})\b'
+validator = "mod97"
+severity = "critical"
+note = "An IBAN that passes mod-97; the RFC's example IBANs are auto-classified fixtures"
+examples = ['08ab52574fcf74369d2a946ef84c228109b120f878bbb3edc5536b000aa8ea2b', '7d25f9bf4cf40c56070ff9db27c0ab74942e649e6ec662646441ed7a09a05cee', '8b465a075225183d9b165225dec4105538a10c40001c8ba6fdf49b1fd56e109d']
+
+[[detector]]
+id = "bank-account"
+class = "bank_account"
+provider = null
+keywords = ["account", "account_number", "kontonummer", "rekeningnummer"]
+pattern = '\b([0-9]{8,12})\b'
+validator = "mod11"
+severity = "warn"
+note = "A keyword-gated account number that passes mod-11 — weak alone, kept for the validator chain"
+
+[[detector]]
+id = "jwt"
+class = "jwt"
+provider = null
+keywords = ["eyJ"]
+pattern = '\b(eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{0,})'
+validator = "jwt"
+severity = "warn"
+note = "A JWT-shaped token; the validator records only whether alg/iss/exp parse, never the claims"

@@ -3,6 +3,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { paths } from '../paths';
 import type { DB } from '../db';
+import { skeletonize, type ToolCallRow } from '../toolcalls/bind';
 import type { CollectorResult, UsageEvent } from '../types';
 
 /**
@@ -18,18 +19,31 @@ import type { CollectorResult, UsageEvent } from '../types';
  * So we emit one `activity_only` row per agent turn (grouped by `turnId`), with a real
  * session id and timestamp and NULL tokens — never a guessed number.
  *
+ * The tool-call ledger (tier 5 #5): kind='tool_call' rows carry the vendor's own
+ * content.toolCallId, which is the verified source-native key
+ * `devin:<db>:<content.toolCallId>` — the id a Cognition console row joins on.
+ *
  * (The editor also bundles the anthropic.claude-code extension; those runs are covered
  * by the Claude Code collector via ~/.claude and are not double-counted here.)
  */
 
 interface Payload {
   turnId?: string;
-  content?: { _meta?: Record<string, string> }[];
+  content?: { _meta?: Record<string, string>; toolCallId?: string }[];
+}
+
+/** The vendor's tool-call id, wherever in the payload it sits. */
+function findToolCallId(p: Payload): string | null {
+  for (const c of p.content ?? []) {
+    if (typeof c?.toolCallId === 'string' && c.toolCallId) return c.toolCallId;
+  }
+  return null;
 }
 
 export function collectDevin(_db: DB): CollectorResult {
   const dir = paths.devinAcpMessages();
   const events: UsageEvent[] = [];
+  const calls: ToolCallRow[] = [];
   const notes: string[] = [];
 
   if (!existsSync(dir)) {
@@ -46,7 +60,7 @@ export function collectDevin(_db: DB): CollectorResult {
   for (const file of files) {
     const dbPath = join(dir, file);
     const sessionId = file.replace(/\.db$/, '');
-    let mtime = Date.now();
+    let mtime = Date.now(); // explicit fallback clock, only when stat fails
     try {
       mtime = statSync(dbPath).mtimeMs;
     } catch {
@@ -63,8 +77,8 @@ export function collectDevin(_db: DB): CollectorResult {
 
     try {
       const rows = src
-        .prepare(`SELECT position, payload FROM messages WHERE kind = 'agent_message' ORDER BY position`)
-        .all() as { position: number; payload: string }[];
+        .prepare(`SELECT position, kind, payload FROM messages ORDER BY position`)
+        .all() as { position: number; kind: string; payload: string }[];
 
       // Streaming writes many agent_message chunks per turn; collapse to one row per turnId.
       const seen = new Set<string>();
@@ -75,6 +89,31 @@ export function collectDevin(_db: DB): CollectorResult {
         } catch {
           continue;
         }
+
+        if (r.kind === 'tool_call') {
+          // The ledger: the vendor's own tool-call id when the payload states
+          // one, else the stable position in this db — never now().
+          const toolCallId = findToolCallId(p);
+          const callKey = `devin:${sessionId}:${toolCallId ?? `pos${r.position}`}`;
+          const name = 'devin_tool';
+          const iso = p.content?.[0]?._meta?.['cognition.ai/timestamp'];
+          calls.push({
+            tool_call_key: callKey,
+            tool: 'devin',
+            // Devin's payload is pure content; the name is not extracted —
+            // the kind is the honest extent of what the ledger can state.
+            name,
+            shape: skeletonize(name, null),
+            args_digest: null, // payload content, never digested into storage
+            session_id: sessionId,
+            agent_id: null,
+            ts: iso ? Date.parse(iso) : Math.trunc(mtime),
+            raw_ref: `${dbPath}#pos/${r.position}`,
+          });
+          continue;
+        }
+        if (r.kind !== 'agent_message') continue;
+
         const turn = p.turnId ?? `pos${r.position}`;
         if (seen.has(turn)) continue;
         seen.add(turn);
@@ -115,5 +154,5 @@ export function collectDevin(_db: DB): CollectorResult {
   }
 
   notes.push(`Devin records no token data locally; ${files.length} session(s) recorded as activity only.`);
-  return { tool: 'devin', events, filesScanned: files.length, notes };
+  return { tool: 'devin', events, filesScanned: files.length, notes, toolCalls: calls };
 }

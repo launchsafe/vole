@@ -7,18 +7,19 @@ import { Database } from '../sqlite';
 import type { DB } from '../db';
 import { openDb, insertAnomalies } from '../db';
 import type { Scanner } from '../db';
+import type { Anomaly } from '../types';
 import type { Surface } from './ai-surfaces';
+import { probeDir, fdaCanary } from './scan-access';
 
 /**
- * Tier 2 deep-dive evidence, one scanner: the facts that turn a surface into a
- * story — gateway model routes, home redirects, dependency trees, site
- * capabilities, launch context, and the readability states that make a
- * coverage claim honest. All of it is inventory: paths, names, shapes and
- * dates; never content, never values.
+ * Tier 2 deep-dive evidence: gateway model routes, home redirects (re-detected
+ * every pass), dependency trees, site capabilities, the FDA canary's surface row,
+ * ghost extensions, and the foreign-root / agent-home-moved detections. All of it
+ * is inventory: paths, names, shapes and dates; never content, never values.
  */
 
 /** Reads a launchd plist's raw XML and extracts Label, ProgramArguments, log paths. */
-function readPlist(p: string): { label: string; argv: string[]; logPaths: string[] } | null {
+export function readPlist(p: string): { label: string; argv: string[]; logPaths: string[] } | null {
   try {
     const text = readFileSync(p, 'utf8');
     const label = text.match(/<key>Label<\/key>\s*<string>([^<]+)<\/string>/)?.[1] ?? p;
@@ -73,17 +74,22 @@ function modelRouteSurfaces(db: DB): Surface[] {
   return out;
 }
 
-/** Agent-home redirects: CLAUDE_CONFIG_DIR / CODEX_HOME / GEMINI override the default roots. */
+/**
+ * Agent-home redirects, re-detected EVERY pass (feature 30): the env names are
+ * honored through paths.ts (claudeConfigDir/codexHome — owned by the homes batch,
+ * consumed here, never re-implemented). A value outside every known agent root is
+ * the agent_home_moved signal, checked in agentRootsPass below.
+ */
 function agentHomeRedirectSurfaces(): Surface[] {
   const out: Surface[] = [];
-  const checks: [envVar: string, tool: string, home: () => string][] = [
-    ['CLAUDE_CONFIG_DIR', 'Claude Code', () => join(homedir(), '.claude')],
-    ['CODEX_HOME', 'Codex', () => join(homedir(), '.codex')],
-    ['GEMINI_HOME', 'Gemini CLI', () => join(homedir(), '.gemini')],
+  const checks: [envVar: string, tool: string, actual: () => string, def: () => string][] = [
+    ['CLAUDE_CONFIG_DIR', 'Claude Code', () => paths.claudeConfigDir(), () => join(homedir(), '.claude')],
+    ['CODEX_HOME', 'Codex', () => paths.codexHome(), () => join(homedir(), '.codex')],
+    ['GEMINI_HOME', 'Gemini CLI', () => paths.geminiHome(), () => join(homedir(), '.gemini')],
   ];
-  for (const [envVar, tool, def] of checks) {
-    const v = process.env[envVar];
-    if (!v || v === def()) continue;
+  for (const [envVar, tool, actual, def] of checks) {
+    const v = actual();
+    if (!process.env[envVar] || v === def()) continue;
     out.push({
       surface_key: `agent-home:${envVar.toLowerCase()}`,
       kind: 'gateway',
@@ -155,30 +161,23 @@ function siteCapabilitySurfaces(): Surface[] {
 }
 
 /**
- * The launch context + FDA canary: one deliberate read of a TCC-protected path,
- * whose failure is the honest evidence of what this build can and cannot see.
- * A probe proves a permission state, nothing more.
+ * The launch context + FDA canary's surface row (feature 11): the probe itself
+ * lives in scan-access.ts so the outcome lands in scan_access under root
+ * 'tcc_canary'; this row is the human-readable surface that cites it.
  */
 function launchContextSurfaces(): Surface[] {
-  const out: Surface[] = [];
-  const canary = '/Library/Application Support/com.apple.TCC/TCC.db';
-  let readable = false;
-  try {
-    readFileSync(canary); // O_RDONLY on the protected path — succeeds only with FDA
-    readable = true;
-  } catch {
-    readable = false;
-  }
-  out.push({
+  const canary = fdaCanary();
+  return [{
     surface_key: 'launch-context:fda',
     kind: 'context',
     name: 'Full Disk Access',
-    path: canary,
-    evidence: readable
-      ? 'this process CAN read the TCC database — Full Disk Access is granted; collection runs with deep reach'
-      : 'this process CANNOT read the TCC database — Full Disk Access is NOT granted; sources behind TCC will read as absent, which is a permission fact, not an absence fact',
-  });
-  return out;
+    path: join(homedir(), 'Library/Application Support/com.apple.TCC/TCC.db'),
+    evidence: canary.state === 'ok'
+      ? 'this process CAN open the TCC database — Full Disk Access is granted; collection runs with deep reach'
+      : canary.state === 'unreadable'
+        ? `this process CANNOT open the TCC database (${canary.errno}) — Full Disk Access is NOT granted; sources behind TCC will read as absent, which is a permission fact, not an absence fact`
+        : 'the TCC database canary could not be probed — launch context unknown',
+  }];
 }
 
 /** Ghost extensions: the editor's state remembers extensions that are gone from disk. */
@@ -201,7 +200,6 @@ function ghostExtensionSurfaces(): Surface[] {
   try {
     const vscdbPath = join(home, 'Library/Application Support/Code/User/globalStorage/state.vscdb');
     if (existsSync(vscdbPath)) {
-      const { Database } = require('../sqlite') as typeof import('../sqlite');
       const vscdb = new Database(vscdbPath, { readonly: true, fileMustExist: true });
       for (const { key } of vscdb.prepare('SELECT key FROM ItemTable').all() as { key: string }[]) {
         const m = key.match(/^([a-z0-9-]+\.[a-z0-9-]+)\//i);
@@ -224,128 +222,6 @@ function ghostExtensionSurfaces(): Surface[] {
     });
   }
   return out;
-}
-
-/** The second-tier store prober: known artifact paths for tools without collectors yet. */
-function secondTierSurfaces(): Surface[] {
-  const out: Surface[] = [];
-  const home = homedir();
-  const probes: [path: string, name: string][] = [
-    [`${home}/.kiro`, 'Kiro'],
-    [`${home}/.windsurf`, 'Windsurf'],
-    [`${home}/.trae`, 'Trae'],
-    [`${home}/.zed`, 'Zed (agent data)'],
-    [`${home}/.factory`, 'Factory (droid)'],
-    [`${home}/.opencode`, 'OpenCode (already collected)'],
-    [`${home}/.qwen`, 'Qwen Code'],
-    [`${home}/.droid`, 'Droid'],
-    [`${home}/.sst/opencode`, 'OpenCode (sst)'],
-    [`${home}/.void`, 'Void editor'],
-  ];
-  for (const [dir, name] of probes) {
-    if (!existsSync(dir)) continue;
-    out.push({
-      surface_key: `store:${dir.replace(home, '~')}`,
-      kind: 'cli',
-      name,
-      path: dir,
-      evidence: `artifact directory present (${statSync(dir).isDirectory() ? 'dir' : 'file'}) — a future collector can read it; today it is inventory only`,
-    });
-  }
-  return out;
-}
-
-/**
- * The console-invisible spend ledger: which share of recorded usage no vendor
- * console can ever show (local models, routers, raw-key accounts). Computed
- * from stored rows — the exact figure, with its denominator.
- */
-function consoleCoverageNote(db: DB): { ok: boolean; notes?: string } {
-  const rows = db
-    .prepare(
-      `SELECT COUNT(*) AS n,
-              SUM(CASE WHEN model LIKE 'ollama/%' OR model LIKE 'openrouter/%'
-                        OR model LIKE 'github-copilot/%' OR model LIKE 'anthropic/%'
-                        OR model LIKE '%qwen%' OR model LIKE '%glm%' OR model LIKE '%fable%'
-                       THEN 1 ELSE 0 END) AS invisible
-       FROM usage_events WHERE source = 'live' AND total_tokens IS NOT NULL`,
-    )
-    .get() as { n: number; invisible: number | null };
-  const pct = rows.n ? Math.round(((rows.invisible ?? 0) / rows.n) * 100) : 0;
-  return {
-    ok: true,
-    notes: `console-blind spend: ${rows.invisible ?? 0} of ${rows.n} token-bearing rows (${pct}%) — models routed through gateways, routers and local runtimes that no vendor console reports`,
-  };
-}
-
-/** coverage_degraded: a source root that exists but can no longer be read. */
-function coverageDegradeCheck(db: DB, now: number): number {
-  const roots: [path: string, tool: string][] = [
-    [paths.claudeCodeProjects(), 'Claude Code transcripts'],
-    [paths.codexSessions(), 'Codex rollouts'],
-    [join(homedir(), '.grok', 'logs'), 'Grok logs'],
-  ];
-  let degraded = 0;
-  for (const [root, label] of roots) {
-    if (!existsSync(root)) continue; // absent is a no_source fact, not degradation
-    try {
-      readdirSync(root);
-    } catch (err) {
-      degraded++;
-      insertAnomalies(db, [{
-        anomaly_key: `coverage_degraded:${root}`,
-        rule: 'coverage_degraded' as never,
-        severity: 'warn',
-        tool: 'claude_code' as never,
-        session_id: null,
-        model: null,
-        window_start: now,
-        window_end: now,
-        title: `Coverage degraded: ${label}`,
-        detail: `${root} exists but reads failed: ${(err as Error).message}. Rows behind it will read as absent — a permission fact, not an absence fact.`,
-        observed: 1,
-        baseline: null,
-        threshold: null,
-        confidence: 'exact',
-        source: 'live',
-        detected_at: now,
-      }]);
-    }
-  }
-  return degraded;
-}
-
-/** foreign_root_transcript: usage rows whose cwd does not exist on THIS filesystem. */
-function foreignRootCheck(db: DB, now: number): number {
-  const rows = db
-    .prepare(
-      "SELECT DISTINCT project FROM usage_events WHERE project IS NOT NULL AND source = 'live' LIMIT 500",
-    )
-    .all() as { project: string }[];
-  let foreign = 0;
-  for (const { project } of rows) {
-    if (existsSync(project)) continue;
-    foreign++;
-    insertAnomalies(db, [{
-      anomaly_key: `foreign_root:${project}`,
-      rule: 'new_ai_surface' as never, // distinct-rule plumbing arrives with the enum; classified under inventory rules
-      severity: 'info',
-      tool: 'claude_code' as never,
-      session_id: null,
-      model: null,
-      window_start: now,
-      window_end: now,
-      title: `Foreign root: ${project}`,
-      detail: `usage was recorded with cwd ${project}, which does not exist on this filesystem — the transcript came from another machine, a container, or the directory was removed.`,
-      observed: 1,
-      baseline: null,
-      threshold: null,
-      confidence: 'exact',
-      source: 'live',
-      detected_at: now,
-    }]);
-  }
-  return foreign;
 }
 
 /** VS Code exact model usage: the languageModelStats the editor itself counts. */
@@ -377,6 +253,223 @@ function languageModelStats(db: DB): { model: string; tokens: number }[] {
   }
 }
 
+// ── agent_roots: the census re-run every pass (feature 30) ──────────────────────
+
+/** Known agent roots BEFORE this pass rewrites them — the baseline for "moved". */
+function knownAgentRoots(db: DB): { root_path: string; tool: string; discovered_by: string | null }[] {
+  return db
+    .prepare('SELECT root_path, tool, discovered_by FROM agent_roots')
+    .all() as { root_path: string; tool: string; discovered_by: string | null }[];
+}
+
+/**
+ * Environment of a same-uid agent process, read straight from ps -E: no hook, no
+ * injection, and only at the instant of the pass. Returns env var name→value
+ * pairs for the allowlisted redirect names, from any live claude/codex process.
+ */
+export function agentEnvironmentsFromPs(): { pid: number; env: Record<string, string> }[] {
+  const WATCH = ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'ANTHROPIC_BASE_URL'];
+  let out: string;
+  try {
+    out = execFileSync('ps', ['-E', '-o', 'pid=,command='], { encoding: 'utf8', timeout: 5000 });
+  } catch {
+    return []; // ps unavailable or refused: no processes readable, an unknown
+  }
+  const found: { pid: number; env: Record<string, string> }[] = [];
+  for (const line of out.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(.*)$/);
+    if (!m) continue;
+    const [, pidS, rest] = m;
+    if (!/\b(claude|codex)\b/i.test(rest)) continue;
+    const env: Record<string, string> = {};
+    for (const name of WATCH) {
+      const em = rest.match(new RegExp(`${name}=([^\\s]+)`));
+      if (em) env[name] = em[1]!;
+    }
+    if (Object.keys(env).length) found.push({ pid: Number(pidS), env });
+  }
+  return found;
+}
+
+/** Upsert the agent-home census; discovered_by is a stored fact, never re-derived over an old one. */
+export function upsertAgentRoots(db: DB, now: number): { root: string; tool: string; discoveredBy: string }[] {
+  const home = homedir();
+  const candidates: { root: string; tool: string; discoveredBy: string }[] = [
+    { root: paths.claudeConfigDir(), tool: 'Claude Code', discoveredBy: process.env.CLAUDE_CONFIG_DIR ? 'env:CLAUDE_CONFIG_DIR' : 'default' },
+    { root: paths.codexHome(), tool: 'Codex', discoveredBy: process.env.CODEX_HOME ? 'env:CODEX_HOME' : 'default' },
+  ];
+  for (const { pid, env } of agentEnvironmentsFromPs()) {
+    for (const [name, value] of Object.entries(env)) {
+      if (!value.startsWith('/')) continue; // relative or flag values are not roots
+      candidates.push({ root: value, tool: /CLAUDE/i.test(name) ? 'Claude Code' : 'Codex', discoveredBy: `ps:${pid}:${name}` });
+    }
+  }
+  const upsert = db.prepare(`
+    INSERT INTO agent_roots (root_path, tool, discovered_by, first_seen, last_seen)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(root_path) DO UPDATE SET last_seen = excluded.last_seen`);
+  const seen = new Map<string, { root: string; tool: string; discoveredBy: string }>();
+  for (const c of candidates) {
+    if (c.root === home || !c.root) continue; // the home dir itself is not an agent root
+    upsert.run(c.root, c.tool, c.discoveredBy, now, now);
+    if (!seen.has(c.root)) seen.set(c.root, c);
+  }
+  return [...seen.values()];
+}
+
+/** Does any known agent root hold this session's transcript? */
+function transcriptUnderAnyRoot(sessionId: string, roots: string[]): boolean {
+  for (const root of roots) {
+    const projects = join(root, 'projects');
+    let slugs: string[];
+    try {
+      slugs = readdirSync(projects);
+    } catch {
+      continue;
+    }
+    for (const slug of slugs) {
+      if (existsSync(join(projects, slug, `${sessionId}.jsonl`))) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * agent_home_moved: two exact signals. (a) a live session id from
+ * ~/.claude/sessions/<pid>.json whose transcript exists under NO known root;
+ * (b) a ps-read env name resolving to a path outside every root known BEFORE
+ * this pass registered it. Both keys are deterministic — no now().
+ */
+export function agentHomeMovedCheck(db: DB, now: number): number {
+  const priorRoots = knownAgentRoots(db).map((r) => r.root_path);
+  const anomalies: Anomaly[] = [];
+
+  // (b) env redirects outside every previously-known root.
+  for (const { pid, env } of agentEnvironmentsFromPs()) {
+    for (const [name, value] of Object.entries(env)) {
+      if (!value.startsWith('/') || priorRoots.includes(value)) continue;
+      anomalies.push({
+        anomaly_key: `agent_home_moved:env:${name}:${value}`,
+        rule: 'agent_home_moved',
+        severity: 'warn',
+        tool: 'claude_code',
+        session_id: null,
+        model: null,
+        window_start: now,
+        window_end: now,
+        title: `Agent home redirect: ${name}`,
+        detail:
+          `a live agent process (pid ${pid}, read via ps -E) runs with ${name}=${value}, a path outside every known agent root. ` +
+          `Collectors now follow it; sessions under the old root will read as absent.`,
+        observed: 1,
+        baseline: null,
+        threshold: null,
+        confidence: 'exact',
+        source: 'live',
+        detected_at: now,
+      });
+    }
+  }
+
+  // (a) live session ids whose transcripts live under no known root.
+  const sessionFiles = join(paths.claudeConfigDir(), 'sessions');
+  let files: string[];
+  try {
+    files = readdirSync(sessionFiles);
+  } catch {
+    files = [];
+  }
+  const allRoots = [...new Set([...priorRoots, paths.claudeConfigDir(), paths.codexHome()])];
+  for (const f of files) {
+    if (!f.endsWith('.json')) continue;
+    let session: { pid?: number; sessionId?: string };
+    try {
+      session = JSON.parse(readFileSync(join(sessionFiles, f), 'utf8')) as { pid?: number; sessionId?: string };
+    } catch {
+      continue;
+    }
+    if (!session.sessionId) continue;
+    let alive = false;
+    try {
+      if (typeof session.pid === 'number') process.kill(session.pid, 0);
+      alive = true;
+    } catch {
+      alive = false; // pid dead: an orphan-session trace cannot say where it went
+    }
+    if (!alive) continue;
+    if (transcriptUnderAnyRoot(session.sessionId, allRoots)) continue;
+    anomalies.push({
+      anomaly_key: `agent_home_moved:session:${session.sessionId}`,
+      rule: 'agent_home_moved',
+      severity: 'warn',
+      tool: 'claude_code',
+      session_id: session.sessionId,
+      model: null,
+      window_start: now,
+      window_end: now,
+      title: 'Live session under no known agent root',
+      detail:
+        `session ${session.sessionId} (pid ${session.pid}) is live, but its transcript exists under no known agent root ` +
+        `(${allRoots.length} root(s) checked). Its home was moved or redirected somewhere this pass cannot enumerate.`,
+      observed: 1,
+      baseline: null,
+      threshold: null,
+      confidence: 'exact',
+      source: 'live',
+      detected_at: now,
+    });
+  }
+  if (anomalies.length) insertAnomalies(db, anomalies);
+  return anomalies.length;
+}
+
+// ── foreign_root_transcript (feature 28) ───────────────────────────────────────
+
+/**
+ * A recorded working directory this filesystem cannot have. Routed through the
+ * four-state probe, NOT existsSync: a TCC-denied directory exists — calling it
+ * "foreign" would turn a permission fact into a wrong claim. Joined against
+ * agent_roots: the detail states how many known roots were checked against.
+ */
+export function foreignRootCheck(db: DB, now: number): number {
+  const rows = db
+    .prepare(
+      "SELECT DISTINCT project FROM usage_events WHERE project IS NOT NULL AND source = 'live' LIMIT 500",
+    )
+    .all() as { project: string }[];
+  const knownRoots = knownAgentRoots(db);
+  let foreign = 0;
+  const anomalies: Anomaly[] = [];
+  for (const { project } of rows) {
+    const probe = probeDir(project);
+    if (probe.state !== 'absent') continue; // ok / unreadable / exists: this volume may hold it
+    foreign++;
+    anomalies.push({
+      anomaly_key: `foreign_root:${project}`,
+      rule: 'foreign_root_transcript',
+      severity: 'info',
+      tool: 'claude_code',
+      session_id: null,
+      model: null,
+      window_start: now,
+      window_end: now,
+      title: `Foreign root: ${project}`,
+      detail:
+        `usage was recorded with cwd ${project}, which does not exist on this filesystem — the transcript came from ` +
+        `another machine, a container, or the directory was removed. ${knownRoots.length} known agent root(s) checked; none matches. ` +
+        `A foreign root proves the run's filesystem, never the machine or the container it ran on.`,
+      observed: 1,
+      baseline: null,
+      threshold: null,
+      confidence: 'exact',
+      source: 'live',
+      detected_at: now,
+    });
+  }
+  if (anomalies.length) insertAnomalies(db, anomalies);
+  return foreign;
+}
+
 export const tier2ExtrasScanner: Scanner = {
   name: 'tier2-extras',
   cadenceMs: 5 * 60_000,
@@ -390,7 +483,6 @@ export const tier2ExtrasScanner: Scanner = {
       ...siteCapabilitySurfaces(),
       ...launchContextSurfaces(),
       ...ghostExtensionSurfaces(),
-      ...secondTierSurfaces(),
     ];
     const upsert = db.prepare(`
       INSERT INTO ai_surfaces (surface_key, kind, name, path, evidence, version, extra, first_seen, last_seen)
@@ -400,15 +492,20 @@ export const tier2ExtrasScanner: Scanner = {
     for (const s of surfaces) {
       upsert.run(s.surface_key, s.kind, s.name, s.path, s.evidence, s.version ?? null, s.extra ?? null, now, now);
     }
-    const degraded = coverageDegradeCheck(db, now);
+    const roots = upsertAgentRoots(db, now);
+    const moved = agentHomeMovedCheck(db, now);
     const foreign = foreignRootCheck(db, now);
     const lm = languageModelStats(db);
-    const cov = consoleCoverageNote(db);
+    db.prepare(
+      `INSERT INTO column_provenance (table_name, column_name, migration_version, first_populated_ts, unbackfillable_rows)
+       VALUES (?, 'discovered_by', 20, ?, 0)
+       ON CONFLICT(table_name, column_name) DO UPDATE SET unbackfillable_rows = excluded.unbackfillable_rows`,
+    ).run('agent_roots', now);
     return {
       ok: true,
       notes:
-        `${surfaces.length} deep-dive surfaces · ${cov.notes}` +
-        (degraded ? ` · ${degraded} DEGRADED root(s)` : '') +
+        `${surfaces.length} deep-dive surfaces · ${roots.length} agent root(s)` +
+        (moved ? ` · ${moved} agent-home MOVED signal(s)` : '') +
         (foreign ? ` · ${foreign} foreign root(s)` : '') +
         (lm.length ? ` · editor-counted models: ${lm.length}` : ''),
     };

@@ -1,0 +1,79 @@
+{
+  "pack_version": 1,
+  "read_date": "2026-09-07",
+  "note": "Dated readings of public documentation. Every row is phrased 'as documented on <read_date>' and never as 'vendor X cannot' — a vendor may have shipped coverage since, and the annex invites the reader to check the cited URL. An admin can override any row via the pack precedence.",
+  "categories": [
+    {
+      "category": "vendor_console",
+      "label": "Vendor console (Anthropic Compliance API, OpenAI dashboard)",
+      "claims": [
+        {
+          "vendor": "Anthropic",
+          "url": "https://docs.claude.com/en/api/administration/compliance",
+          "read_date": "2026-09-07",
+          "documented_coverage": ["first-party Claude Code traffic on workspace accounts"],
+          "documented_exclusions": ["API-key authenticated traffic", "AWS Bedrock and GCP Vertex deployments", "personal (non-workspace) accounts"]
+        },
+        {
+          "vendor": "OpenAI (Codex)",
+          "url": "https://developers.openai.com/codex/",
+          "read_date": "2026-09-07",
+          "documented_coverage": ["Codex usage on ChatGPT-workspace accounts only"],
+          "documented_exclusions": ["non-ChatGPT-workspace accounts", "API-key traffic outside the workspace"]
+        }
+      ]
+    },
+    {
+      "category": "endpoint_dlp",
+      "label": "Endpoint DLP (agent processes on the laptop)",
+      "claims": [
+        {
+          "vendor": "category scope",
+          "url": "https://docs.claude.com/",
+          "read_date": "2026-09-07",
+          "documented_coverage": ["agent traffic that crosses a monitored network path"],
+          "documented_exclusions": ["agent-configured local gateways and model runtimes — traffic never leaves the loopback interface, so no endpoint network control sees it"]
+        }
+      ]
+    },
+    {
+      "category": "sase_proxy",
+      "label": "SASE / secure web proxy",
+      "claims": [
+        {
+          "vendor": "category scope",
+          "url": "https://docs.claude.com/",
+          "read_date": "2026-09-07",
+          "documented_coverage": ["cloud AI destinations reachable over proxied HTTP(S)"],
+          "documented_exclusions": ["local model runtimes (loopback never traverses the proxy)", "unknown API keys pointed at unlisted endpoints"]
+        }
+      ]
+    },
+    {
+      "category": "agent_gateway",
+      "label": "Agent gateway (LiteLLM, CCR, …)",
+      "claims": [
+        {
+          "vendor": "self-hosted gateways",
+          "url": "https://docs.litellm.ai/",
+          "read_date": "2026-09-07",
+          "documented_coverage": ["requests that traversed the gateway while it ran"],
+          "documented_exclusions": ["traffic routed around the gateway (direct API keys, local runtimes, gateway downtime)"]
+        }
+      ]
+    },
+    {
+      "category": "llm_observability",
+      "label": "LLM observability platform",
+      "claims": [
+        {
+          "vendor": "category scope",
+          "url": "https://docs.claude.com/",
+          "read_date": "2026-09-07",
+          "documented_coverage": ["applications whose SDK was wired to the platform"],
+          "documented_exclusions": ["CLI agents and IDE extensions that never import the platform SDK", "BYOK and local-runtime calls"]
+        }
+      ]
+    }
+  ]
+}

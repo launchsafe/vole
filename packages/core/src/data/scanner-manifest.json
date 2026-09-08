@@ -1,0 +1,87 @@
+{
+  "_comment": "The shipped read manifest: every scanner, the paths it reads, the fields it stores, the fields it deliberately does not read, and its default enabled state. Rendered verbatim in the app's 'What Vole reads' screen. A managed policy can force a scanner on (the point for fleet deployment) but that must be visible to the employee, never silent — resolveScannerSwitch reports 'locked' when a pin decides.",
+  "scanners": [
+    {
+      "name": "collector-health",
+      "paths": ["~/.vole/collector.pid"],
+      "fieldsStored": ["collector pid", "collector exe", "liveness state"],
+      "fieldsNeverRead": ["anything beyond the pidfile's own two keys"],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "ai-surfaces",
+      "paths": [
+        "/Applications",
+        "~/Applications",
+        "~/Library/LaunchAgents",
+        "/Library/LaunchAgents",
+        "/Library/LaunchDaemons",
+        "~/Library/Application Support/Google/Chrome/Default/Secure Preferences",
+        "~/.vscode/extensions/extensions.json",
+        "~/.cursor/extensions/extensions.json",
+        "~/.antigram/extensions/extensions.json",
+        "~/Library/Preferences (bundle id plists, names only)",
+        "PATH bin directories (/usr/local/bin, ~/.local/bin, ~/.cargo/bin, ~/go/bin, ~/.npm-global/bin)"
+      ],
+      "fieldsStored": ["app names", "bundle identifiers", "versions", "install paths", "gateway alias maps", "extension names"],
+      "fieldsNeverRead": ["Chrome profile content", "browsing history", "page content", "credentials"],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "tier2-extras",
+      "paths": [
+        "~/Library/LaunchAgents and /Library/Launch{Agents,Daemons} plists (Label, ProgramArguments, log paths)",
+        "gateway config files named in launchd arguments (.yaml/.yml/.json)",
+        "Chrome content_settings exceptions (origin + capability, no content)",
+        "~/.vscode, ~/.cursor, ~/.antigram extensions.json",
+        "readability probes (O_RDONLY canaries) on agent store roots"
+      ],
+      "fieldsStored": ["model route aliases", "site capabilities per origin", "dependency names and versions", "readability states"],
+      "fieldsNeverRead": ["browser content", "extension source code", "config values beyond names"],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "dlp",
+      "paths": [
+        "~/.claude/projects",
+        "~/.claude/shell-snapshots",
+        "~/.claude/settings.json",
+        "~/.claude/settings.local.json",
+        "~/.claude.json",
+        "~/.codex/thread_history_1.sqlite",
+        "~/.copilot/ide",
+        "~/.cursor/ai-tracking/ai-code-tracking.db",
+        "~/.gemini/antigravity-ide",
+        "~/Library/Application Support/Devin/User/acp-messages"
+      ],
+      "fieldsStored": ["secret fingerprints (HMAC)", "byte counts", "media types", "file paths"],
+      "fieldsNeverRead": ["prompt text", "tool arguments", "message bodies", "credential values"],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "posture-deep",
+      "paths": [
+        "~/.claude.json (mcp servers)",
+        "~/.codex/config.toml (mcp servers)",
+        "agent homes (~/.claude, ~/.codex, ~/.gemini)",
+        "consented repo roots: CLAUDE.md, AGENTS.md, .cursorrules, .github/copilot-instructions.md"
+      ],
+      "fieldsStored": ["MCP server names and endpoints", "command shapes", "repo instruction file presence"],
+      "fieldsNeverRead": ["repo file content", "environment variable values", "keys"],
+      "defaultEnabled": true,
+      "consentTier": "normal"
+    },
+    {
+      "name": "shell-history",
+      "paths": ["~/.zsh_history", "~/.bash_history", "~/.local/share/fish/fish_history"],
+      "fieldsStored": ["byte receipt (bytes read / windows matched / rows stored)", "matched-line sha256 fingerprints", "counts only"],
+      "fieldsNeverRead": ["command text", "command arguments", "per-command timestamps"],
+      "defaultEnabled": false,
+      "consentTier": "explicit"
+    }
+  ]
+}

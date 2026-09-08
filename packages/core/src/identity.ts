@@ -54,20 +54,18 @@ export function principalLabel(username: string): string {
   return `user-${principalKey(username).slice(2, 8)}`;
 }
 
-/** Account class from the auth path — the model prefix carries the evidence. */
-export function classifyAccount(model: string | null): 'org_oauth' | 'personal' | 'raw_key' | 'router' | 'unknown' {
-  if (!model) return 'unknown';
-  if (model.startsWith('github-copilot/')) return 'org_oauth';
-  if (model.startsWith('anthropic/')) return 'router';
-  if (model.startsWith('openrouter/')) return 'router';
-  if (model.startsWith('ollama/')) return 'raw_key'; // local model — no account at all
-  // anthropic models via a CCR-hex alias → a local router
-  if (/ccr-h[0-9a-f]{16,}/.test(model)) return 'router';
-  return 'unknown';
-}
+// classifyAccount moved to ./identity/accounts.ts and rewritten to read the
+// AUTH PATH (oauthAccount, key shape, base-URL, router config) with the spec
+// vocabulary org_oauth | personal_oauth | api_key | cloud_provider | team_seat |
+// unknown — a model name alone never decides an account class.
 
-/** Upserts the current principal + device — called once per collect pass. */
-export function recordIdentity(db: DB, username: string): void {
+/**
+ * Upserts the current principal + device — called once per collect pass.
+ * Tier 3: hostname history is upserted per (device_key, hostname) instead of
+ * overwriting, so a fleet keyed on the stable id keeps every name the
+ * machine ever had (and a renamed laptop's history stays one laptop's).
+ */
+export function recordIdentity(db: DB, username: string, hostnameNow: string = hostname()): void {
   const now = Date.now();
   const pk = principalKey(username);
   db.prepare(`
@@ -75,11 +73,17 @@ export function recordIdentity(db: DB, username: string): void {
     VALUES (?, ?, ?, ?)
     ON CONFLICT(principal_key) DO UPDATE SET last_seen = excluded.last_seen`)
     .run(pk, principalLabel(username), now, now);
+  const dk = deviceKey();
   db.prepare(`
     INSERT INTO devices (device_key, hostname, first_seen, last_seen)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(device_key) DO UPDATE SET last_seen = excluded.last_seen, hostname = excluded.hostname`)
-    .run(deviceKey(), hostname(), now, now);
+    .run(dk, hostnameNow, now, now);
+  db.prepare(`
+    INSERT INTO hostname_history (device_key, hostname, first_seen, last_seen)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(device_key, hostname) DO UPDATE SET last_seen = excluded.last_seen`)
+    .run(dk, hostnameNow, now, now);
 }
 
 /**

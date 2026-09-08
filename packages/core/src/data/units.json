@@ -1,0 +1,4 @@
+{
+  "$about": "Builtin billing-unit declarations (tier 8 #27). Empty by design: the builtin ships NO conversion, because an invented rate is exactly the number this feature exists to refuse. An admin declares rates in ~/.vole/units.json (or $VOLE_UNITS): a JSON array of {vendor, unit, usd_per_unit, effective_from (epoch ms), note, author}. Vendor-native units (Copilot AIC, Cursor totalCents, ChatGPT seats, premium requests) are recorded with usd_per_unit NULL and render an em dash until a declaration prices them. Seat prices are allocations, never spend: they are never summed into a spend total even when declared.",
+  "declarations": []
+}

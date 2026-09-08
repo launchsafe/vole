@@ -1,0 +1,73 @@
+{
+  "as_of": "2026-09-07",
+  "source": "data/advisories.json",
+  "note": "Shipped offline floor table — frozen into the build exactly as pricing.json is, never fetched, never a claim that a version is safe. Every entry's dates, versions and URLs are verbatim from the incident research in docs/enterprise/market.json; where the research records no CVE id, cve is null rather than a guess.",
+  "entries": [
+    {
+      "id": "adv-gemini-cli-readme-hijack",
+      "tool": "gemini_cli",
+      "cve": null,
+      "fixed_in": ["0.1.14"],
+      "affects_range": "<0.1.14",
+      "title": "Gemini CLI README hijack: allowlisted grep followed by a whitespace-hidden second command exfiltrated env vars",
+      "url": "https://tracebit.com/blog/code-exec-deception-gemini-ai-cli-hijack",
+      "published": "2025-07-28",
+      "class": "prompt_injection"
+    },
+    {
+      "id": "adv-amazon-q-destructive-prompt",
+      "tool": "amazon_q",
+      "cve": "CVE-2025-8217",
+      "fixed_in": [],
+      "affects_range": "=1.84.0",
+      "title": "Amazon Q VS Code 1.84.0 shipped an attacker-committed wipe-everything prompt via an over-scoped CodeBuild token",
+      "url": "https://github.com/aws/aws-toolkit-vscode/security/advisories/GHSA-7g7f-ff96-5gcw",
+      "published": "2025-07-23",
+      "class": "supply_chain"
+    },
+    {
+      "id": "adv-cursor-mcpoison",
+      "tool": "cursor",
+      "cve": "CVE-2025-54136",
+      "fixed_in": ["1.3.9"],
+      "affects_range": "<1.3.9",
+      "title": "Cursor MCPoison: approved MCP entries could be silently swapped for a reverse shell re-run on every project open",
+      "url": "https://research.checkpoint.com/2025/cursor-vulnerability-mcpoison/",
+      "published": "2025-08-05",
+      "class": "mcp_poisoning"
+    },
+    {
+      "id": "adv-cursor-duneslide",
+      "tool": "cursor",
+      "cve": "CVE-2026-50548",
+      "fixed_in": ["3.0"],
+      "affects_range": "<3.0",
+      "title": "Cursor DuneSlide (CVE-2026-50548/50549, CVSS 9.8): zero-click injection escaped the 2.x terminal sandbox",
+      "url": "https://thehackernews.com/2026/07/critical-cursor-flaws-could-let-prompt.html",
+      "published": "2026-07-02",
+      "class": "sandbox_escape"
+    },
+    {
+      "id": "adv-claude-code-ifs-bypass",
+      "tool": "claude_code",
+      "cve": "CVE-2025-66032",
+      "fixed_in": ["1.0.93", "1.0.105", "1.0.111"],
+      "affects_range": "<1.0.111",
+      "title": "Claude Code $IFS read-only bypass and siblings (CVE-2025-58764/CVE-2025-59536): mis-parsed $IFS let read-only-classified commands execute arbitrary code",
+      "url": "https://github.com/advisories/GHSA-xq4m-mc3c-vvg3",
+      "published": "2025-12-03",
+      "class": "sandbox_bypass"
+    },
+    {
+      "id": "adv-claude-code-project-file-rce",
+      "tool": "claude_code",
+      "cve": "CVE-2026-21852",
+      "fixed_in": [],
+      "affects_range": null,
+      "title": "Claude Code project-file RCE and API-key exfiltration via ANTHROPIC_BASE_URL (CVE-2025-59536, CVE-2026-21852); no fixed-in version recorded in the research, so exposure is uncomputable",
+      "url": "https://research.checkpoint.com/2026/rce-and-api-token-exfiltration-through-claude-code-project-files-cve-2025-59536/",
+      "published": "2026-02-24",
+      "class": "supply_chain"
+    }
+  ]
+}

@@ -2,10 +2,13 @@ import { readdirSync, existsSync, statSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { skeletonize, type ToolCallRow } from '../toolcalls/bind';
 import { paths } from '../paths';
-import { getState, setState, type DB } from '../db';
+import { getState, type DB } from '../db';
 import { parseLine } from '../util/jsonl';
 import { contentOf, type Content } from '../content';
 import { computeCost } from '../pricing';
+import { Database } from '../sqlite';
+import { advanceCursor } from '../cursors';
+import { insertEventLinks, insertAgentEdges, recordSessionPlan, insertQuotaObservations, stampObservedAt, widenToolCalls } from './ledger';
 import type { CollectorResult, RateLimitObservation, UsageEvent } from '../types';
 
 /**
@@ -27,9 +30,13 @@ import type { CollectorResult, RateLimitObservation, UsageEvent } from '../types
  * and cost stays NULL, since pricing needs the input/output split. The exact meter
  * delta is always kept in `total_tokens`.
  *
- * Rollouts are few and small, so each file is re-read in full rather than tracked by
- * offset: deltas must be computed from a known starting point, and `event_key` +
- * INSERT OR IGNORE already make re-reads free.
+ * v2 (tier 1 #10 + #21 + #51): the collector joins ~/.codex/state_5.sqlite —
+ * `threads` carries the git branch and the spawn tree per rollout path
+ * (`first_user_message` is prompt content and is never SELECTed) — keys tool
+ * calls by the source-native `function_call.call_id`, captures the turn_context
+ * confinement claim (sandbox_policy / permission_profile / workspace_roots) so
+ * the claim-violation rules can falsify it, and proves the account plan from
+ * the session's own rate_limits payload with binding evidence 'session_proved'.
  */
 
 interface TokenUsage {
@@ -40,24 +47,60 @@ interface TokenUsage {
   total_tokens?: number;
 }
 
+interface RateLimits {
+  primary?: {
+    used_percent?: number;
+    window_minutes?: number;
+    plan_type?: string;
+    limit_id?: string;
+    individual_limit?: number | null;
+    spend_control_reached?: boolean | null;
+  };
+}
+
+interface TurnContextPayload {
+  type?: string;
+  model?: string;
+  cwd?: string;
+  approval_policy?: string | null;
+  sandbox_policy?: { type?: string | null } | null;
+  permission_profile?: {
+    file_system?: { entries?: { access?: string | null }[] } | null;
+    network?: { access?: string | null } | null;
+  } | null;
+  workspace_roots?: string[] | null;
+}
+
 interface CodexLine {
   type?: string;
   timestamp?: string;
+  ordinal?: number;
   payload?: {
     type?: string;
     id?: string;
+    /** response_item function_call / custom_tool_call / local_shell_call call_id */
+    call_id?: string;
     model?: string;
     cwd?: string;
-    /** response_item function_call / custom_tool_call / local_shell_call */
     name?: string;
+    arguments?: { cmd?: string | string[]; workdir?: string | null } | null;
     info?: {
       total_token_usage?: TokenUsage;
       last_token_usage?: TokenUsage;
       model_context_window?: number;
     };
-    rate_limits?: {
-      primary?: { used_percent?: number; window_minutes?: number };
-    };
+    rate_limits?: RateLimits;
+    /* turn_context (a nested payload under the event wrapper) */
+    approval_policy?: string | null;
+    sandbox_policy?: { type?: string | null } | null;
+    permission_profile?: TurnContextPayload['permission_profile'];
+    workspace_roots?: string[] | null;
+    /* token_usage_record (tier 7 #37): the vendor-join keys */
+    response_id?: string | null;
+    turn_id?: string | null;
+    root_turn_id?: string | null;
+    thread_id?: string | null;
+    ord?: number | null;
   };
 }
 
@@ -71,12 +114,175 @@ function walkRollouts(dir: string, out: string[]): void {
   }
 }
 
-export function collectCodex(db: DB): CollectorResult {
+// ── state_5.sqlite: the thread registry (v2) ─────────────────────────────────
+
+interface ThreadRow {
+  id: string;
+  rollout_path: string | null;
+  git_branch: string | null;
+}
+
+interface StateDb {
+  /** rollout_path -> git branch (only non-NULL branches). */
+  branchByRollout: Map<string, string>;
+  /** spawn edges straight from the vendor's own table, mapped into agent_edges rows. */
+  edges: { edge_key: string; session_id: string; agent_id: string | null; parent_agent_id: string | null; spawn_depth: number | null }[];
+}
+
+/**
+ * ~/.codex/state_5.sqlite: `threads` (id, rollout_path, git_branch, …) and
+ * `thread_spawn_edges` (parent/child thread ids). Read-only; the columns are
+ * probed by name so an older layout degrades to "no join" instead of throwing.
+ * threads.first_user_message is PROMPT CONTENT — never SELECTed.
+ */
+function readCodexState(sessionsRoot: string): StateDb {
+  const empty: StateDb = { branchByRollout: new Map(), edges: [] };
+  // state_5.sqlite sits beside the sessions/ directory the rollouts live in —
+  // derived from the resolved root so a redirected CODEX_HOME follows along.
+  const dbPath = join(sessionsRoot, '..', 'state_5.sqlite');
+  if (!existsSync(dbPath)) return empty;
+  let src: InstanceType<typeof Database>;
+  try {
+    src = new Database(dbPath, { readonly: true, fileMustExist: true });
+  } catch {
+    return empty;
+  }
+  try {
+    const tables = new Set(
+      (src.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((r) => r.name),
+    );
+    const state: StateDb = { branchByRollout: new Map(), edges: [] };
+    if (tables.has('threads')) {
+      for (const t of src
+        .prepare('SELECT id, rollout_path, git_branch FROM threads')
+        .all() as ThreadRow[]) {
+        if (t.rollout_path && t.git_branch) state.branchByRollout.set(t.rollout_path, t.git_branch);
+      }
+    }
+    if (tables.has('thread_spawn_edges')) {
+      // Column names are probed, not assumed: (parent, child, depth) under
+      // whichever names this Codex build uses.
+      const cols = new Set(
+        (src.prepare('PRAGMA table_info(thread_spawn_edges)').all() as { name: string }[]).map((c) => c.name),
+      );
+      const pick = (...names: string[]) => names.find((n) => cols.has(n)) ?? null;
+      const parentCol = pick('parent_thread_id', 'parent_id', 'parent');
+      const childCol = pick('child_thread_id', 'child_id', 'thread_id', 'child');
+      const depthCol = pick('depth', 'spawn_depth');
+      if (parentCol && childCol) {
+        // Column names come from PRAGMA, never user input — quoted as identifiers.
+        const q = (c: string) => `"${c.replace(/"/g, '""')}"`;
+        const sql = `SELECT ${q(parentCol)} AS parent, ${q(childCol)} AS child` +
+          (depthCol ? `, ${q(depthCol)} AS depth` : ', NULL AS depth') +
+          ' FROM thread_spawn_edges';
+        for (const e of src.prepare(sql).all() as { parent: string; child: string; depth: number | null }[]) {
+          // The child thread is its own agent under the PARENT's session tree —
+          // a session's spend stays one tree, the same contract Claude Code's
+          // agentId gives.
+          state.edges.push({
+            edge_key: `codex-spawn:${e.child}`,
+            session_id: e.parent,
+            agent_id: e.child,
+            parent_agent_id: e.parent,
+            spawn_depth: typeof e.depth === 'number' ? e.depth : null,
+          });
+        }
+      }
+    }
+    return state;
+  } catch {
+    return empty;
+  } finally {
+    src.close();
+  }
+}
+
+// ── the declared claim (tier 5 #51) ──────────────────────────────────────────
+
+export interface CodexTurnClaim {
+  session_id: string | null;
+  ts: number;
+  sandbox_type: string | null;
+  network_access: string | null;
+  workspace_roots: string[];
+  approval_policy: string | null;
+}
+
+export interface CodexClaimViolation {
+  kind: 'sandbox' | 'network';
+  call_key: string;
+  session_id: string | null;
+  tool: string;
+  /** The path the call touched, resolved as far as the line allows. */
+  path: string | null;
+  declared_root: string | null;
+  declared_policy: string | null;
+}
+
+/**
+ * Falsifies the turn_context confinement claim against the observed call.
+ * sandbox: a function_call workdir (or a path resolved out of exec cmd) outside
+ * workspace_roots while sandbox_policy.type is read-only / workspace-write.
+ * network: permission_profile.network claims restricted/none but the call is a
+ * fetch-shaped tool (the observed wire, tier 8's OTLP lane, completes it).
+ *
+ * Pure on purpose: the detection registry (detect/) calls this per pass with
+ * the rows the collector stored; the rule literals `sandbox_claim_violated` /
+ * `network_claim_violated` are flagged for the types.ts union.
+ */
+export function codexClaimViolations(
+  claims: CodexTurnClaim[],
+  calls: { tool_call_key: string; session_id: string | null; name: string; path: string | null; ts: number }[],
+): CodexClaimViolation[] {
+  const out: CodexClaimViolation[] = [];
+  for (const c of calls) {
+    // The claim in force: the latest turn_context at or before the call.
+    const claim = claims
+      .filter((t) => (c.session_id ? t.session_id === c.session_id : true) && t.ts <= c.ts)
+      .sort((a, b) => a.ts - b.ts)
+      .at(-1);
+    if (!claim || !c.path) continue;
+    if (claim.sandbox_type === 'read-only' || claim.sandbox_type === 'workspace-write') {
+      const inside = claim.workspace_roots.some((r) => c.path === r || c.path.startsWith(r.endsWith('/') ? r : `${r}/`));
+      if (!inside) {
+        out.push({
+          kind: 'sandbox',
+          call_key: c.tool_call_key,
+          session_id: c.session_id,
+          tool: c.name,
+          path: c.path,
+          declared_root: claim.workspace_roots[0] ?? null,
+          declared_policy: claim.sandbox_type,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+// ── the collector ───────────────────────────────────────────────────────────
+
+/**
+ * CollectorResult widened locally (types.ts is a coordinated seam): this pass's
+ * parsed turn claims, for the claim-violation rules the detection registry runs.
+ */
+export interface CodexCollectorResult extends CollectorResult {
+  codexClaims?: CodexTurnClaim[];
+}
+
+export function collectCodex(db: DB): CodexCollectorResult {
   const root = paths.codexSessions();
   const events: UsageEvent[] = [];
   const rateLimits: RateLimitObservation[] = [];
   const notes: string[] = [];
   const calls: ToolCallRow[] = [];
+  const links: { event_key: string; vendor: string; link_kind: string; link_id: string }[] = [];
+  const claims: CodexTurnClaim[] = [];
+  // tool_calls posture widening + observed_at stamping are deferred to commit:
+  // the CLI inserts this pass's rows (insertEvents, insertToolCalls) before it.
+  const pendingWiden: { keys: string[]; permission_mode: string | null; autonomy_rank: string | null }[] = [];
+  const eventKeys: string[] = [];
+  const now = Date.now(); // the collector clock — observed_at, never a key
   let filesScanned = 0;
   let filesSkipped = 0;
 
@@ -84,13 +290,19 @@ export function collectCodex(db: DB): CollectorResult {
     return { tool: 'codex', events, filesScanned: 0, notes: [`No directory at ${root}`], sourceState: 'no_source' };
   }
 
+  const state = readCodexState(root);
+  if (state.edges.length) {
+    insertAgentEdges(db, state.edges.map((e) => ({ ...e, agent_type: 'codex_subagent' })));
+  }
+
   const files: string[] = [];
   walkRollouts(root, files);
 
   for (const filePath of files) {
-    // Scan cursor: rollout files are append-only, so an unchanged (size, mtime)
-    // pair means every line is already stored under its stable event_key. This is
-    // what keeps a 5-second poll from re-parsing 100 MB of rollouts forever.
+    // Scan cursor: rollout files are append-only, so the byte offset IS the
+    // declared cursor — an unchanged offset means every line is already stored
+    // under its stable event_key (mtime is checked too: an in-place rewrite at
+    // the same size is caught by the head digest in advanceCursor).
     let st;
     try {
       st = statSync(filePath);
@@ -119,6 +331,9 @@ export function collectCodex(db: DB): CollectorResult {
     // the one thing a sub-agent does NOT replay from its parent. Matched by shape
     // at the stem's end — the timestamp's dashes make position-based slicing wrong.
     const rolloutId = basename(filePath, '.jsonl').match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)?.[0] ?? null;
+    // v2: the thread registry holds the git branch keyed by rollout path —
+    // read from the vendor's own DB, never guessed.
+    const gitBranch = state.branchByRollout.get(filePath) ?? null;
 
     let sessionId: string | null = null;
     let model: string | null = null;
@@ -127,6 +342,8 @@ export function collectCodex(db: DB): CollectorResult {
     // Tool calls the model issued since the previous token_count; attributed to the
     // next one, which is the meter reading that covers them.
     let pendingTools: string[] = [];
+    // The confinement claim in force for calls until the next turn_context.
+    let claim: CodexTurnClaim | null = null;
 
     // Turn-scoped duration: the gap from the previous event in this rollout to
     // the token_count that closed the turn. Includes queue time; the kind says so.
@@ -145,10 +362,23 @@ export function collectCodex(db: DB): CollectorResult {
         return;
       }
       // session_meta.model is null in real logs; the live model lives on turn_context,
-      // as does the cwd (it can change mid-session).
+      // as does the cwd (it can change mid-session). v2: turn_context is also the
+      // DECLARED confinement claim — sandbox_policy, permission_profile and
+      // workspace_roots — which the claim-violation rules falsify against calls.
       if (entry.type === 'turn_context') {
         model = entry.payload?.model ?? model;
         project = entry.payload?.cwd ?? project;
+        const sandboxType = entry.payload?.sandbox_policy?.type ?? null;
+        const networkAccess = entry.payload?.permission_profile?.network?.access ?? null;
+        claim = {
+          session_id: sessionId,
+          ts: anyTs ?? 0,
+          sandbox_type: sandboxType,
+          network_access: networkAccess,
+          workspace_roots: entry.payload?.workspace_roots ?? [],
+          approval_policy: entry.payload?.approval_policy ?? null,
+        };
+        claims.push(claim);
         return;
       }
       // Agent identity (v2): computed once per event, before every consumer.
@@ -156,25 +386,50 @@ export function collectCodex(db: DB): CollectorResult {
       if (entry.type === 'response_item' && TOOL_ITEMS.has(entry.payload?.type ?? '')) {
         const name = entry.payload?.name ?? entry.payload?.type ?? 'tool';
         pendingTools.push(name);
+        // Source-native key (tier 5 #5): the call_id the vendor itself mints —
+        // `codex:<function_call.call_id|custom_tool_call.call_id>`. The
+        // file:index fallback only exists for rollouts from before call ids.
+        const callKey = `codex:${entry.payload?.call_id ?? entry.payload?.id ?? `${filePath}:${index}`}`;
         // The ledger, phase 1: the call itself. Codex states no per-call outcome,
         // so status stays NULL until (never, today) a result shape exists — an
         // honest unknown, and turn_status says so when a turn-level verdict lands.
         calls.push({
-          tool_call_key: `codex:${filePath}:${index}`,
+          tool_call_key: callKey,
           tool: 'codex',
           name,
-          shape: skeletonize(name, null),
+          shape: skeletonize(name, entry.payload?.arguments?.cmd ?? null),
           args_digest: null, // call args are encrypted reasoning payloads
           session_id: sessionId,
           agent_id: agentIdNow,
-          ts: entry.timestamp ? Date.parse(entry.timestamp) : Date.now(),
+          ts: anyTs ?? now, // explicit fallback: the collector clock, labelled by observed_at ≈ ts
           raw_ref: `${filePath}#${index}`,
         });
+        if (claim && (claim.sandbox_type || claim.approval_policy)) {
+          pendingWiden.push({
+            keys: [callKey],
+            permission_mode: claim.approval_policy,
+            autonomy_rank: claim.sandbox_type,
+          });
+        }
+        return;
+      }
+      // token_usage_record (tier 7 #37): the vendor-join keys — response_id,
+      // turn_id, root_turn_id, thread_id and the line ordinal. These are what a
+      // SIEM pivots on to reach the vendor's own record of this call.
+      if (entry.payload?.type === 'token_usage_record') {
+        const p = entry.payload;
+        const key = `codex:${filePath}:${index}`;
+        if (p.response_id) links.push({ event_key: key, vendor: 'codex', link_kind: 'response_id', link_id: p.response_id });
+        if (p.turn_id) links.push({ event_key: key, vendor: 'codex', link_kind: 'turn_id', link_id: p.turn_id });
+        if (p.root_turn_id) links.push({ event_key: key, vendor: 'codex', link_kind: 'root_turn_id', link_id: p.root_turn_id });
+        if (p.thread_id) links.push({ event_key: key, vendor: 'codex', link_kind: 'thread_id', link_id: p.thread_id });
+        const ord = p.ord ?? entry.ordinal ?? null;
+        if (ord !== null) links.push({ event_key: key, vendor: 'codex', link_kind: 'ordinal', link_id: String(ord) });
         return;
       }
       if (entry.payload?.type !== 'token_count') return;
 
-      const ts = entry.timestamp ? Date.parse(entry.timestamp) : Date.now();
+      const ts = anyTs ?? now; // explicit fallback: labelled by observed_at ≈ ts
 
       const rl = entry.payload.rate_limits?.primary;
       if (rl?.used_percent !== undefined) {
@@ -185,6 +440,26 @@ export function collectCodex(db: DB): CollectorResult {
           used_percent: rl.used_percent,
           window_minutes: rl.window_minutes ?? 0,
         });
+        // The plan, proved by the session's own file (tier 3 #21) — never by
+        // opening auth.json, which holds three live tokens. plan_type is what
+        // the server told the client at that moment, not a billing record.
+        if (sessionId && rl.plan_type) {
+          recordSessionPlan(db, sessionId, rl.plan_type, 'codex', ts);
+        }
+        if (sessionId && rl.limit_id !== undefined) {
+          insertQuotaObservations(db, [
+            {
+              tool: 'codex',
+              session_id: sessionId,
+              ts,
+              // kind names the meter the observation came from; limit_value
+              // carries individual_limit when the server stated one.
+              kind: rl.limit_id ?? 'rate_limit_primary',
+              used_percent: rl.used_percent,
+              limit_value: typeof rl.individual_limit === 'number' ? rl.individual_limit : null,
+            },
+          ]);
+        }
       }
 
       const info = entry.payload.info;
@@ -201,7 +476,6 @@ export function collectCodex(db: DB): CollectorResult {
       // a sub-agent and the uuid is its agent id (the spawn edge: this rollout, of
       // that session).
       const agentId = agentIdNow ?? null;
-      void agentId;
 
       // Meter delta: what this event consumed, per Codex's own running total.
       let delta: number;
@@ -270,7 +544,9 @@ export function collectCodex(db: DB): CollectorResult {
         model,
         session_id: sessionId,
         project,
-        git_branch: null,
+        // v2: the branch from the vendor's own thread registry (state_5.sqlite),
+        // not a guess — NULL only when the registry has no row for this rollout.
+        git_branch: gitBranch,
         ts,
         // Codex has no cache-write concept: 0 here is structural, not a measurement.
         cache_write_5m_tokens: 0,
@@ -294,14 +570,44 @@ export function collectCodex(db: DB): CollectorResult {
         duration_ms: duration,
         duration_kind: duration !== null ? ('turn_scoped' as const) : null,
       });
+      eventKeys.push(`codex:${filePath}:${index}`);
       if (anyTs !== null) prevEventTs = anyTs;
     });
 
-    // Advance the cursor after a successful full read. Append-only files make this
-    // safe even if the store insert later fails: re-reading recomputes the same
-    // stable event_keys and the upsert no-ops.
-    setState(db, filePath, 'codex', st.size, Math.trunc(st.mtimeMs));
+    // Advance the declared cursor after a successful full read. Append-only files
+    // make this safe even if the store insert later fails: re-reading recomputes
+    // the same stable event_keys and the upsert no-ops. The chained prefix digest
+    // covers only the bytes consumed this pass (offset → size).
+    advanceCursor(db, {
+      sourceKey: filePath,
+      tool: 'codex',
+      offset: st.size,
+      mtimeMs: st.mtimeMs,
+      stat: { ino: st.ino, birthtimeMs: st.birthtimeMs },
+    });
   }
 
-  return { tool: 'codex', events, filesScanned, notes, rateLimits, toolCalls: calls };
+  if (links.length) insertEventLinks(db, links);
+
+  return {
+    tool: 'codex',
+    events,
+    filesScanned,
+    notes,
+    rateLimits,
+    toolCalls: calls,
+    // Exposed for the detection registry's claim-violation rules (integration):
+    // the parsed turn claims, joined against tool_calls by the registry.
+    codexClaims: claims,
+    commit: () => {
+      // Posture widening after insertToolCalls stored this pass's calls.
+      for (const w of pendingWiden) {
+        widenToolCalls(db, w.keys, {
+          permission_mode: w.permission_mode,
+          autonomy_rank: w.autonomy_rank,
+        });
+      }
+      stampObservedAt(db, eventKeys, now);
+    },
+  };
 }

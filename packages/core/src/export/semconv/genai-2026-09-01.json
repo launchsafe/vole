@@ -1,0 +1,44 @@
+{
+  "name": "genai",
+  "version": "2026-09-01",
+  "upstream": "open-telemetry/semantic-conventions-genai",
+  "upstream_commit": "5ca9052bc796ef1e497200b1d558fd87a201f335",
+  "snapshot_date": "2026-09-01",
+  "stability": "development",
+  "schema_url": "https://opentelemetry.io/semconv/genai/2026-09-01",
+  "note": "Vendored snapshot of the GenAI attribute registry at the pinned commit above. Compiled by hand from model/gen-ai/registry.yaml at that commit; the attribute-existence test fails if the serializer emits a gen_ai.* name that is not in this file with a matching type. Attributes with no semconv home (cost, confidence, the cache-write 5m/1h split, subagent roll-up) live under a vole.* prefix and are non-portable by definition.",
+  "attributes": {
+    "gen_ai.provider.name": {
+      "type": "string",
+      "members": ["openai", "gcp.gen_ai", "gcp.vertex_ai", "gcp.gemini", "anthropic", "cohere", "azure.ai.inference", "azure.ai.openai", "ibm.watsonx.ai", "aws.bedrock", "perplexity", "x_ai", "deepseek", "groq", "mistral_ai", "moonshot_ai"]
+    },
+    "gen_ai.operation.name": {
+      "type": "string",
+      "members": ["chat", "generate_content", "text_completion", "embeddings", "retrieval", "fetch_response", "create_agent", "invoke_agent", "execute_tool", "invoke_workflow", "plan", "search_memory", "create_memory", "update_memory", "upsert_memory", "delete_memory", "create_memory_store", "delete_memory_store"]
+    },
+    "gen_ai.request.model": { "type": "string" },
+    "gen_ai.response.model": { "type": "string" },
+    "gen_ai.response.id": { "type": "string" },
+    "gen_ai.response.finish_reasons": { "type": "string[]" },
+    "gen_ai.usage.input_tokens": { "type": "int" },
+    "gen_ai.usage.output_tokens": { "type": "int" },
+    "gen_ai.usage.reasoning.output_tokens": { "type": "int" },
+    "gen_ai.usage.cache_read.input_tokens": { "type": "int" },
+    "gen_ai.usage.cache_write.input_tokens": { "type": "int" },
+    "gen_ai.conversation.id": { "type": "string" },
+    "gen_ai.agent.id": { "type": "string" },
+    "gen_ai.agent.name": { "type": "string" },
+    "gen_ai.agent.description": { "type": "string" },
+    "gen_ai.agent.version": { "type": "string" },
+    "gen_ai.tool.name": { "type": "string" },
+    "gen_ai.tool.call.id": { "type": "string" },
+    "gen_ai.token.type": { "type": "string", "members": ["input", "output"] }
+  },
+  "legacy_attributes": {
+    "gen_ai.system": {
+      "type": "string",
+      "deprecated": true,
+      "note": "The pre-provider spelling Vole's first OTLP exporter emitted. Kept here only so the dual-emit migration window (--dual-emit) can emit old and new names side by side; remove with the snapshot that drops it."
+    }
+  }
+}

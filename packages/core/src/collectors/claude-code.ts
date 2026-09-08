@@ -1,11 +1,13 @@
 import { readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { paths } from '../paths';
-import { getState, setState, type DB } from '../db';
+import { getState, type DB } from '../db';
 import { readNewLines, parseLine } from '../util/jsonl';
 import { computeCost, contextWindow } from '../pricing';
 import type { CollectorResult, UsageEvent } from '../types';
 import { skeletonize, argsDigest, type ToolCallRow } from '../toolcalls/bind';
+import { advanceCursor, readSlice } from '../cursors';
+import { insertEventLinks, stampObservedAt, widenToolCalls } from './ledger';
 
 /**
  * Claude Code — exact, rich and live: per-message tokens, cache split and model.
@@ -32,6 +34,16 @@ interface ClaudeUsage {
     ephemeral_1h_input_tokens?: number;
   };
   output_tokens_details?: { thinking_tokens?: number };
+  /**
+   * Server-side tools are billed per REQUEST, not per token (tier 8 #33). Every
+   * occurrence on this machine is zero, but the fields exist on 29k lines —
+   * stored so a reconciliation against Anthropic's cost_report does not carry
+   * a permanent unexplained delta the day someone runs a web search.
+   */
+  server_tool_use?: {
+    web_search_requests?: number;
+    web_fetch_requests?: number;
+  };
 }
 
 interface ClaudeEntry {
@@ -43,6 +55,13 @@ interface ClaudeEntry {
   cwd?: string;
   gitBranch?: string;
   isApiErrorMessage?: boolean;
+  /** Present on assistant lines that reached the API (tier 7 #37). */
+  requestId?: string;
+  /** Present on user lines (tier 7 #37). */
+  promptId?: string;
+  /** The bridge-session owner uuids, on type:'bridge-session' entries. */
+  ownerAccountUuid?: string;
+  ownerOrganizationUuid?: string;
   message?: {
     id?: string;
     model?: string;
@@ -99,8 +118,13 @@ export function collectClaudeCode(db: DB): CollectorResult {
     return { tool: 'claude_code', events, filesScanned, notes: [`No directory at ${root}`], sourceState: 'no_source' };;
   }
 
-  const pending: [string, number, number][] = [];
+  const pending: [string, number, number, number][] = []; // [path, prevOffset, newOffset, mtime]
   const calls: ToolCallRow[] = [];
+  // mcp__<server>__<tool> calls, widened with the server column after the bind.
+  const mcpCallServers = new Map<string, string>();
+  // Vendor-join keys per message id (emitted only for the copies that win).
+  const linksByMessage = new Map<string, { link_kind: string; link_id: string }[]>();
+  const sessionLinks: { session_id: string; link_kind: string; link_id: string }[] = [];
   for (const filePath of walkTranscripts(root)) {
     filesScanned++;
 
@@ -138,11 +162,34 @@ export function collectClaudeCode(db: DB): CollectorResult {
               args_digest: argsDigest(block.input),
               session_id: entry.sessionId ?? null,
               agent_id: entry.agentId ?? null,
+              // explicit fallback: the collector clock when the source has no
+              // timestamp — labelled by observed_at ≈ ts, never trusted as a fact
               ts: ts ?? Date.now(),
               raw_ref: filePath,
             });
+            // The vendor's own tool-call id (toolu_…) is a join key into the
+            // vendor's own records, and the mcp server prefix names which
+            // server the call went to.
+            if (entry.message?.id) {
+              const l = linksByMessage.get(entry.message.id) ?? [];
+              l.push({ link_kind: 'toolu_id', link_id: block.id });
+              linksByMessage.set(entry.message.id, l);
+            }
+            if (block.name.startsWith('mcp__')) {
+              const parts = block.name.split('__');
+              if (parts.length >= 3) mcpCallServers.set(`claude_code:${block.id}`, parts[1]!);
+            }
           }
         }
+        if (entry.message?.id && entry.requestId) {
+          const l = linksByMessage.get(entry.message.id) ?? [];
+          l.push({ link_kind: 'request_id', link_id: entry.requestId });
+          linksByMessage.set(entry.message.id, l);
+        }
+      }
+      if (entry.type === 'bridge-session' && entry.sessionId) {
+        if (entry.ownerAccountUuid) sessionLinks.push({ session_id: entry.sessionId, link_kind: 'owner_account_uuid', link_id: entry.ownerAccountUuid });
+        if (entry.ownerOrganizationUuid) sessionLinks.push({ session_id: entry.sessionId, link_kind: 'owner_organization_uuid', link_id: entry.ownerOrganizationUuid });
       }
       // ── phase 2 (the result) ──
       if (entry.type === 'user' && Array.isArray((entry as unknown as ClaudeUserEntry).message?.content)) {
@@ -161,6 +208,7 @@ export function collectClaudeCode(db: DB): CollectorResult {
             shape: null,
             session_id: entry.sessionId ?? null,
             agent_id: entry.agentId ?? null,
+            // explicit fallback: the collector clock, labelled by observed_at ≈ ts
             ts: ts ?? Date.now(),
             status: denied ? 'denied' : block.is_error ? 'error' : 'success',
             status_source: 'result_flag',
@@ -181,13 +229,26 @@ export function collectClaudeCode(db: DB): CollectorResult {
             : null;
         keep(messageId, toEvent(entry, entry.message.usage, messageId, filePath, duration));
         lastMsgId = messageId;
+        // The server-tool billing line (tier 8 #33): per-request counts, keyed
+        // by message id. Stored even at 0 — the feature is proven by field
+        // presence, and a zero count must be distinguishable from an absent
+        // field. ponytail: lives in event_links until a foundation change adds
+        // web_search_requests / web_fetch_requests columns to usage_events; the
+        // read model is a SUM over link_kind until then.
+        const st = entry.message.usage.server_tool_use;
+        if (st && (st.web_search_requests !== undefined || st.web_fetch_requests !== undefined)) {
+          const l = linksByMessage.get(messageId) ?? [];
+          if (st.web_search_requests !== undefined) l.push({ link_kind: 'web_search_requests', link_id: String(st.web_search_requests) });
+          if (st.web_fetch_requests !== undefined) l.push({ link_kind: 'web_fetch_requests', link_id: String(st.web_fetch_requests) });
+          linksByMessage.set(messageId, l);
+        }
       } else if (ts !== null) {
         turnStartTs = ts;   // a new turn began; the clock restarts here
         lastMsgId = null;
       }
     }
 
-    pending.push([filePath, result.newOffset, result.mtimeMs]);
+    pending.push([filePath, state?.last_offset ?? 0, result.newOffset, result.mtimeMs]);
   }
 
   for (const [id, ev] of best) {
@@ -195,6 +256,23 @@ export function collectClaudeCode(db: DB): CollectorResult {
     if (union?.length) ev.tools = union.join(',');
     events.push(ev);
   }
+
+  // Vendor-join keys: one row per (message, kind, id) — only for the copies
+  // that won coalescing, so a placeholder copy's links never dangle.
+  const linkRows = [
+    ...[...linksByMessage.entries()].flatMap(([id, ls]) =>
+      ls.map((l) => ({ event_key: `claude_code:${id}`, vendor: 'claude_code', ...l })),
+    ),
+    ...sessionLinks.map((l) => ({
+      event_key: `claude_code:session:${l.session_id}`,
+      vendor: 'claude_code',
+      link_kind: l.link_kind,
+      link_id: l.link_id,
+    })),
+  ];
+  if (linkRows.length) insertEventLinks(db, linkRows);
+
+  const now = Date.now(); // the collector clock — observed_at, never a key
   return {
     tool: 'claude_code',
     events,
@@ -202,7 +280,25 @@ export function collectClaudeCode(db: DB): CollectorResult {
     notes,
     toolCalls: calls,
     commit: () => {
-      for (const [p, off, mtime] of pending) setState(db, p, 'claude_code', off, mtime);
+      // The declared cursor, now with the chained prefix digest and the
+      // head/inode/birthtime integrity columns (tier 7 #31): the digest covers
+      // only the bytes this pass consumed, so a poll costs O(new bytes).
+      for (const [p, prevOff, off, mtime] of pending) {
+        advanceCursor(db, {
+          sourceKey: p,
+          tool: 'claude_code',
+          offset: off,
+          mtimeMs: mtime,
+          newBytes: readSlice(p, Math.min(prevOff, off), off),
+        });
+      }
+      // The mcp server column: mcp__<server>__<tool> names the server, widened
+      // onto the stored rows after insertToolCalls ran.
+      if (mcpCallServers.size) {
+        for (const [k, server] of mcpCallServers) widenToolCalls(db, [k], { server });
+      }
+      // The second clock on every row this pass contributed.
+      stampObservedAt(db, events.map((e) => e.event_key), now);
     },
   };
 }
@@ -261,6 +357,7 @@ function toEvent(
     session_id: entry.sessionId ?? null,
     project: entry.cwd ?? null,
     git_branch: entry.gitBranch ?? null,
+    // explicit fallback: the collector clock when the source carries no timestamp
     ts: entry.timestamp ? Date.parse(entry.timestamp) : Date.now(),
     ...tokens,
     reasoning_tokens: usage.output_tokens_details?.thinking_tokens ?? 0,

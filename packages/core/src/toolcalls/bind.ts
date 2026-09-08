@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { DB } from '../db';
+import { classifyCommand } from './patterns';
 
 /**
  * The tool-call ledger's write path — the Tier 5 seam every behaviour rule
@@ -8,12 +9,19 @@ import type { DB } from '../db';
  * widens it later. The bind is NULL-ONLY: a stored fact is never overwritten,
  * only a NULL may be filled — so a late-arriving result from a later pass
  * completes the row, and re-reading old data is always a no-op.
+ *
+ * Tier 5 deep additions: the mcp__<server>__<tool> split (server + tool_name),
+ * four-state authority with evidence for ALL states (not just 'denied'),
+ * authorization_basis, and the versioned pattern pack stamp (pattern_id +
+ * pack_version). The authority inputs (denial_kind, permission_mode,
+ * allowed_tools, command) are derivation-only — never stored, never logged.
  */
 
 export type CallStatus = 'success' | 'error' | 'denied' | 'none';
 export type StatusSource = 'result_flag' | 'exit_code' | 'log_flag' | 'turn_status';
 export type Authority = 'denied' | 'pre_authorised' | 'posture_waived' | 'no_record';
 export type CallDurationKind = 'measured' | 'turn_scoped' | null;
+export type AuthorizationBasis = 'bypass_no_gate' | 'mode_auto' | 'rule_matched' | 'human_denied' | 'unknown';
 
 export interface ToolCallRow {
   tool_call_key: string;
@@ -30,6 +38,94 @@ export interface ToolCallRow {
   duration_kind?: CallDurationKind;
   authority?: Authority | null;
   raw_ref?: string | null;
+  // ── derivation-only inputs (never stored) ──
+  /** Top-level toolDenialKind on the result entry ('user-rejected', …). */
+  denial_kind?: string | null;
+  /** The tool_result text matched the versioned denial-phrase list. */
+  denied_phrase?: boolean;
+  /** Raw posture in force at call time (permissionMode / sandbox_policy.type). */
+  permission_mode?: string | null;
+  /** allowedTools from the nearest preceding command_permissions attachment. */
+  allowed_tools?: string[] | null;
+  /** The raw command string, for pattern-pack classification only. */
+  command?: string | null;
+}
+
+/** permission_mode / sandbox raw string -> normalised autonomy + rank. */
+const AUTONOMY: Record<string, { autonomy: string; rank: string }> = {
+  'bypassPermissions': { autonomy: 'full_auto', rank: 'bypass' },
+  'acceptEdits': { autonomy: 'auto_edit', rank: 'accept_edits' },
+  'default': { autonomy: 'default', rank: 'default' },
+  'plan': { autonomy: 'plan', rank: 'plan' },
+  // Codex sandbox_policy.type values
+  'danger-full-access': { autonomy: 'full_auto', rank: 'bypass' },
+  'workspace-write': { autonomy: 'auto_edit', rank: 'accept_edits' },
+  'read-only': { autonomy: 'read_only', rank: 'default' },
+};
+
+export function autonomyFor(modeRaw: string | null | undefined): { autonomy: string; rank: string } | null {
+  if (!modeRaw) return null;
+  return AUTONOMY[modeRaw] ?? null; // an unrecognised raw mode stays unknown — never 'default'
+}
+
+/** Split `mcp__<server>__<tool>` into its dimensions (feature 23). */
+export function splitMcpName(name: string): { server: string | null; tool_name: string } {
+  if (name.startsWith('mcp__')) {
+    const rest = name.slice(5);
+    const i = rest.indexOf('__');
+    if (i > 0) return { server: rest.slice(0, i), tool_name: rest.slice(i + 2) };
+  }
+  return { server: null, tool_name: name };
+}
+
+/**
+ * Four-state authority (feature 10) + authorization_basis (feature 8), with the
+ * evidence line naming the artifact that proved each state. Precedence: a
+ * denial beats a posture waiver beats a rule match — a call inside a bypass
+ * interval that was still refused was NOT ungated.
+ */
+export function resolveAuthority(r: ToolCallRow): {
+  authority: Authority | null;
+  authority_evidence: string | null;
+  authorization_basis: AuthorizationBasis | null;
+  autonomy_rank: string | null;
+} {
+  const denied = Boolean(r.denial_kind) || Boolean(r.denied_phrase);
+  const auto = autonomyFor(r.permission_mode);
+  const allowed = r.allowed_tools?.includes(r.name) ?? false;
+  if (denied) {
+    return {
+      authority: 'denied',
+      authority_evidence: r.denial_kind ? `toolDenialKind=${r.denial_kind}` : 'denial phrase in tool_result',
+      authorization_basis: 'human_denied',
+      autonomy_rank: null,
+    };
+  }
+  if (auto?.autonomy === 'full_auto') {
+    return {
+      authority: 'posture_waived',
+      authority_evidence: `permissionMode=${r.permission_mode}`,
+      authorization_basis: 'bypass_no_gate',
+      autonomy_rank: auto.rank,
+    };
+  }
+  if (allowed) {
+    return {
+      authority: 'pre_authorised',
+      authority_evidence: `allowedTools:${r.name}`,
+      authorization_basis: 'rule_matched',
+      autonomy_rank: auto?.rank ?? null,
+    };
+  }
+  if (auto) {
+    return {
+      authority: 'no_record',
+      authority_evidence: `permissionMode=${r.permission_mode} (no gate recorded for this call)`,
+      authorization_basis: 'mode_auto',
+      autonomy_rank: auto.rank,
+    };
+  }
+  return { authority: 'no_record', authority_evidence: null, authorization_basis: null, autonomy_rank: null };
 }
 
 /**
@@ -116,13 +212,28 @@ const INSERT_CALL = `
 INSERT INTO tool_calls (
   tool_call_key, tool, name, shape, args_digest, session_id, agent_id, ts,
   status, status_source, duration_ms, duration_kind, authority, raw_ref,
+  server, tool_name, authority_evidence, authorization_basis, pattern_id,
+  pack_version, permission_mode, autonomy_rank,
   first_seen, last_seen
 ) VALUES (
   @tool_call_key, @tool, @name, @shape, @args_digest, @session_id, @agent_id, @ts,
   @status, @status_source, @duration_ms, @duration_kind, @authority, @raw_ref,
+  @server, @tool_name, @authority_evidence, @authorization_basis, @pattern_id,
+  @pack_version, @permission_mode, @autonomy_rank,
   @now, @now
 )
 ON CONFLICT(tool_call_key) DO UPDATE SET
+  authority     = CASE WHEN excluded.authority = 'denied' THEN 'denied'
+                       WHEN tool_calls.authority IS NOT NULL THEN tool_calls.authority
+                       ELSE excluded.authority END,
+  authority_evidence = CASE WHEN excluded.authority = 'denied' AND tool_calls.authority <> 'denied'
+                            THEN excluded.authority_evidence
+                            WHEN tool_calls.authority_evidence IS NULL THEN excluded.authority_evidence
+                            ELSE tool_calls.authority_evidence END,
+  authorization_basis = CASE WHEN excluded.authorization_basis = 'human_denied' AND tool_calls.authorization_basis <> 'human_denied'
+                             THEN 'human_denied'
+                             WHEN tool_calls.authorization_basis IS NULL THEN excluded.authorization_basis
+                             ELSE tool_calls.authorization_basis END,
   status        = CASE WHEN tool_calls.status IS NULL AND excluded.status IS NOT NULL
                         THEN excluded.status ELSE tool_calls.status END,
   status_source = CASE WHEN tool_calls.status_source IS NULL AND excluded.status_source IS NOT NULL
@@ -131,25 +242,39 @@ ON CONFLICT(tool_call_key) DO UPDATE SET
                         THEN excluded.duration_ms ELSE tool_calls.duration_ms END,
   duration_kind = CASE WHEN tool_calls.duration_kind IS NULL AND excluded.duration_kind IS NOT NULL
                         THEN excluded.duration_kind ELSE tool_calls.duration_kind END,
-  authority     = CASE WHEN tool_calls.authority IS NULL AND excluded.authority IS NOT NULL
-                        THEN excluded.authority ELSE tool_calls.authority END,
   shape         = CASE WHEN length(COALESCE(excluded.shape, '')) > length(COALESCE(tool_calls.shape, ''))
                         THEN excluded.shape ELSE tool_calls.shape END,
   args_digest   = COALESCE(tool_calls.args_digest, excluded.args_digest),
   session_id    = COALESCE(tool_calls.session_id, excluded.session_id),
   agent_id      = COALESCE(tool_calls.agent_id, excluded.agent_id),
+  server        = COALESCE(tool_calls.server, excluded.server),
+  tool_name     = COALESCE(NULLIF(excluded.tool_name, ''), tool_calls.tool_name),
+  permission_mode = COALESCE(tool_calls.permission_mode, excluded.permission_mode),
+  autonomy_rank = COALESCE(tool_calls.autonomy_rank, excluded.autonomy_rank),
+  pattern_id    = COALESCE(tool_calls.pattern_id, excluded.pattern_id),
+  pack_version  = COALESCE(tool_calls.pack_version, excluded.pack_version),
   last_seen     = excluded.last_seen
 WHERE (tool_calls.status IS NULL AND excluded.status IS NOT NULL)
    OR (tool_calls.duration_ms IS NULL AND excluded.duration_ms IS NOT NULL)
    OR (tool_calls.authority IS NULL AND excluded.authority IS NOT NULL)
+   OR (excluded.authority = 'denied' AND tool_calls.authority IS NOT NULL AND tool_calls.authority <> 'denied')
    OR (tool_calls.status_source IS NULL AND excluded.status_source IS NOT NULL)
+   OR (tool_calls.authority_evidence IS NULL AND excluded.authority_evidence IS NOT NULL)
+   OR (tool_calls.authorization_basis IS NULL AND excluded.authorization_basis IS NOT NULL)
+   OR (tool_calls.server IS NULL AND excluded.server IS NOT NULL)
+   OR (tool_calls.tool_name IS NULL AND excluded.tool_name IS NOT NULL)
+   OR (tool_calls.permission_mode IS NULL AND excluded.permission_mode IS NOT NULL)
+   OR (tool_calls.autonomy_rank IS NULL AND excluded.autonomy_rank IS NOT NULL)
+   OR (tool_calls.pattern_id IS NULL AND excluded.pattern_id IS NOT NULL)
    OR (length(COALESCE(excluded.shape, '')) > length(COALESCE(tool_calls.shape, '')))`;
 
 /**
- * The two-phase bind. Phase 1 (the call): key + name + shape + digest + ts.
- * Phase 2 (the result): status, duration, authority — each fills a NULL, never
- * overwrites. Re-emitting the same phase is a no-op (the WHERE gates the update
- * on actual widening), so re-reading sources costs nothing.
+ * The two-phase bind. Phase 1 (the call): key + name + shape + digest + ts + the
+ * derivation inputs available at issue time (posture, allowedTools). Phase 2
+ * (the result): status, duration, denial — each fills a NULL, never overwrites,
+ * with the single deliberate exception that a later 'denied' supersedes an
+ * earlier weaker authority state, because a refusal is proof a gate existed.
+ * Re-emitting the same phase is a no-op, so re-reading sources costs nothing.
  *
  * @returns number of rows inserted or widened.
  */
@@ -160,6 +285,9 @@ export function insertToolCalls(db: DB, calls: ToolCallRow[]): number {
     let changed = 0;
     const now = Date.now();
     for (const r of rows) {
+      const auth = resolveAuthority(r);
+      const { server, tool_name } = r.name ? splitMcpName(r.name) : { server: null, tool_name: null };
+      const classified = r.command ? classifyCommand(r.command) : null;
       changed += stmt.run({
         tool_call_key: r.tool_call_key,
         tool: r.tool,
@@ -173,8 +301,16 @@ export function insertToolCalls(db: DB, calls: ToolCallRow[]): number {
         status_source: r.status_source ?? null,
         duration_ms: r.duration_ms ?? null,
         duration_kind: r.duration_kind ?? null,
-        authority: r.authority ?? null,
+        authority: auth.authority ?? r.authority ?? null,
         raw_ref: r.raw_ref ?? null,
+        server,
+        tool_name,
+        authority_evidence: auth.authority_evidence,
+        authorization_basis: auth.authorization_basis,
+        pattern_id: classified?.pattern_id ?? null,
+        pack_version: classified?.pack_version ?? null,
+        permission_mode: r.permission_mode ?? null,
+        autonomy_rank: auth.autonomy_rank,
         now,
       }).changes;
     }

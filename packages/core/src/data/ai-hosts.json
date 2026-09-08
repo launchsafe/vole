@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "comment": "The shipped Web-AI host allowlist. Hostname strings ONLY — every consumer of this pack counts visits to these hosts and never reads a URL, title or page body. A host here is an adoption signal, never usage, volume or a leak measurement.",
+  "hosts": [
+    { "host": "chatgpt.com", "label": "ChatGPT" },
+    { "host": "chat.openai.com", "label": "ChatGPT" },
+    { "host": "claude.ai", "label": "Claude" },
+    { "host": "gemini.google.com", "label": "Gemini" },
+    { "host": "perplexity.ai", "label": "Perplexity" },
+    { "host": "www.perplexity.ai", "label": "Perplexity" },
+    { "host": "poe.com", "label": "Poe" },
+    { "host": "copilot.microsoft.com", "label": "Copilot" },
+    { "host": "huggingface.co", "label": "Hugging Face" },
+    { "host": "x.ai", "label": "Grok" },
+    { "host": "grok.com", "label": "Grok" },
+    { "host": "mistral.ai", "label": "Mistral" },
+    { "host": "chat.mistral.ai", "label": "Mistral" },
+    { "host": "deepseek.com", "label": "DeepSeek" },
+    { "host": "chat.deepseek.com", "label": "DeepSeek" },
+    { "host": "together.ai", "label": "Together" },
+    { "host": "openrouter.ai", "label": "OpenRouter" }
+  ]
+}

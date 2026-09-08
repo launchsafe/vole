@@ -1,0 +1,115 @@
+{
+  "mapping_version": 1,
+  "note": "Vole's editorial judgement about which control a rule provides EVIDENCE TOWARD — not a certification and not an assessor's opinion. Versioned, shown with its version, worded 'evidence toward', never 'compliant with'.",
+  "frameworks": {
+    "OWASP ASI": "https://genai.owasp.org/",
+    "OWASP MCP": "https://genai.owasp.org/",
+    "MITRE ATLAS": "https://atlas.mitre.org/",
+    "SOC 2": "https://www.aicpa.org/"
+  },
+  "rules": {
+    "sensitive_read_unasked": {
+      "provenance": {
+        "incident_name": "MCP tool poisoning (a tool description reading sensitive files it was never asked to)",
+        "incident_date": "2025-06",
+        "url": "https://genai.owasp.org/",
+        "detectability": "exact"
+      },
+      "controls": [
+        { "framework": "OWASP MCP", "control_id": "tool-poisoning", "control_title": "MCP tool descriptions must not carry hidden directives or undeclared file access" },
+        { "framework": "MITRE ATLAS", "control_id": "CS0045", "control_title": "LLM prompt injection via poisoned tooling" }
+      ]
+    },
+    "cross_scope_read_then_publish": {
+      "provenance": {
+        "incident_name": "MCP tool poisoning (read-then-exfiltrate chain)",
+        "incident_date": "2025-06",
+        "url": "https://genai.owasp.org/",
+        "detectability": "exact"
+      },
+      "controls": [
+        { "framework": "OWASP MCP", "control_id": "tool-poisoning", "control_title": "MCP tool descriptions must not carry hidden directives or undeclared file access" },
+        { "framework": "MITRE ATLAS", "control_id": "CS0045", "control_title": "LLM prompt injection via poisoned tooling" }
+      ]
+    },
+    "agent_self_authorised": {
+      "provenance": {
+        "incident_name": "Nx s1ngularity (--dangerously-skip-permissions recon)",
+        "incident_date": "2025-03",
+        "url": "https://github.com/nrwl/nx",
+        "detectability": "exact"
+      },
+      "controls": [
+        { "framework": "OWASP ASI", "control_id": "ASI02", "control_title": "Excessive agency — autonomous execution of privileged actions" },
+        { "framework": "OWASP ASI", "control_id": "ASI03", "control_title": "Excessive agency — identity or permission escalation by the agent itself" }
+      ]
+    },
+    "unattended_run": {
+      "provenance": {
+        "incident_name": "Nx s1ngularity (unattended CI runs with permissions skipped)",
+        "incident_date": "2025-03",
+        "url": "https://github.com/nrwl/nx",
+        "detectability": "exact"
+      },
+      "controls": [
+        { "framework": "OWASP ASI", "control_id": "ASI02", "control_title": "Excessive agency — autonomous execution of privileged actions" }
+      ]
+    },
+    "headless_bypass_launch": {
+      "provenance": {
+        "incident_name": "Nx s1ngularity (a dependency launching agents with --dangerously-skip-permissions)",
+        "incident_date": "2025-03",
+        "url": "https://github.com/nrwl/nx",
+        "detectability": "exact"
+      },
+      "controls": [
+        { "framework": "OWASP ASI", "control_id": "ASI02", "control_title": "Excessive agency — autonomous execution of privileged actions" }
+      ]
+    },
+    "hidden_unicode_instruction": {
+      "provenance": {
+        "incident_name": "Rules File Backdoor (hidden Unicode in agent instruction files)",
+        "incident_date": "2026-02",
+        "url": "https://docs.anthropic.com/en/docs/claude-code/security",
+        "detectability": "exact"
+      },
+      "controls": [
+        { "framework": "MITRE ATLAS", "control_id": "CS0045", "control_title": "LLM prompt injection via poisoned tooling" }
+      ]
+    },
+    "mcp_endpoint_alias": {
+      "provenance": {
+        "incident_name": "MCP server-instruction rug-pull (same server name, new endpoint)",
+        "incident_date": "2025-08",
+        "url": "https://genai.owasp.org/",
+        "detectability": "exact"
+      },
+      "controls": [
+        { "framework": "OWASP MCP", "control_id": "server-identity", "control_title": "MCP server identity must be keyed on the endpoint, not the display name" }
+      ]
+    },
+    "agent_config_modified": {
+      "provenance": {
+        "incident_name": "Keyv worm (a dependency planting agent hooks)",
+        "incident_date": "2026-01",
+        "url": "https://github.com/jaredwray/keyv",
+        "detectability": "exact"
+      },
+      "controls": [
+        { "framework": "OWASP ASI", "control_id": "ASI03", "control_title": "Excessive agency — identity or permission escalation by the agent itself" },
+        { "framework": "SOC 2", "control_id": "CC7.1", "control_title": "Configuration-change monitoring" }
+      ]
+    },
+    "content_stale": {
+      "provenance": {
+        "incident_name": "Version-vs-CVE drift (an old advisory floor means unknown, not clean)",
+        "incident_date": "2026-02",
+        "url": "https://genai.owasp.org/",
+        "detectability": "exact"
+      },
+      "controls": [
+        { "framework": "SOC 2", "control_id": "CC7.1", "control_title": "Detection-content freshness and monitoring" }
+      ]
+    }
+  }
+}

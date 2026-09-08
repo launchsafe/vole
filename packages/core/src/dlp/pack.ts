@@ -1,21 +1,31 @@
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import type { ValidatorName } from './validators';
 
 /**
- * The DLP detector pack — versioned, checksummed, verifiable offline.
+ * The DLP detector pack — versioned, checksummed, verifiable offline
+ * (tier 4, #117).
+ *
+ * Detectors are rows, not code: the pack lives in data/dlp-detectors.toml
+ * (bundled like data/pricing.json), is parsed once here, and carries a sha256
+ * over its canonical rows that the loader can verify before any byte is
+ * scanned. A pack bump is a reviewable diff, and the pack version is stamped
+ * onto dlp_scan_state so a bump can queue a re-scan of retained evidence.
  *
  * Lineage: keyword prefilter → provider regex → entropy with stopwords, the
- * Gitleaks/detect-secrets shape. Every rule names what it matches and what it
- * must never match, because a false positive in a security product is a
- * pager-incident: entropy rules carry stopwords and a length floor, and the
- * whole pack carries a sha256 the loader verifies before any byte is scanned.
- *
- * The pack is data, not code: a bump re-scores retained evidence (content_rev
- * on incidents is the Tier 6 continuation of this property).
+ * Gitleaks/detect-secrets shape. Data-class rows additionally carry an offline
+ * checksum validator (luhn/mod-97/mod-11/CRC32/JWT/PEM) because entropy alone
+ * is a known false-positive engine, and salted hashes of known public example
+ * values so a documentation fixture auto-classifies as a fixture.
  */
 
 export interface Detector {
   id: string;
-  /** Prefilter: at least one of these words must appear within the window. */
+  /** credential | payment_card | iban | bank_account | jwt | private_key. */
+  klass: string;
+  /** Vendor namespace for credential shapes; null for data classes. */
+  provider: string | null;
+  /** Prefilter: at least one of these must appear (case-folded). Empty = always run. */
   keywords: string[];
   /** The value shape itself. */
   pattern: RegExp;
@@ -23,78 +33,150 @@ export interface Detector {
   minEntropy?: number;
   /** Known token shapes that are NOT secrets (test fixtures, placeholders). */
   stopwords?: RegExp;
+  /** Offline checksum validator; gates the sighting (except crc32_tail). */
+  validator?: ValidatorName;
   severity: 'critical' | 'warn' | 'info';
   note: string;
+  /** Salted sha256 hashes of known public example values (fixture classifier). */
+  exampleHashes: string[];
 }
 
-export const PACK_VERSION = 1;
+/** The salt for public-example literal hashes — public by design (the literals are public). */
+export const PACK_SALT = 'vole:dlp:pack:v2';
 
-export const DETECTORS: Detector[] = [
-  {
-    id: 'aws-access-key',
-    keywords: ['AKIA', 'aws'],
-    pattern: /\b(AKIA[0-9A-Z]{16})\b/g,
-    severity: 'critical',
-    note: 'AWS access key id — the 20-char AKIA shape',
-  },
-  {
-    id: 'openai-api-key',
-    keywords: ['sk-', 'openai', 'api_key', 'apikey'],
-    pattern: /\b(sk-[A-Za-z0-9_-]{20,})(?![A-Za-z0-9_-])/g,
-    stopwords: /sk-(test|example|your|xxx|placeholder|123456)/i,
-    severity: 'critical',
-    note: 'OpenAI-style API key',
-  },
-  {
-    id: 'anthropic-api-key',
-    keywords: ['sk-ant-', 'anthropic'],
-    pattern: /\b(sk-ant-[A-Za-z0-9_-]{20,})(?![A-Za-z0-9_-])/g,
-    severity: 'critical',
-    note: 'Anthropic API key',
-  },
-  {
-    id: 'github-token',
-    keywords: ['ghp_', 'gho_', 'ghu_', 'ghs_', 'github', 'token'],
-    pattern: /\b(gh[pousr]_[A-Za-z0-9]{36,})(?![A-Za-z0-9])/g,
-    severity: 'critical',
-    note: 'GitHub token (classic or fine-grained)',
-  },
-  {
-    id: 'private-key-block',
-    keywords: ['PRIVATE KEY'],
-    pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g,
-    severity: 'critical',
-    note: 'A private key block header — the key material follows',
-  },
-  {
-    id: 'google-api-key',
-    keywords: ['AIza', 'google'],
-    pattern: /\b(AIza[0-9A-Za-z_-]{35})\b/g,
-    severity: 'warn',
-    note: 'Google API key shape',
-  },
-  {
-    id: 'slack-token',
-    keywords: ['xox'],
-    pattern: /\b(xox[baprs]-[A-Za-z0-9-]{10,})\b/g,
-    severity: 'warn',
-    note: 'Slack token',
-  },
-  {
-    id: 'high-entropy-assignment',
-    keywords: ['api_key', 'apikey', 'secret', 'password', 'token', 'credential', 'auth_token'],
-    pattern: /\b([A-Za-z0-9_\-]{32,64})\b/g,
-    minEntropy: 3.5,
-    stopwords: /(test|example|placeholder|your[_-]?key|changeme|xxxxxxxx)/i,
-    severity: 'warn',
-    note: 'high-entropy value assigned to a credential-shaped name — entropy with stopwords, never a bare length guess',
-  },
-];
+interface RawDetector {
+  version?: number;
+  id: string;
+  class: string;
+  provider: string | null;
+  keywords: string[];
+  pattern: string;
+  entropy?: number;
+  stopwords?: string;
+  validator?: ValidatorName;
+  severity: 'critical' | 'warn' | 'info';
+  note: string;
+  examples?: string[];
+}
 
-/** The pack's offline checksum: over ids + patterns, stable across processes. */
+/**
+ * A TOML-subset reader: `key = value` lines under `[[detector]]` tables.
+ * Supports raw single-quoted strings, double-quoted strings, integers, and
+ * arrays of single-quoted strings — exactly what data/dlp-detectors.toml
+ * uses, no more. Malformed input throws: a security rule set must fail loud.
+ * ponytail: swap for a real TOML parser only if the pack needs nested tables.
+ */
+function parseToml(text: string): { version: number; detectors: RawDetector[] } {
+  let version = 1;
+  const detectors: RawDetector[] = [];
+  let current: RawDetector | null = null;
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const section = line.match(/^\[\[(\w+)\]\]$/);
+    if (section) {
+      current = section[1] === 'detector'
+        ? { id: '', class: '', provider: null, keywords: [], pattern: '', severity: 'warn', note: '', exampleHashes: [] }
+        : null;
+      if (current) detectors.push(current);
+      continue;
+    }
+    const kv = line.match(/^(\w+)\s*=\s*(.+)$/);
+    if (!kv) throw new Error(`dlp-detectors.toml: unexpected line: ${line}`);
+    const [, key, rhs] = kv;
+    if (!current) {
+      if (key !== 'version') throw new Error(`dlp-detectors.toml: top-level key outside a table: ${key}`);
+      version = parseInt(rhs!.trim(), 10);
+      continue;
+    }
+    const value = (() => {
+      const t = rhs!.trim();
+      if (t.startsWith('[')) {
+        const items = t.match(/'([^']*)'|"([^"]*)"|[0-9]+/g) ?? [];
+        return items.map((i) => (i.startsWith("'") || i.startsWith('"') ? i.slice(1, -1) : parseInt(i, 10)));
+      }
+      if (t.startsWith("'")) return t.slice(1, -1);
+      if (t.startsWith('"')) {
+        try {
+          return JSON.parse(t) as string;
+        } catch {
+          return t.slice(1, -1);
+        }
+      }
+      if (/^-?\d+$/.test(t)) return parseInt(t, 10);
+      if (t === 'null') return null;
+      return t;
+    })();
+    switch (key) {
+      case 'version': version = value as number; break;
+      case 'id': current.id = value as string; break;
+      case 'class': current.class = value as string; break;
+      case 'provider': current.provider = value as string | null; break;
+      case 'keywords': current.keywords = value as string[]; break;
+      case 'pattern': current.pattern = value as string; break;
+      case 'entropy': current.entropy = value as number; break;
+      case 'stopwords': current.stopwords = value as string; break;
+      case 'validator': current.validator = value as ValidatorName; break;
+      case 'severity': current.severity = value as RawDetector['severity']; break;
+      case 'note': current.note = value as string; break;
+      case 'examples': current.examples = value as string[]; break;
+      default: throw new Error(`dlp-detectors.toml: unknown key ${key}`);
+    }
+  }
+  return { version, detectors };
+}
+
+function loadPack(): { version: number; detectors: Detector[] } {
+  const file = new URL('../data/dlp-detectors.toml', import.meta.url);
+  const text = readFileSync(file, 'utf8');
+  const parsed = parseToml(text);
+  const detectors: Detector[] = parsed.detectors.map((d) => ({
+    id: d.id,
+    klass: d.class,
+    provider: d.provider,
+    keywords: d.keywords,
+    pattern: new RegExp(d.pattern, 'g'),
+    minEntropy: d.entropy,
+    stopwords: d.stopwords ? new RegExp(d.stopwords, 'i') : undefined,
+    validator: d.validator,
+    severity: d.severity,
+    note: d.note,
+    exampleHashes: d.examples ?? [],
+  }));
+  if (detectors.some((d) => !d.id || !d.pattern.source)) {
+    throw new Error('dlp-detectors.toml: a detector row is missing id or pattern');
+  }
+  return { version: parsed.version, detectors };
+}
+
+const PACK = loadPack();
+
+export const PACK_VERSION = PACK.version;
+export const DETECTORS: Detector[] = PACK.detectors;
+
+/** All salted public-example hashes in the pack — the fixture classifier's set. */
+export const PUBLIC_EXAMPLE_HASHES: Set<string> = new Set(
+  DETECTORS.flatMap((d) => d.exampleHashes),
+);
+
+/** The salted hash of a matched value, for the fixture classifier. */
+export function exampleHashOf(value: string): string {
+  return createHash('sha256').update(PACK_SALT + value).digest('hex');
+}
+
+/** The pack's offline checksum: over the canonical rows, stable across processes. */
 export function packChecksum(): string {
   const canonical = DETECTORS
-    .map((d) => `${d.id}|${d.keywords.join(',')}|${String(d.pattern)}|${d.minEntropy ?? ''}|${d.severity}`)
+    .map((d) =>
+      [d.id, d.klass, d.provider ?? '', d.keywords.join(','), d.pattern.source,
+       d.minEntropy ?? '', d.validator ?? '', d.stopwords?.source ?? '', d.severity,
+       d.note, d.exampleHashes.join(',')].join('|'))
+    .sort()
     .join('\n');
   return createHash('sha256').update(canonical).digest('hex');
+}
+
+/** The data-class entry id a sighting records (class_entry_id). */
+export function classEntryIdOf(d: Detector): string {
+  return `${d.klass}:${d.id}`;
 }
