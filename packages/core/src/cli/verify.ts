@@ -143,47 +143,198 @@ if (CONTENT_ARGS.includes('--content')) {
       // completed-created span). A number, never content; NULL = unknown.
       'duration_ms',
       // Provenance of that duration: 'measured' or 'turn_scoped' — one word.
-      'duration_kind'],
+      'duration_kind',
+      // Foundation (migrations 20–26): origin quarantine, pseudonymised insert
+      // stamp, version residency, and the cost provenance tier 8 requires.
+      'execution_context_id', 'subject_id', 'cli_version', 'cost_basis', 'pricing_rev',
+      'observed_at'],
     anomalies: ['id', 'anomaly_key', 'rule', 'severity', 'tool', 'session_id', 'model',
       'window_start', 'window_end', 'title', 'detail', 'observed', 'baseline',
-      'threshold', 'confidence', 'source', 'detected_at', 'user', 'machine'],
-    collector_state: ['source_path', 'tool', 'last_offset', 'last_mtime', 'last_scanned_at'],
+      'threshold', 'confidence', 'source', 'detected_at', 'user', 'machine',
+      // Foundation: case identity, structured detail, pack revision, asset scope,
+      // and the denormalised triage state the disposition ledger converges to.
+      'execution_context_id', 'case_key', 'detail_key', 'detail_params', 'content_rev',
+      'asset_id', 'asset_tier', 'asset_rev', 'state', 'state_ts', 'state_actor'],
+    collector_state: ['source_path', 'tool', 'last_offset', 'last_mtime', 'last_scanned_at',
+      // Foundation: source-prefix integrity (tier 7 chained digests) + file identity.
+      'prefix_sha256', 'head_sha256', 'inode', 'birthtime'],
     collector_runs: ['id', 'tool', 'started_at', 'duration_ms', 'files', 'parsed', 'inserted',
-      'source_state', 'ok', 'notes'],
+      'source_state', 'ok', 'notes',
+      // Foundation: the measured footprint budget's own metric (rss/cpu/exit),
+      // plus the boot-anchored clock sanity pair.
+      'rss_peak_bytes', 'cpu_user_ms', 'cpu_sys_ms', 'exit_status', 'boot_epoch', 'wall_ms'],
     scan_state: ['scanner', 'cadence_ms', 'last_started_at', 'last_duration_ms', 'ok', 'notes'],
     schema_migrations: ['version', 'name', 'kind', 'applied_at', 'duration_ms', 'rows_changed'],
     // Inventory facts only: paths, names, versions, evidence sentences. A surface
     // row is what EXISTS on disk, never what was typed into any of these tools.
     ai_surfaces: ['id', 'surface_key', 'kind', 'name', 'path', 'evidence', 'version', 'extra',
-      'first_seen', 'last_seen', 'sanctioned'],
+      'first_seen', 'last_seen', 'sanctioned',
+      // Foundation: the depth columns tier 2 names (vendor, identifier, state,
+      // scanner, evidence kind, discovery) plus tier 3's account-class join.
+      'vendor', 'identifier', 'state', 'scanner', 'confidence', 'evidence_kind',
+      'account_class', 'class_evidence', 'discovery'],
     // Triage dispositions. `note` is operator-typed free text and is shape-scanned
     // below — long or multiline notes fail, so a pasted prompt cannot hide there.
-    finding_actions: ['id', 'anomaly_key', 'action', 'note', 'until', 'actor', 'created_at'],
+    finding_actions: ['id', 'anomaly_key', 'action', 'note', 'until', 'actor', 'created_at',
+      // Foundation: the disposition ledger's full shape (tier 7) — idempotent
+      // action id, case identity, provenance stamps and the two-clock pair.
+      'action_id', 'case_key', 'actor_kind', 'reason_code', 'content_rev', 'label_mode',
+      'batch_id', 'source', 'ingested_at'],
     // The DLP ledger: fingerprints and locations ONLY. The sighting's value stays
     // in the source file; the just-in-time viewer re-reads it at view time. No
     // column exists here that could hold a secret value, by construction.
     secret_sightings: ['id', 'fingerprint', 'detector', 'sink_key', 'path', 'byte_offset',
-      'byte_length', 'direction', 'status', 'first_seen', 'last_seen'],
-    dlp_scan_state: ['sink_key', 'bytes_scanned', 'bytes_skipped', 'bytes_unreadable', 'last_seen_at', 'completed'],
+      'byte_length', 'direction', 'status', 'first_seen', 'last_seen',
+      // Foundation: occurrence counting, provider attribution, class-entry joins
+      // (tier 6) and the fixture lifecycle's stored reason.
+      'occurrences', 'provider', 'class_entry_id', 'validator_checked', 'fixture_reason',
+      'execution_context_id'],
+    dlp_scan_state: ['sink_key', 'bytes_scanned', 'bytes_skipped', 'bytes_unreadable', 'last_seen_at', 'completed',
+      // Foundation: the resumable cursor pair (kind + typed value), file
+      // identity, and the pack revision the pass ran under.
+      'cursor_kind', 'cursor_text', 'cursor_int', 'inode', 'backfill_done', 'pack_rev'],
     // The Tier 5 ledger: one row per tool invocation. `shape` is the skeletonized
     // command (argv[0] + known flags — structure, never content); `args_digest`
     // is a truncated SHA-256. No column can hold what was typed.
     tool_calls: ['id', 'tool_call_key', 'tool', 'name', 'shape', 'args_digest',
       'session_id', 'agent_id', 'ts', 'status', 'status_source', 'duration_ms',
-      'duration_kind', 'authority', 'raw_ref', 'first_seen', 'last_seen'],
+      'duration_kind', 'authority', 'raw_ref', 'first_seen', 'last_seen',
+      // Foundation: MCP split, authority evidence, the authorization_basis
+      // vocabulary, pattern-pack provenance, and the posture columns tier 5
+      // joins autonomy_intervals over.
+      'server', 'tool_name', 'authority_evidence', 'authorization_basis', 'pattern_id',
+      'pack_version', 'target_scope', 'origin_kind', 'permission_mode', 'autonomy_rank',
+      'execution_context_id'],
     // Tier 3: pseudonymous identity. principal_key is an HMAC under a
     // Keychain-held key — identifying shape, never a name or email. grants.entry
     // is the agent's OWN permission declaration, quoted verbatim from its
     // config: operator-authored config, not conversation content.
-    principals: ['id', 'principal_key', 'display', 'first_seen', 'last_seen'],
+    principals: ['id', 'principal_key', 'display', 'first_seen', 'last_seen',
+      // Foundation: the principal resolution chain (source + validity span).
+      'principal_source', 'valid_from', 'valid_to'],
     devices: ['id', 'device_key', 'hostname', 'first_seen', 'last_seen'],
-    grants: ['id', 'grant_key', 'agent', 'source_file', 'kind', 'entry', 'first_seen', 'last_seen'],
-    autonomy_intervals: ['id', 'session_id', 'agent_id', 'started_at', 'ended_at', 'calls', 'denied', 'errors'],
-    session_identity: ['session_id', 'principal_key', 'device_key', 'binding_evidence', 'first_seen', 'last_seen'],
-    suppression: ['rule', 'reason', 'suppressed_at', 'hidden_count'],
-    content_packs: ['id', 'kind', 'version', 'checksum', 'loaded_at'],
+    grants: ['id', 'grant_key', 'agent', 'source_file', 'kind', 'entry', 'first_seen', 'last_seen',
+      // Foundation: precedence chain and entry classification (tier 6).
+      'granted_by', 'path_class', 'origin', 'scope', 'entry_class'],
+    autonomy_intervals: ['id', 'session_id', 'agent_id', 'started_at', 'ended_at', 'calls', 'denied', 'errors',
+      // Foundation: posture as a timeline — raw mode + the resolved fields.
+      'mode_raw', 'autonomy', 'fs_policy', 'approval_policy', 'sandbox_policy', 'permission_profile'],
+    session_identity: ['session_id', 'principal_key', 'device_key', 'binding_evidence', 'first_seen', 'last_seen',
+      // Foundation: the account columns tier 3 specifies.
+      'tool', 'account_id', 'org_id', 'account_class', 'class_evidence', 'plan',
+      'seat_role', 'surface', 'source'],
+    suppression: ['rule', 'reason', 'suppressed_at', 'hidden_count',
+      // Foundation: the register's proper shape (entry-keyed, mode-aware).
+      'kind', 'entry_id', 'set_by', 'expires_at', 'mode'],
+    content_packs: ['id', 'kind', 'version', 'checksum', 'loaded_at',
+      // Foundation: trust class, signature, source path, active ring.
+      'trust', 'signature', 'path', 'active'],
     export_seq: ['id', 'exported_at', 'last_anomaly_id', 'last_event_ts'],
     network_calls: ['id', 'caller', 'destination', 'purpose', 'ts'],
+    // ── Foundation tables (migrations 20–26) ─────────────────────────────────
+    // Readability + inventory depth. scan_access holds outcomes, never contents;
+    // model_routes/api key presence is a boolean, never a value.
+    scan_access: ['root', 'launch_context', 'state', 'errno', 'entries', 'last_ok_ts',
+      'last_ok_entries', 'last_result', 'first_seen', 'last_seen'],
+    agent_roots: ['root_path', 'tool', 'discovered_by', 'first_seen', 'last_seen'],
+    model_routes: ['route_key', 'alias', 'target_model', 'api_base', 'api_key_present',
+      'source', 'first_seen', 'last_seen'],
+    surface_activity: ['surface_key', 'counter_kind', 'counter', 'watermark', 'first_seen', 'last_seen'],
+    provider_keys: ['key_name', 'source_file', 'shape', 'first_seen', 'last_seen'],
+    ai_dependencies: ['dep_key', 'name', 'kind', 'source', 'path', 'version', 'first_seen', 'last_seen'],
+    site_capabilities: ['origin', 'capability', 'pref_key', 'pref_file', 'first_seen', 'last_seen'],
+    column_provenance: ['table_name', 'column_name', 'migration_version', 'first_populated_ts',
+      'unbackfillable_rows'],
+    // Identity machinery. Every *_hmac column is a keyed digest — shape, never a
+    // name or email.
+    hostname_history: ['device_key', 'hostname', 'first_seen', 'last_seen'],
+    access_log: ['id', 'accessor', 'purpose', 'view', 'ts'],
+    scope_history: ['id', 'captured_at', 'sha256', 'diff', 'source'],
+    vendor_identities: ['vendor', 'local_key_kind', 'local_key', 'vendor_id_kind', 'vendor_id_hmac',
+      'plan', 'org_id_hmac', 'auth_path', 'evidence_artifact', 'first_seen', 'last_seen'],
+    // DLP depth. payload_sightings counts bytes and media types only; the
+    // payload itself is never decoded or stored.
+    payload_sightings: ['sighting_key', 'session_id', 'kind', 'media_type', 'bytes_on_disk',
+      'bytes_received', 'scannable', 'context_class', 'first_seen', 'last_seen'],
+    key_residency: ['repo', 'manifest_path', 'var_name', 'target_class', 'source', 'first_seen', 'last_seen'],
+    context_imports: ['event_key', 'source_tool', 'source_path_hmac', 'source_dir_prefix',
+      'content_sha256', 'dest_tool', 'dest_thread_id', 'imported_at', 'source_bytes', 'source_present'],
+    terms_basis: ['surface_key', 'basis', 'source', 'first_seen', 'last_seen'],
+    recipient_state: ['surface_key', 'state', 'evidence_ref', 'first_seen', 'last_seen'],
+    residency_evidence: ['surface_key', 'rank', 'evidence', 'source', 'first_seen', 'last_seen'],
+    processing_terms: ['surface_key', 'kind', 'value', 'as_of', 'first_seen', 'last_seen'],
+    answerable_from: ['source', 'indicator_kind', 'horizon_ts', 'basis', 'first_seen', 'last_seen'],
+    // Behaviour ledgers. Labels, hashes, shapes and counts — the write ledgers
+    // hold names of systems and classes of actions, never command content.
+    action_targets: ['call_key', 'target_kind', 'target_label', 'locality', 'env_class',
+      'reversible', 'resolution', 'evidence_path', 'asset_id', 'first_seen', 'last_seen'],
+    anomaly_context: ['anomaly_key', 'distinct_files', 'distinct_dirs', 'out_of_repo_writes',
+      'destructive_calls', 'failed_calls', 'unknown_outcome_calls', 'top_path_classes',
+      'contributing_sessions', 'window_end'],
+    agent_edges: ['edge_key', 'session_id', 'agent_id', 'parent_agent_id', 'workflow_id',
+      'agent_type', 'spawn_depth', 'parent_call_key', 'first_seen', 'last_seen'],
+    file_writes: ['write_key', 'tool_call_key', 'session_id', 'path', 'path_class', 'write_class',
+      'change_risk_class', 'class_pattern_id', 'content_rev', 'escape_state', 'visibility_class',
+      'ts', 'first_seen', 'last_seen'],
+    path_classes: ['pattern_id', 'pack_version', 'class', 'pattern', 'first_seen'],
+    secret_store_reads: ['call_key', 'store_kind', 'target_ref', 'item_name', 'field_name',
+      'materialised', 'ts'],
+    grant_deposits: ['deposit_key', 'tool_call_key', 'store_kind', 'target_ref', 'item_name', 'ts',
+      'first_seen', 'last_seen'],
+    db_actions: ['call_key', 'statement_class', 'object_names', 'target_key', 'ts'],
+    remote_exec: ['call_key', 'hop', 'host', 'user', 'inner_pattern', 'ts'],
+    vcs_actions: ['call_key', 'verb', 'repo', 'escape_state', 'push_evidence', 'ts'],
+    package_execs: ['call_key', 'package_name', 'registry', 'fetch_and_run', 'ts'],
+    fetch_ingress: ['call_key', 'url_host', 'status', 'bytes', 'ts'],
+    context_edges: ['call_key', 'transport', 'verb', 'destination', 'direction', 'ts'],
+    sensitive_access: ['path_class', 'path_hash', 'authorization_basis', 'count', 'window_start'],
+    bulk_uploads: ['upload_key', 'repo_path', 'turn', 'max_file_bytes', 'size_bytes', 'gcs_path',
+      'blobs', 'started_at'],
+    upload_decisions: ['upload_key', 'uploads_enabled', 'upload_reason', 'trace_upload_source',
+      'telemetry_mode', 'data_collection_disabled', 'in_env_trace_upload',
+      'in_cfg_telemetry_trace_upload', 'in_remote_trace_upload_enabled', 'has_remote_settings', 'ts'],
+    // Posture + pack plane.
+    overrides: ['override_key', 'agent', 'source_file', 'kind', 'entry', 'first_seen', 'last_seen'],
+    posture_mcp_servers: ['source', 'config_path', 'client', 'server_name', 'mcp_identity',
+      'transport', 'command', 'argv', 'url', 'cwd', 'enabled', 'env_key_names', 'first_seen', 'last_seen'],
+    work_roots: ['root_id', 'root_path', 'origin_slug', 'exists_now', 'disappeared_at', 'first_seen', 'last_seen'],
+    repo_artifacts: ['artifact_key', 'root_path', 'rel_path', 'kind', 'tracked_state', 'sha256',
+      'size_bytes', 'mtime', 'first_seen', 'last_seen'],
+    repo_scan_state: ['root_path', 'cursor_int', 'bytes_scanned', 'last_scan_at'],
+    suppressed_counts: ['day', 'kind', 'entry_id', 'n'],
+    hook_ledger: ['hook_key', 'agent', 'hook_event', 'command_hash', 'source_file', 'first_seen', 'last_seen'],
+    signing_ledger: ['surface_key', 'team_id', 'cdhash', 'signature_kind', 'first_seen', 'last_seen'],
+    posture_levers: ['agent', 'lever', 'observed_value', 'hardened_value', 'source_file',
+      'first_seen', 'last_seen'],
+    plugins: ['plugin_key', 'agent', 'name', 'version', 'marketplace', 'installed_at', 'enabled',
+      'source', 'first_seen', 'last_seen'],
+    extension_versions: ['root', 'ext_id', 'version', 'first_seen', 'last_seen'],
+    store_budget: ['object', 'kind', 'bytes', 'rows', 'bytes_per_row', 'measured_at'],
+    evidence_freeze: ['freeze_id', 'principal_key', 'declared_at', 'path', 'present', 'size_bytes',
+      'mtime', 'sha256', 'consumed_to_offset', 'rows_referencing', 'reason', 'ts'],
+    // Export + triage.
+    export_outbox: ['seq', 'sink', 'doc_id', 'payload_hash', 'bytes', 'attempts', 'next_attempt_at',
+      'state', 'last_error', 'created_at'],
+    control_intents: ['intent_id', 'intent', 'session_id', 'pid', 'actor', 'requested_at',
+      'expires_at', 'state', 'source'],
+    event_links: ['event_key', 'vendor', 'link_kind', 'link_id', 'first_seen'],
+    orphan_sessions: ['session_key', 'tool', 'session_id', 'evidence', 'classification',
+      'first_seen', 'last_seen'],
+    hunt_runs: ['hunt_id', 'pack_kind', 'pack_version', 'signature', 'ran_at', 'verdict_confirmed',
+      'verdict_cleared', 'verdict_unanswerable', 'verdict_not_seen', 'horizon_ts', 'answer_sentence'],
+    store_epoch: ['epoch_id', 'created_at', 'device_key', 'first_event_ts', 'collector_version',
+      'prev_epoch_id', 'prev_epoch_last_seq'],
+    detection_epochs: ['epoch', 'rule_set_sha256', 'created_at'],
+    // Vendor cost + lifecycle.
+    vendor_ledger: ['vendor', 'period_start', 'period_end', 'vendor_cost_usd', 'currency', 'unit',
+      'rows', 'pulled_at', 'source'],
+    billing_units: ['declaration_key', 'vendor', 'unit', 'usd_per_unit', 'effective_from', 'note',
+      'author', 'first_seen'],
+    quota_observations: ['tool', 'session_id', 'ts', 'kind', 'used_percent', 'limit_value', 'reset_at'],
+    principal_lifecycle: ['principal_key', 'state', 'effective_from', 'effective_to', 'declared_by',
+      'basis', 'decl_hash', 'source', 'first_seen', 'last_seen'],
+    store_prunes: ['id', 'table_name', 'data_class', 'days', 'deleted_rows', 'bytes_before',
+      'bytes_after', 'ran_at'],
   };
 
   const findings: string[] = [];

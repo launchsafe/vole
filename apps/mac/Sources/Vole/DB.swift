@@ -260,7 +260,7 @@ final class DB {
     /// depends on the two agreeing about what "current" means. The read-model
     /// parity check asserts this against the fixture store (always at the TS head),
     /// so a forgotten bump fails CI instead of shipping a gate that blocks users.
-    static let knownSchemaVersion = 19
+    static let knownSchemaVersion = 26
 
     private var handle: OpaquePointer?
     let path: String
@@ -797,7 +797,7 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
         lines.append("    \"byTool\": [")
         let tools = s.byTool.sorted { $0.calls == $1.calls ? $0.tool < $1.tool : $0.calls > $1.calls }
         for (i, t) in tools.enumerated() {
-            lines.append("      {\"tool\": \"\(t.tool)\", \"calls\": \(t.calls), \"tokens\": \(t.tokens.map(String.init) ?? "null"), \"cost\": \(jnum(t.cost)), \"confidence\": \"\(t.confidence)\", \"activityOnlyCalls\": \(t.activityOnlyCalls)}\(i == tools.count - 1 ? "" : ",")")
+            lines.append("      {\"tool\": \"\(t.tool)\", \"calls\": \(t.calls), \"tokens\": \(t.tokens.map(String.init) ?? \"null\"), \"cost\": \(jnum(t.cost)), \"confidence\": \"\(t.confidence)\", \"activityOnlyCalls\": \(t.activityOnlyCalls)}\(i == tools.count - 1 ? \"\" : \",\")")
         }
         lines.append("    ]")
         lines.append("  },")
@@ -805,7 +805,7 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
             .sorted { $0.windowStart == $1.windowStart ? $0.id < $1.id : $0.windowStart > $1.windowStart }
         lines.append("  \"incidents\": [")
         for (i, x) in inc.enumerated() {
-            lines.append("    {\"id\": \(x.id), \"anomaly_key\": \"\(jstr(x.anomalyKey))\", \"rule\": \"\(jstr(x.rule))\", \"severity\": \"\(x.severity)\", \"tool\": \"\(jstr(x.tool))\", \"session_id\": \(x.sessionID.map { "\"\(jstr($0))\"" } ?? "null"), \"model\": \(x.model.map { "\"\(jstr($0))\"" } ?? "null"), \"window_start\": \(x.windowStart), \"window_end\": \(x.windowEnd), \"title\": \"\(jstr(x.title))\", \"detail\": \"\(jstr(x.detail))\", \"observed\": \(jnum(x.observed)), \"baseline\": \(jnum(x.baseline)), \"threshold\": \(jnum(x.threshold)), \"confidence\": \"\(x.confidence)\", \"source\": \"\(x.source)\", \"detected_at\": \(x.detectedAt)}\(i == inc.count - 1 ? "" : ",")")
+            lines.append("    {\"id\": \(x.id), \"anomaly_key\": \"\(jstr(x.anomalyKey))\", \"rule\": \"\(jstr(x.rule))\", \"severity\": \"\(x.severity)\", \"tool\": \"\(jstr(x.tool))\", \"session_id\": \(x.sessionID.map { \"\\(jstr($0))\" } ?? \"null\"), \"model\": \(x.model.map { \"\\(jstr($0))\" } ?? \"null\"), \"window_start\": \(x.windowStart), \"window_end\": \(x.windowEnd), \"title\": \"\(jstr(x.title))\", \"detail\": \"\(jstr(x.detail))\", \"observed\": \(jnum(x.observed)), \"baseline\": \(jnum(x.baseline)), \"threshold\": \(jnum(x.threshold)), \"confidence\": \"\(x.confidence)\", \"source\": \"\(x.source)\", \"detected_at\": \(x.detectedAt)}\(i == inc.count - 1 ? \"\" : \",\")")
         }
         lines.append("  ]")
         lines.append("}")
