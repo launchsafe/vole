@@ -28,19 +28,25 @@ guard let src = CGImageSourceCreateWithURL(inputURL as CFURL, nil),
 }
 
 let S: CGFloat = 1024          // canvas
-let CARD: CGFloat = 1000        // near full-bleed: matches modern app icons (Raycast/Arc sizing)
+let CARD: CGFloat = 824         // Apple's macOS grid: 824 body in a 1024 canvas, 100px gutter
 let INSET: CGFloat = (S - CARD) / 2
-let R: CGFloat = 224            // corner radius — Apple squircle proportion (~22.4% of body)
+let R: CGFloat = 185            // corner radius at the 824 body — matches the macOS template
 // The artwork ships with ~26% transparent padding baked in, so we trim to the
 // mark and size it ourselves: MARK_W of the card wide, never taller than MARK_H.
 //
-// These were 0.82/0.72, chosen to stop Vole reading as a small thing in a big
-// square. That overshot — at 82% the mouse nearly touches the tile edge while
-// Chrome and VS Code sit around 60-65%, so Vole was the loud one in the Dock.
-// Back down into that band; the gutter is what makes a tile read as an icon
-// rather than a sticker.
-let MARK_W: CGFloat = 0.66
-let MARK_H: CGFloat = 0.58
+// Sizing history, because the obvious number is the wrong one here. These were
+// 0.82/0.72, then cut to 0.66/0.58 on the reasoning that "Chrome and VS Code sit
+// around 60-65%". That reasoning does not transfer: those are roughly SQUARE
+// glyphs, where 65% of the width is also 65% of the height. The Vole mouse is
+// 1.65:1 — wide and flat — so 66% of width put it at just 40% of the tile's
+// HEIGHT, floating in black. Measured against macOS 26 system icons, Music's
+// glyph fills 79% of its tile height and Reminders' 95%; Vole's filled 40%, which
+// is exactly why it read as a small mouse in a big square.
+//
+// Percent-of-width is the wrong knob for a mark that is not square: fill the
+// width generously and let the aspect ratio decide the height.
+let MARK_W: CGFloat = 0.80
+let MARK_H: CGFloat = 0.70
 
 /// Tightest rect (image coordinates, origin top-left) containing every non-transparent pixel.
 func alphaBounds(_ img: CGImage) -> CGRect {
