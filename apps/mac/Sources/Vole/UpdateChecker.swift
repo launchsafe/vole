@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import AppKit
+import Security
 
 /// The auto-updater: checks GitHub's latest release, and — when the release
 /// carries a checksummed zip — installs it in place. Click, verify, swap,
@@ -22,6 +23,8 @@ final class UpdateChecker {
     private(set) var releaseURL: URL?
     private(set) var status: Status = .idle
     private(set) var progress: Double = 0
+    /// Whether the in-flight check was asked for by the user (see check(userInitiated:)).
+    private var userInitiated = false
 
     enum Status: Equatable {
         /// Never checked, or this build cannot self-update (`swift run`).
@@ -77,10 +80,14 @@ final class UpdateChecker {
         ProcessInfo.processInfo.environment["VOLE_UPDATE_LATEST"]
             ?? "https://github.com/launchsafe/vole/releases/latest"
     }
-    /// Where the ASSETS come from. Only consulted when an update actually exists.
-    private static var assetAPIURL: String {
-        ProcessInfo.processInfo.environment["VOLE_UPDATE_API"]
-            ?? "https://api.github.com/repos/launchsafe/vole/releases?per_page=1"
+    /// Asset URLs are CONSTRUCTED, not looked up. bundle.sh names them
+    /// Vole-<version>.zip and Vole-<version>.zip.sha256, and GitHub serves every
+    /// release asset at a stable path, so the last api.github.com call disappears
+    /// from the update path — it is now zero-API end to end.
+    private static func assets(tag: String, version: String) -> (zip: URL?, sha: URL?) {
+        let base = "https://github.com/launchsafe/vole/releases/download/\(tag)"
+        return (URL(string: "\(base)/Vole-\(version).zip"),
+                URL(string: "\(base)/Vole-\(version).zip.sha256"))
     }
 
     /// GitHub answers 403 for several unrelated conditions — a spent rate limit,
@@ -96,8 +103,25 @@ final class UpdateChecker {
         return "GitHub returned HTTP \(http.statusCode)"
     }
 
-    func check() {
+    /// How long a background check waits before bothering GitHub again. Sparkle
+    /// defaults to 24h (1h floor), Chrome 4.5h, Firefox 6h, Microsoft AutoUpdate 13h
+    /// — nobody checks on every launch, which is what this used to do.
+    private static let backgroundInterval: TimeInterval = 24 * 60 * 60
+    private static let lastCheckKey = "vole.lastUpdateCheck"
+
+    /// `userInitiated` is the whole difference between the two behaviours Sparkle
+    /// separates: a scheduled check is silent when it fails (SPUScheduledUpdateDriver
+    /// passes showErrorToUser:NO) and skipped when it ran recently; a check the user
+    /// asked for always runs and always reports. This app used to treat both alike,
+    /// which is why one transient failure left a red error sitting in Settings until
+    /// the next relaunch.
+    func check(userInitiated: Bool = false) {
         guard Self.isBundledApp else { return }
+        if !userInitiated {
+            let last = UserDefaults.standard.double(forKey: Self.lastCheckKey)
+            if last > 0, Date().timeIntervalSince1970 - last < Self.backgroundInterval { return }
+        }
+        self.userInitiated = userInitiated
         status = .checking
         // The version check deliberately does NOT touch api.github.com. That API
         // meters unauthenticated callers at 60 requests per hour PER IP — a budget
@@ -134,11 +158,11 @@ final class UpdateChecker {
                 req.httpMethod = "HEAD"
                 let (_, response) = try await URLSession.shared.data(for: req)
                 guard let http = response as? HTTPURLResponse else {
-                    status = .failed("could not read GitHub's response")
+                    report("could not read GitHub's response")
                     return
                 }
                 guard http.statusCode == 200 else {
-                    status = .failed(Self.failureReason(http))
+                    report(Self.failureReason(http))
                     return
                 }
                 // URLSession followed the redirect, so the landing URL names the tag.
@@ -154,7 +178,7 @@ final class UpdateChecker {
                 let tag = parts[i + 1]
                 consider(version: tag.hasPrefix("v") ? String(tag.dropFirst()) : tag, page: page)
             } catch {
-                status = .failed("could not reach GitHub — \(error.localizedDescription)")
+                report("could not reach GitHub — \(error.localizedDescription)")
             }
         }
     }
@@ -163,6 +187,8 @@ final class UpdateChecker {
     /// having spent no API quota at all.
     @MainActor
     private func consider(version: String, page: URL) {
+        // Stamp the successful check, so a background check honours the interval.
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastCheckKey)
         latestVersion = version
         releaseURL = page
         guard let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
@@ -170,49 +196,17 @@ final class UpdateChecker {
             status = .upToDate
             return
         }
-        fetchAssets(version: version, page: page)
-    }
-
-    /// Only reached when an update exists: resolve the download URLs. Failing here
-    /// still surfaces the update — the button falls back to opening the release page.
-    @MainActor
-    private func fetchAssets(version: String, page: URL) {
-        guard let url = URL(string: Self.assetAPIURL) else {
-            status = .available(version: version)
-            return
-        }
-        guard Self.egress(caller: "UpdateChecker.swift",
-                          destination: url.host.map { "\($0)\(url.path)" } ?? url.absoluteString,
-                          purpose: "resolve update download URLs") else {
-            status = .available(version: version)
-            return
-        }
-        Task { @MainActor in
-            var zip: URL?
-            var sha: URL?
-            if let data = try? await URLSession.shared.data(from: url).0,
-               let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-               let json = list.first,
-               let assets = json["assets"] as? [[String: Any]] {
-                let assetURL = { (ext: String) -> URL? in
-                    assets.first { ($0["name"] as? String ?? "").hasSuffix(ext) }
-                        .flatMap { $0["browser_download_url"] as? String }
-                        .flatMap(URL.init(string:))
-                }
-                zip = assetURL(".zip")
-                sha = assetURL(".zip.sha256")
-            }
-            zipAsset = zip
-            shaAsset = sha
-            status = .available(version: version)
-        }
+        // The tag is the last path component of the page we were redirected to.
+        let tag = page.lastPathComponent
+        let (zip, sha) = Self.assets(tag: tag, version: version)
+        zipAsset = zip
+        shaAsset = sha
+        status = .available(version: version)
     }
 
     private var zipAsset: URL?
     private var shaAsset: URL?
 
-    /// The one-click path: verify → download → swap → relaunch. Falls back to
-    /// the release page when the release predates checksummed assets.
     @MainActor
     func installOrUpdate() {
         switch status {
@@ -293,8 +287,24 @@ final class UpdateChecker {
                 Task { @MainActor in self?.fail("the payload is not Vole \(version)") }
                 return
             }
-            // 4. A locally downloaded payload carries quarantine; the checksum
-            //    is the trust anchor here, so the flag goes.
+            // 4. The payload must be signed by whoever signed what is running.
+            //    The checksum above proves only that the bytes are what the release
+            //    published — and the .zip and the .zip.sha256 are two assets of the
+            //    SAME release, so anyone who can write that release writes both. The
+            //    Developer ID signature is the one thing an attacker with release
+            //    access does not have; bundle.sh spends three steps producing it and
+            //    this path used to download it and throw it away. Sparkle's
+            //    SUCodeSigningVerifier makes exactly this check.
+            guard let requirement = Self.runningAppRequirement() else {
+                Task { @MainActor in self?.fail("this build is not signed, so an update cannot be verified") }
+                return
+            }
+            guard Self.bundle(newApp, satisfies: requirement) else {
+                Task { @MainActor in self?.fail("the update is not signed by the same developer as this app") }
+                return
+            }
+            // 5. Only now does quarantine come off — the signature, not the
+            //    checksum, is what earns that.
             let strip = Process()
             strip.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
             strip.arguments = ["-dr", "com.apple.quarantine", newApp.path]
@@ -333,9 +343,48 @@ final class UpdateChecker {
         }
     }
 
+    /// A failed BACKGROUND check goes quiet — `.idle` renders as nothing in the
+    /// pane, which is what every reference implementation does (Firefox tolerates ten
+    /// consecutive silent background failures before surfacing anything). It is still
+    /// NOT `.upToDate`: the rule this file already had — that a check which never
+    /// reached GitHub must never render as "you are up to date" — still holds.
+    @MainActor
+    private func report(_ reason: String) {
+        status = userInitiated ? .failed(reason) : .idle
+    }
+
     @MainActor
     private func fail(_ reason: String) {
         status = .failed(reason)
+    }
+
+    /// The requirement the running app itself satisfies — its designated
+    /// requirement, which for a Developer ID build pins the bundle identifier, the
+    /// Apple anchor and the signing team. An update has to satisfy the same thing.
+    private static func runningAppRequirement() -> SecRequirement? {
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(Bundle.main.bundleURL as CFURL, [], &code) == errSecSuccess,
+              let code else { return nil }
+        var req: SecRequirement?
+        guard SecCodeCopyDesignatedRequirement(code, [], &req) == errSecSuccess else { return nil }
+        return req
+    }
+
+    /// Fails closed: anything we cannot fully validate is not installed.
+    private static func bundle(_ url: URL, satisfies requirement: SecRequirement) -> Bool {
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess,
+              let code else { return false }
+        // Nested code too — the embedded collector is signed separately, and a
+        // payload could otherwise carry a valid outer signature over a tampered one.
+        // kSecCSStrictValidate is load-bearing, not belt-and-braces: without it a
+        // byte appended to the signed collector binary is ACCEPTED (measured — the
+        // Mach-O loader ignores trailing bytes past the signature blob, so only
+        // strict validation notices). It is what `codesign --strict` turns on.
+        let flags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures
+                               | kSecCSCheckNestedCode
+                               | kSecCSStrictValidate)
+        return SecStaticCodeCheckValidity(code, flags, requirement) == errSecSuccess
     }
 
     private static func sha256(of file: URL) -> String? {
@@ -358,14 +407,29 @@ final class UpdateChecker {
     /// String.compare(options: .numeric), which this project's own standards
     /// (never approximate, always exact) don't need to trust for something this
     /// easy to make unambiguous.
+    /// Semver-ish comparison. Each component compares on its numeric prefix, and a
+    /// prerelease suffix ranks BELOW its absence, so 1.1.0 > 1.1.0-beta.2.
+    ///
+    /// The old form was `compactMap { Int($0) }`, which DROPPED a component it could
+    /// not parse instead of stopping at it, shifting the rest left: "1.0.1-rc1" became
+    /// [1, 0] and so never counted as newer than 1.0.0, and "1.1.0-beta.2" became
+    /// [1, 1, 2] — i.e. 1.1.2 — so anyone on that beta would never be offered the real
+    /// 1.1.0, which parses lower.
     static func isNewer(_ a: String, than b: String) -> Bool {
-        let av = a.split(separator: ".").compactMap { Int($0) }
-        let bv = b.split(separator: ".").compactMap { Int($0) }
-        for i in 0..<max(av.count, bv.count) {
-            let x = i < av.count ? av[i] : 0
-            let y = i < bv.count ? bv[i] : 0
+        func parse(_ s: String) -> (nums: [Int], prerelease: Bool) {
+            let core = s.split(separator: "-", maxSplits: 1).first.map(String.init) ?? s
+            return (core.split(separator: ".").map { Int($0.prefix(while: \.isNumber)) ?? 0 },
+                    s.contains("-"))
+        }
+        let (an, apre) = parse(a)
+        let (bn, bpre) = parse(b)
+        for i in 0..<max(an.count, bn.count) {
+            let x = i < an.count ? an[i] : 0
+            let y = i < bn.count ? bn[i] : 0
             if x != y { return x > y }
         }
+        // Same numbers: a final release outranks a prerelease of it.
+        if apre != bpre { return bpre }
         return false
     }
 }

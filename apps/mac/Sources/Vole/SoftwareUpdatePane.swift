@@ -24,7 +24,7 @@ struct SoftwareUpdatePane: View {
                 default:
                     EmptyView()
                 }
-                Button("Check Now") { checker.check() }
+                Button("Check Now") { checker.check(userInitiated: true) }
                     .disabled(isBusy)
             }
 

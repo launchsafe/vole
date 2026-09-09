@@ -74,7 +74,15 @@ cp "$BIN" "$APP/Contents/MacOS/Vole"
 cp "$COLLECTOR" "$APP/Contents/MacOS/vole-collector"
 cp Icon/Vole.icns "$APP/Contents/Resources/AppIcon.icns"
 cp -R "$(dirname "$BIN")/Vole_Vole.bundle" "$APP/Contents/Resources/"   # SwiftPM resources
-sed "s#<string>0.1.0</string>#<string>$VERSION</string>#" Info.plist > "$APP/Contents/Info.plist"
+# plutil, not sed: sed is silent on a miss, so a template change would ship a bundle
+# still stamped 0.1.0 while the script reported the intended version. CFBundleVersion
+# was never touched at all — every release through 1.0.0 shipped build 1, which Apple
+# requires to increase monotonically and LaunchServices uses to tell bundles apart.
+cp Info.plist "$APP/Contents/Info.plist"
+plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$(echo "$VERSION" | tr -d '.')" "$APP/Contents/Info.plist"
+[ "$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")" = "$VERSION" ] \
+  || { echo "Info.plist version stamp failed" >&2; exit 1; }
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 if [ "$RELEASE" = false ]; then

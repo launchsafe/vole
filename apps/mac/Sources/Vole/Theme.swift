@@ -227,4 +227,13 @@ func runSelfCheck() {
     // DEBUG launch instead of in a release build's UI.
     assert(Labels.rule.count == 5)
     assert(Labels.tool.count == Labels.toolShort.count)
+    // Version ordering, including the prerelease cases the old compactMap-based
+    // comparison got wrong: it DROPPED an unparseable component instead of stopping,
+    // so "1.0.1-rc1" parsed as [1,0] and "1.1.0-beta.2" as [1,1,2].
+    assert(UpdateChecker.isNewer("0.2.10", than: "0.2.9"))
+    assert(!UpdateChecker.isNewer("1.0.0", than: "1.0.0"))
+    assert(UpdateChecker.isNewer("1.0.1-rc1", than: "1.0.0"))
+    assert(UpdateChecker.isNewer("1.1.0", than: "1.1.0-beta.2"))
+    assert(!UpdateChecker.isNewer("1.1.0-beta.2", than: "1.1.0"))
+    assert(!UpdateChecker.isNewer("0.9.9", than: "1.0.0"))
 }
