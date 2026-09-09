@@ -50,13 +50,6 @@ final class UpdateChecker {
             && Bundle.main.infoDictionary?["CFBundleShortVersionString"] != nil
     }
 
-    private struct Release {
-        let version: String
-        let htmlURL: URL
-        let zipAsset: URL?
-        let shaAsset: URL?
-    }
-
     /// The single choke point for this app's network calls. VOLE_NO_EGRESS is
     /// read at CALL time (a test and a running app can both toggle it) and the
     /// switch always blocks — fail-closed on the opt-out. The update check is
@@ -78,14 +71,47 @@ final class UpdateChecker {
         }
     }
 
+    /// Where the VERSION comes from: github.com, not api.github.com.
+    /// `/releases/latest` answers a 302 to `/releases/tag/vX.Y.Z`.
+    private static var latestPageURL: String {
+        ProcessInfo.processInfo.environment["VOLE_UPDATE_LATEST"]
+            ?? "https://github.com/launchsafe/vole/releases/latest"
+    }
+    /// Where the ASSETS come from. Only consulted when an update actually exists.
+    private static var assetAPIURL: String {
+        ProcessInfo.processInfo.environment["VOLE_UPDATE_API"]
+            ?? "https://api.github.com/repos/launchsafe/vole/releases?per_page=1"
+    }
+
+    /// GitHub answers 403 for several unrelated conditions — a spent rate limit,
+    /// a missing User-Agent, secondary abuse limits, a blocked address. This used
+    /// to label EVERY 403 "rate limit reached — try again later", which sends the
+    /// user off to wait an hour for something waiting will not fix. Only say it
+    /// when the response itself says the budget is gone.
+    private static func failureReason(_ http: HTTPURLResponse) -> String {
+        let remaining = http.value(forHTTPHeaderField: "x-ratelimit-remaining")
+        if http.statusCode == 429 || (http.statusCode == 403 && remaining == "0") {
+            return "GitHub rate limit reached — try again later"
+        }
+        return "GitHub returned HTTP \(http.statusCode)"
+    }
+
     func check() {
         guard Self.isBundledApp else { return }
         status = .checking
-        // Not /releases/latest — GitHub defines "latest" as the newest non-prerelease,
-        // non-draft release, so it 404s as long as every release stays marked
-        // prerelease. /releases lists all of them, newest first.
-        guard let url = URL(string: ProcessInfo.processInfo.environment["VOLE_UPDATE_API"]
-                  ?? "https://api.github.com/repos/launchsafe/vole/releases?per_page=1") else { return }
+        // The version check deliberately does NOT touch api.github.com. That API
+        // meters unauthenticated callers at 60 requests per hour PER IP — a budget
+        // shared by everyone behind the same address, so one office, VPN or campus
+        // NAT exhausts it for every Vole on it, and a per-launch API check spends it
+        // for nothing in the overwhelmingly common case of already being current.
+        // github.com does not meter against that budget (measured: 10 redirects cost
+        // 0 of 60, while 3 API calls cost exactly 3), so the routine path is free and
+        // the API is consulted only once a newer version genuinely exists.
+        //
+        // Using /releases/latest also means prereleases are not offered for silent
+        // install — GitHub's "latest" skips them — which is the right default for an
+        // app that swaps its own bundle.
+        guard let url = URL(string: Self.latestPageURL) else { return }
         // The choke point: the attempt is ledgered whether or not it is allowed,
         // and VOLE_NO_EGRESS skips the network call entirely.
         guard Self.egress(caller: "UpdateChecker.swift",
@@ -98,71 +124,88 @@ final class UpdateChecker {
         // this did — renders a check that never reached GitHub identically to
         // "you are up to date", which is how a 404 from a private repo went
         // unnoticed through several releases.
-        URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
-            if let error {
-                Task { @MainActor in self?.status = .failed("could not reach GitHub — \(error.localizedDescription)") }
-                return
+        // async/await rather than a completion handler: the handler is @Sendable and
+        // this class is not, so every such closure costs a concurrency warning for a
+        // capture that is immediately hopped back to the main actor anyway.
+        Task { @MainActor in
+            do {
+                // HEAD: only the redirect target is wanted, never the page body.
+                var req = URLRequest(url: url)
+                req.httpMethod = "HEAD"
+                let (_, response) = try await URLSession.shared.data(for: req)
+                guard let http = response as? HTTPURLResponse else {
+                    status = .failed("could not read GitHub's response")
+                    return
+                }
+                guard http.statusCode == 200 else {
+                    status = .failed(Self.failureReason(http))
+                    return
+                }
+                // URLSession followed the redirect, so the landing URL names the tag.
+                // A repo with nothing published lands on /releases instead, with no
+                // "tag" component — a successful check whose answer is "nothing to
+                // move to", not a failure.
+                let page = http.url ?? url
+                let parts = page.pathComponents
+                guard let i = parts.firstIndex(of: "tag"), i + 1 < parts.count else {
+                    status = .upToDate
+                    return
+                }
+                let tag = parts[i + 1]
+                consider(version: tag.hasPrefix("v") ? String(tag.dropFirst()) : tag, page: page)
+            } catch {
+                status = .failed("could not reach GitHub — \(error.localizedDescription)")
             }
-            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            guard code == 200 else {
-                // 403/429 is the unauthenticated rate limit (60/hour per IP) and
-                // is the one a user can actually act on by waiting.
-                let reason = (code == 403 || code == 429)
-                    ? "GitHub rate limit reached — try again later"
-                    : "GitHub returned HTTP \(code)"
-                Task { @MainActor in self?.status = .failed(reason) }
-                return
-            }
-            guard let data,
-                  let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
-            else {
-                Task { @MainActor in self?.status = .failed("could not read GitHub's response") }
-                return
-            }
-            // A repo with nothing published answers 200 with []. That is a SUCCESSFUL
-            // check with a clear answer — there is nothing newer to move to — not a
-            // parse failure. It used to fall through the guard below and report
-            // "could not read GitHub's response", which is both wrong and gives the
-            // user nothing to act on.
-            guard let json = list.first else {
-                Task { @MainActor in self?.status = .upToDate }
-                return
-            }
-            guard let tag = json["tag_name"] as? String,
-                  let htmlURLString = json["html_url"] as? String,
-                  let htmlURL = URL(string: htmlURLString)
-            else {
-                Task { @MainActor in self?.status = .failed("could not read GitHub's response") }
-                return
-            }
-            let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-            let assets = (json["assets"] as? [[String: Any]]) ?? []
-            let assetURL = { (ext: String) -> URL? in
-                assets.first { ($0["name"] as? String ?? "").hasSuffix(ext) }
-                    .flatMap { $0["browser_download_url"] as? String }
-                    .flatMap(URL.init(string:)) 
-            }
-            let release = Release(
-                version: version,
-                htmlURL: htmlURL,
-                zipAsset: assetURL(".zip"),
-                shaAsset: assetURL(".zip.sha256"))
-            Task { @MainActor in self?.apply(release) }
-        }.resume()
+        }
     }
 
+    /// Decide on the version alone. Being current is the common case and ends here,
+    /// having spent no API quota at all.
     @MainActor
-    private func apply(_ release: Release) {
-        latestVersion = release.version
-        releaseURL = release.htmlURL
+    private func consider(version: String, page: URL) {
+        latestVersion = version
+        releaseURL = page
         guard let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
-              Self.isNewer(release.version, than: current) else {
+              Self.isNewer(version, than: current) else {
             status = .upToDate
             return
         }
-        zipAsset = release.zipAsset
-        shaAsset = release.shaAsset
-        status = .available(version: release.version)
+        fetchAssets(version: version, page: page)
+    }
+
+    /// Only reached when an update exists: resolve the download URLs. Failing here
+    /// still surfaces the update — the button falls back to opening the release page.
+    @MainActor
+    private func fetchAssets(version: String, page: URL) {
+        guard let url = URL(string: Self.assetAPIURL) else {
+            status = .available(version: version)
+            return
+        }
+        guard Self.egress(caller: "UpdateChecker.swift",
+                          destination: url.host.map { "\($0)\(url.path)" } ?? url.absoluteString,
+                          purpose: "resolve update download URLs") else {
+            status = .available(version: version)
+            return
+        }
+        Task { @MainActor in
+            var zip: URL?
+            var sha: URL?
+            if let data = try? await URLSession.shared.data(from: url).0,
+               let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+               let json = list.first,
+               let assets = json["assets"] as? [[String: Any]] {
+                let assetURL = { (ext: String) -> URL? in
+                    assets.first { ($0["name"] as? String ?? "").hasSuffix(ext) }
+                        .flatMap { $0["browser_download_url"] as? String }
+                        .flatMap(URL.init(string:))
+                }
+                zip = assetURL(".zip")
+                sha = assetURL(".zip.sha256")
+            }
+            zipAsset = zip
+            shaAsset = sha
+            status = .available(version: version)
+        }
     }
 
     private var zipAsset: URL?
