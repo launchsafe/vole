@@ -30,8 +30,17 @@ content is ever stored.
 
 ## Install
 
-Requires **Node ≥ 22**, **pnpm**, and **Xcode 26** to build the app. Built and tested on macOS 26
-(arm64).
+**[Download Vole for macOS](https://github.com/launchsafe/vole/releases/latest)** — signed,
+notarised, and requires nothing else installed. Open the `.dmg` and drag Vole to Applications.
+Requires macOS 26 or later (Apple silicon).
+
+The app embeds its own collector and starts it itself. After the first launch it lives in the
+menu bar, and updates itself in place — each release publishes a SHA-256 beside the archive,
+and an update without one is never installed silently.
+
+### Building from source
+
+Requires **Node ≥ 22**, **pnpm**, and **Xcode 26**. Built and tested on macOS 26 (arm64).
 
 ```bash
 git clone https://github.com/launchsafe/vole && cd vole
@@ -39,8 +48,7 @@ pnpm install
 pnpm app:bundle      # build Vole.app and open it
 ```
 
-The packaged app embeds the collector and starts it itself — nothing else to run. To work on the
-app from source instead, run the collector separately:
+To work on the app from source instead, run the collector separately:
 
 ```bash
 pnpm collect         # parse the logs, poll every 5s

@@ -43,7 +43,7 @@ body:
     attributes:
       label: Versions
       description: Vole version (Settings → About), macOS version, and `node --version`.
-      placeholder: "Vole 0.2.2 · macOS 26.5 · node v22.11.0"
+      placeholder: "Vole 1.0.0 · macOS 26.5 · node v22.11.0"
     validations:
       required: true
 
