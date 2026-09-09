@@ -45,8 +45,8 @@ let R: CGFloat = 185            // corner radius at the 824 body — matches the
 //
 // Percent-of-width is the wrong knob for a mark that is not square: fill the
 // width generously and let the aspect ratio decide the height.
-let MARK_W: CGFloat = 0.80
-let MARK_H: CGFloat = 0.70
+let MARK_W: CGFloat = 0.77
+let MARK_H: CGFloat = 0.67
 
 /// Tightest rect (image coordinates, origin top-left) containing every non-transparent pixel.
 func alphaBounds(_ img: CGImage) -> CGRect {
