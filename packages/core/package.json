@@ -1,0 +1,26 @@
+{
+  "name": "@vole/core",
+  "version": "0.2.2",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "collect": "tsx src/cli/collect.ts",
+    "seed": "tsx src/cli/seed.ts",
+    "seed:purge": "tsx src/cli/seed.ts --purge",
+    "test": "node --import tsx --test 'src/**/*.test.ts'",
+    "verify": "node --import tsx src/cli/verify.ts",
+    "typecheck": "tsc --noEmit",
+    "build:sea": "node scripts/build-sea.mjs",
+    "mcp": "tsx src/cli/mcp.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "esbuild": "^0.28.2",
+    "postject": "1.0.0-alpha.6"
+  }
+}

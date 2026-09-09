@@ -1,0 +1,30 @@
+{
+  "cache_multipliers": { "read": 0.1, "write5m": 1.25, "write1h": 2.0 },
+  "models": {
+    "claude-fable-5-1": { "input": 10.0, "output": 50.0, "cache_read": 0.25, "effective_from": "2026-08-01",
+                          "note": "Cache reads are a flat $0.25/MTok on this model, not 0.1x input." },
+    "claude-fable-5": { "input": 10.0, "output": 50.0, "effective_from": "2026-06-24" },
+    "claude-opus-5": { "input": 5.0, "output": 25.0, "effective_from": "2026-06-24" },
+    "claude-opus-4-8": { "input": 5.0, "output": 25.0, "effective_from": "2026-06-24" },
+    "claude-opus-4-7": { "input": 5.0, "output": 25.0, "effective_from": "2026-06-24" },
+    "claude-opus-4-6": { "input": 5.0, "output": 25.0, "effective_from": "2026-06-24" },
+    "claude-sonnet-5": { "input": 2.0, "output": 10.0, "effective_from": "2026-06-24" },
+    "claude-sonnet-4-6": { "input": 3.0, "output": 15.0, "effective_from": "2026-06-24" },
+    "claude-haiku-4-5": { "input": 1.0, "output": 5.0, "effective_from": "2026-06-24" }
+  },
+  "context_windows": {
+    "claude-fable-5-1": 1000000,
+    "claude-fable-5": 1000000,
+    "claude-opus-5": 1000000,
+    "claude-opus-4-8": 1000000,
+    "claude-opus-4-7": 1000000,
+    "claude-opus-4-6": 1000000,
+    "claude-sonnet-5": 1000000,
+    "claude-sonnet-4-6": 1000000,
+    "claude-haiku-4-5": 200000
+  },
+  "unpriced": {
+    "gpt-5.1-codex-max": "No published per-token rate loaded for this model.",
+    "<synthetic>": "Synthetic Claude Code message; no API call was billed."
+  }
+}

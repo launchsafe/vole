@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Nothing here writes to the repo or uses a secret; fork PRs get a read-only token.
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # No `version:` — pnpm/action-setup reads it from package.json's
+      # `packageManager` field, and errors out if both are set.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      # Smoke: an empty home directory must parse cleanly, not crash.
+      - run: VOLE_HOME_OVERRIDE=$RUNNER_TEMP/vole-home pnpm collect:once
+
+  app:
+    # The app uses macOS 26 API (Liquid Glass); the runner needs an Xcode 26 toolchain.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: swift build --package-path apps/mac
