@@ -19,7 +19,7 @@
     "mcp": "tsx src/cli/mcp.ts"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1",
+    "@types/node": "^26.4.1",
     "esbuild": "^0.28.2",
     "postject": "1.0.0-alpha.6"
   }
