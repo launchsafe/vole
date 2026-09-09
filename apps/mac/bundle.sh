@@ -125,7 +125,12 @@ rm -f "$ZIP"
 
 # 5b. the auto-update pair: the zip the in-app updater installs, plus its
 #     published sha256 — no checksum, no silent install, by design.
-ZIP_UPD="$APP.zip"
+# NAME MATTERS: UpdateChecker constructs its download URL as
+#   releases/download/<tag>/Vole-<version>.zip
+# and no longer asks the GitHub API for the asset list, so this filename IS the
+# contract. Emitting Vole.app.zip here and renaming by hand at upload time is how
+# a release ships that every installed app 404s on.
+ZIP_UPD="build/Vole-$VERSION.zip"
 ditto -c -k --keepParent "$APP" "$ZIP_UPD"
 # awk reads stdin here, so FILENAME is empty — the old form wrote "<hash>  " with
 # no name at all. Print the basename explicitly so the published file is well formed.
