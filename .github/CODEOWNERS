@@ -1,0 +1,9 @@
+# Every pull request needs a review from a maintainer. Branch protection requires
+# a PR; without this file nothing routes one to a reviewer.
+*                       @shivanagendrakore @praneethnarisetty @jayimf432
+
+# The collectors are where correctness actually lives — every one of them is a
+# claim about what another tool writes to disk. Changes here get the same review
+# whoever opens them.
+/packages/core/src/collectors/  @shivanagendrakore @praneethnarisetty @jayimf432
+/packages/core/src/db.ts        @shivanagendrakore @praneethnarisetty @jayimf432

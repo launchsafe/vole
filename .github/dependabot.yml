@@ -1,0 +1,17 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        patterns: ["*"]
+
+  # Actions are the main supply-chain surface on a public repo: they run on every
+  # PR, including from forks.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
