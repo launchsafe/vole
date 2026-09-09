@@ -114,9 +114,21 @@ final class UpdateChecker {
                 return
             }
             guard let data,
-                  let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-                  let json = list.first,
-                  let tag = json["tag_name"] as? String,
+                  let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+            else {
+                Task { @MainActor in self?.status = .failed("could not read GitHub's response") }
+                return
+            }
+            // A repo with nothing published answers 200 with []. That is a SUCCESSFUL
+            // check with a clear answer — there is nothing newer to move to — not a
+            // parse failure. It used to fall through the guard below and report
+            // "could not read GitHub's response", which is both wrong and gives the
+            // user nothing to act on.
+            guard let json = list.first else {
+                Task { @MainActor in self?.status = .upToDate }
+                return
+            }
+            guard let tag = json["tag_name"] as? String,
                   let htmlURLString = json["html_url"] as? String,
                   let htmlURL = URL(string: htmlURLString)
             else {
