@@ -119,7 +119,9 @@ rm -f "$ZIP"
 #     published sha256 — no checksum, no silent install, by design.
 ZIP_UPD="$APP.zip"
 ditto -c -k --keepParent "$APP" "$ZIP_UPD"
-shasum -a 256 "$ZIP_UPD" | awk '{print $1"  "FILENAME}' > "$ZIP_UPD.sha256"
+# awk reads stdin here, so FILENAME is empty — the old form wrote "<hash>  " with
+# no name at all. Print the basename explicitly so the published file is well formed.
+shasum -a 256 "$ZIP_UPD" | awk -v n="$(basename "$ZIP_UPD")" '{print $1"  "n}' > "$ZIP_UPD.sha256"
 echo "auto-update pair: $ZIP_UPD + $ZIP_UPD.sha256 — upload BOTH as release assets"
 
 # 6. drag-to-Applications disk image, containing the already-stapled app
