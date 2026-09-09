@@ -39,15 +39,25 @@ struct VoleApp: App {
         runSelfCheck()
         #endif
         // Headless sanity check against the real database: `swift run Vole --dump`.
+        // DB is an actor, and this initialiser is synchronous, so the queries run in a
+        // detached task and park the main thread on dispatchMain() until it exits —
+        // no UI is ever brought up on this path.
         if CommandLine.arguments.contains("--dump") {
-            let db = DB()
-            let s = db.summary(.h24)
-            print("db: \(db.opened ? "ok" : "FAILED") \(db.path)")
-            print("24h  calls=\(s.calls)  tokens=\(s.tokens)  cost=\(Fmt.money(s.cost))  sessions=\(s.sessions)")
-            for t in s.byTool { print("  \(t.tool): calls=\(t.calls) tokens=\(Fmt.compact(t.tokens)) conf=\(t.confidence)") }
-            print("incidents(7d)=\(db.anomalies(.d7).count)  buckets(24h)=\(db.timeseries(.h24).count)  breakdown=\(db.breakdown(.all).count)")
-            print("refresh interval = \(RefreshInterval.saved)s")
-            exit(0)
+            Task.detached {
+                let db = DB()
+                let s = await db.summary(.h24)
+                let opened = await db.opened
+                print("db: \(opened ? "ok" : "FAILED") \(db.path)")
+                print("24h  calls=\(s.calls)  tokens=\(s.tokens)  cost=\(Fmt.money(s.cost))  sessions=\(s.sessions)")
+                for t in s.byTool { print("  \(t.tool): calls=\(t.calls) tokens=\(Fmt.compact(t.tokens)) conf=\(t.confidence)") }
+                let inc = await db.anomalies(.d7).count
+                let buckets = await db.timeseries(.h24).count
+                let bd = await db.breakdown(.all).count
+                print("incidents(7d)=\(inc)  buckets(24h)=\(buckets)  breakdown=\(bd)")
+                print("refresh interval = \(RefreshInterval.saved)s")
+                exit(0)
+            }
+            dispatchMain()
         }
         // Dock / ⌘-Tab / About icon — only for `swift run`, where an unbundled binary has
         // no Info.plist to name one. Inside the .app this must NOT run: assigning a raw

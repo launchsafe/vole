@@ -133,15 +133,20 @@ private func colText(_ s: OpaquePointer, _ i: Int32) -> String? {
 
 // MARK: - Database  (read-only; the TS collector owns writes)
 
-final class DB {
+/// An actor, so every query runs OFF the main thread and the sqlite handle is
+/// serialised by the actor rather than by convention. It used to be a plain class
+/// reached only from the @MainActor Store, which meant the whole refresh — ~18ms at
+/// 24h but ~80ms over the full range on a 50 MB store — blocked the UI on every poll.
+actor DB {
     /// The newest store schema this app understands. Must move in lockstep with the
     /// collector's MIGRATIONS head (packages/core/src/db.ts) — the version gate
     /// depends on the two agreeing about what "current" means.
     static let knownSchemaVersion = 28
 
     private var handle: OpaquePointer?
-    let path: String
-    private(set) var opened = false
+    /// Immutable after init, so callers can read it without hopping onto the actor.
+    nonisolated let path: String
+    var opened: Bool { handle != nil }
 
     /// activity_only rows are counted as calls but excluded from token/cost maths.
     private let tf = "confidence != 'activity_only'"
@@ -156,7 +161,7 @@ final class DB {
                 .appendingPathComponent(".vole/vole.db").path
         }
 
-        tryOpen()
+        handle = Self.open(path)
     }
 
     /// A brand-new install has no database file yet at the moment the app launches —
@@ -165,7 +170,13 @@ final class DB {
     /// the app recovers within one poll interval instead of being stuck showing "no
     /// database" for the rest of the session once the file does exist.
     func tryOpen() {
-        guard !opened else { return }
+        guard handle == nil else { return }
+        handle = Self.open(path)
+    }
+
+    /// `nonisolated static` so `init` can call it: an initialiser runs before the
+    /// actor is shared and therefore cannot call an isolated method at all.
+    private nonisolated static func open(_ path: String) -> OpaquePointer? {
         // sqlite3_open_v2 allocates a connection object even when it FAILS, and it
         // must be closed or it leaks. This runs on every poll while the store is
         // missing (a fresh install waiting for its first collector pass), so a
@@ -178,12 +189,14 @@ final class DB {
         }
         // WAL databases sometimes refuse a pure READONLY connection; the file is
         // user-writable, so fall back rather than show nothing.
-        handle = attempt(SQLITE_OPEN_READONLY) ?? attempt(SQLITE_OPEN_READWRITE)
-        opened = handle != nil
-        if let handle { sqlite3_busy_timeout(handle, 2000) }
+        let h = attempt(SQLITE_OPEN_READONLY) ?? attempt(SQLITE_OPEN_READWRITE)
+        if let h { sqlite3_busy_timeout(h, 2000) }
+        return h
     }
 
-    deinit { if let handle { sqlite3_close_v2(handle) } }
+    // `isolated` (SE-0371): an actor's deinit is nonisolated by default and so
+    // cannot touch actor state at all, which is where the connection lives.
+    isolated deinit { if let handle { sqlite3_close_v2(handle) } }
 
     private func run(_ sql: String, _ binds: [Int] = [], _ row: (OpaquePointer) -> Void) {
         guard let handle else { return }

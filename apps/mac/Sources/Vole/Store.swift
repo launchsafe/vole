@@ -37,7 +37,7 @@ final class Store {
         didSet {
             guard oldValue != range else { return }
             UserDefaults.standard.set(range.rawValue, forKey: "vole.range")
-            refreshRangeScoped()
+            Task { await refreshRangeScoped() }
         }
     }
 
@@ -68,7 +68,12 @@ final class Store {
 
     private let db = DB()
     private var timer: Timer?
-    private var refreshing = false   // one sqlite connection; don't let callers overlap
+    private var refreshing = false   // drop a poll if the previous one is still running
+    /// Queries run off-main now, so results can come back out of order: a slow full
+    /// poll started under "24h" must not repaint over a range switch to "7d" that
+    /// landed while it was in flight. Every refresh takes a token and only publishes
+    /// if it is still the newest one.
+    private var generation = 0
 
     /// Notification watermark, persisted so a relaunch doesn't re-notify.
     ///
@@ -88,9 +93,9 @@ final class Store {
     }
 
     init() {
-        dbOK = db.opened
-        dbPath = db.path
-        refresh()
+        dbOK = false          // the first refresh reports the real state
+        dbPath = db.path      // nonisolated on the actor
+        Task { await refresh() }
         startTimer()
     }
 
@@ -99,7 +104,7 @@ final class Store {
         // .common mode so the poll keeps firing while a menu is open or the window
         // is being resized/scrolled — .default alone stalls in those tracking loops.
         let t = Timer(timeInterval: Double(refreshSeconds), repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refresh() }
+            Task { await self?.refresh() }
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
@@ -110,7 +115,7 @@ final class Store {
         guard seconds != refreshSeconds else { return }
         refreshSeconds = seconds
         UserDefaults.standard.set(seconds, forKey: RefreshInterval.key)
-        refresh()          // reflect the change immediately
+        Task { await refresh() }   // reflect the change immediately
         startTimer()
     }
 
@@ -118,40 +123,58 @@ final class Store {
     /// re-run all of refresh()'s queries — several of them don't take `range`
     /// at all, and redoing them on every filter click was what made switching
     /// ranges feel sluggish.
-    private func refreshRangeScoped() {
-        guard db.opened else { return }
-        summary = db.summary(range)
-        series = db.timeseries(range)
-        incidents = db.anomalies(range)
-        breakdown = db.breakdown(range)
+    private func refreshRangeScoped() async {
+        generation += 1
+        let token = generation
+        let r = range
+        let s = await db.summary(r)
+        let ser = await db.timeseries(r)
+        let inc = await db.anomalies(r)
+        let bd = await db.breakdown(r)
+        guard token == generation, r == range else { return }
+        summary = s; series = ser; incidents = inc; breakdown = bd
     }
 
-    func refresh() {
+    func refresh() async {
+        guard !refreshing else { return }
+        refreshing = true
+        defer { refreshing = false }
         // A brand-new install has no database yet at launch — the embedded collector
         // needs real startup time to create it. Retry every poll rather than trusting
         // the one-time open in DB.init(), which a fresh machine reliably loses the
         // race against.
-        if !db.opened { db.tryOpen() }
-        dbOK = db.opened
-        guard db.opened, !refreshing else { return }
-        refreshing = true
-        defer { refreshing = false }
-        // Measured on a real 50 MB store, release build, on main every `refreshSeconds`:
-        // ~18ms at 24h, ~80ms at "all". summary() is now the bulk of it (its
-        // COUNT(DISTINCT session_id) builds a temp b-tree over the range). At "all"
-        // that is still ~5 dropped frames per poll — the next win is moving this
-        // off-main, which needs its own sqlite connection.
+        await db.tryOpen()          // no-op once it is open
+        let ok = await db.opened
+        dbOK = ok
+        guard ok else { return }
+        generation += 1
+        let token = generation
+        let r = range
+        // Measured on a real 50 MB store, release build: ~18ms at 24h, ~80ms at "all".
+        // All of it used to run on the main actor every `refreshSeconds`, which cost
+        // ~5 dropped frames per poll at "all". DB is an actor now, so the sqlite work
+        // happens off-main and only the assignments below are back on main.
         let prev = (summary.calls, summary.tokens, incidents.count)
-        summary = db.summary(range)
-        series = db.timeseries(range)
-        incidents = db.anomalies(range)
-        allIncidents = db.anomalies(.all, limit: 500)
-        breakdown = db.breakdown(range)
-        collectorLastSeen = db.collectorLastSeen()
-        storeSchemaVersion = db.schemaVersion()
-        availableTables = db.tableNames()
-        tokenSpeed = db.tokenSpeed()
-        let beats = db.collectorHeartbeats()
+        let s = await db.summary(r)
+        let ser = await db.timeseries(r)
+        let inc = await db.anomalies(r)
+        let allInc = await db.anomalies(.all, limit: 500)
+        let bd = await db.breakdown(r)
+        let lastSeen = await db.collectorLastSeen()
+        let schema = await db.schemaVersion()
+        let tables = await db.tableNames()
+        let speed = await db.tokenSpeed()
+        let beats = await db.collectorHeartbeats()
+        guard token == generation, r == range else { return }
+        summary = s
+        series = ser
+        incidents = inc
+        allIncidents = allInc
+        breakdown = bd
+        collectorLastSeen = lastSeen
+        storeSchemaVersion = schema
+        availableTables = tables
+        tokenSpeed = speed
         heartbeats = beats
         // With per-collector heartbeats, liveness is "any collector completed a pass
         // recently" — not "Claude Code touched a file", which left every non-Claude
