@@ -167,7 +167,12 @@ struct MenuBarLabel: View {
             Text(state.showsFigure
                  ? (menubar == "cost"
                     ? (store.summary.cost != nil ? Fmt.money(store.summary.cost) : "—")
-                    : (store.summary.tokens > 0 ? Fmt.compact(store.summary.tokens) : "—"))
+                    // A store whose tools all record activity only (Cursor, Devin,
+                    // Antigravity) has real calls and zero tokens. Showing "—" there
+                    // reported silence during active work; show the call count instead,
+                    // and keep "—" for a genuinely empty range.
+                    : (store.summary.tokens > 0 ? Fmt.compact(store.summary.tokens)
+                       : store.summary.calls > 0 ? "\(store.summary.calls)" : "—"))
                  : state.badge)
                 .foregroundStyle(state.tint)
                 .help(state.label)

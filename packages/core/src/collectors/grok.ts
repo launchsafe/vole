@@ -1,3 +1,4 @@
+import { count } from '../util/jsonl.js';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { paths } from '../paths';
@@ -176,8 +177,8 @@ export function collectGrok(db: DB): CollectorResult {
       ts: Date.parse(e.ts),
       ...tokens,
       // reasoning is already inside completion_tokens; stored for info, not re-added.
-      reasoning_tokens: c.reasoning_tokens ?? 0,
-      total_tokens: prompt + output,
+      reasoning_tokens: count(c.reasoning_tokens),
+      total_tokens: count(prompt) + count(output),
       cost_usd: computeCost(model, tokens), // NULL — no xAI rate loaded
       confidence: 'exact',
       is_error: 0,

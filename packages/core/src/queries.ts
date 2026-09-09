@@ -33,6 +33,11 @@ export interface Summary {
   truncated: number;
   /** True when any row in range is activity-only (a tool that records no tokens). */
   hasActivityOnly: boolean;
+  /** Token-bearing calls whose model has no resolvable rate. `cost` is the sum over
+   *  the rest, so a non-zero count means it is a FLOOR, not a total — the caller must
+   *  render it as such (`$0.53+`) rather than print a partial sum as a whole one.
+   *  Same discipline as RewarmSummary.unpricedModels, which had this right already. */
+  unpricedCalls: number;
   hasSeed: boolean;
   byTool: ToolSummary[];
 }
@@ -56,6 +61,7 @@ export function getSummary(db: DB, range: Range, includeSeed: boolean): Summary 
       `SELECT COUNT(*) AS calls,
               COALESCE(SUM(CASE WHEN ${TOKEN_FILTER} THEN total_tokens END), 0) AS tokens,
               SUM(cost_usd) AS cost,
+              COALESCE(SUM(CASE WHEN cost_usd IS NULL AND ${TOKEN_FILTER} THEN 1 ELSE 0 END), 0) AS unpricedCalls,
               COUNT(DISTINCT session_id) AS sessions,
               COALESCE(SUM(is_error), 0) AS errors,
               COALESCE(SUM(CASE WHEN stop_reason IN ('max_tokens', 'length') THEN 1 ELSE 0 END), 0) AS truncated,
@@ -66,7 +72,7 @@ export function getSummary(db: DB, range: Range, includeSeed: boolean): Summary 
        FROM usage_events WHERE ts >= ?${seedClause}`,
     )
     .get(from) as {
-    calls: number; tokens: number; cost: number | null; sessions: number;
+    calls: number; tokens: number; cost: number | null; unpricedCalls: number; sessions: number;
     errors: number; truncated: number; cacheRead: number; freshIn: number;
   };
 
@@ -106,6 +112,7 @@ export function getSummary(db: DB, range: Range, includeSeed: boolean): Summary 
     truncated: totals.truncated,
     cacheHitRatio: denom > 0 ? totals.cacheRead / denom : null,
     hasActivityOnly: (flags.activityOnly ?? 0) > 0,
+    unpricedCalls: totals.unpricedCalls,
     hasSeed: (flags.seed ?? 0) > 0,
     byTool,
   };

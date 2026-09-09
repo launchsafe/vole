@@ -50,3 +50,25 @@ export function parseLine<T>(line: string): T | null {
     return null;
   }
 }
+
+/// A token count read from someone else's log, coerced to a number we can do
+/// arithmetic on. `?? 0` guards null and undefined but NOT type: a string makes
+/// `+` concatenate ("123" + 7 = "1237", which SQLite's INTEGER affinity then
+/// silently stores as 1237), and an object or array produces a value
+/// better-sqlite3 cannot bind, throwing out of insertEvents — which aborts the
+/// whole pass before any cursor commits, so the next pass throws at the same
+/// byte offset, forever.
+///
+/// Returns 0 for anything that is not a finite number, so an unreadable field
+/// contributes nothing rather than fabricating a total. Callers that want the
+/// row to degrade to activity_only should check `isCount` first.
+export function count(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
+/// Whether a usage field is a real measurement, as opposed to absent or
+/// unreadable. Lets a caller tell "the source recorded 0" from "the source
+/// recorded something we cannot trust".
+export function isCount(v: unknown): boolean {
+  return v === null || v === undefined || (typeof v === 'number' && Number.isFinite(v));
+}

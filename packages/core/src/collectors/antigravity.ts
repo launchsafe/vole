@@ -63,7 +63,13 @@ export function collectAntigravity(_db: DB): CollectorResult {
     }
 
     events.push({
-      event_key: `antigravity:${conversationId}:${Math.round(ts)}`,
+      // The key is the conversation, NOT the conversation-plus-mtime. An mtime is
+      // not part of the record's identity: a live conversation rewrites its .pb on
+      // every turn, so folding it in minted a fresh key each poll and the UNIQUE
+      // constraint that IS the idempotency contract never fired — hundreds of rows
+      // for the one conversation this file's own doc comment promises to emit once.
+      // `ts` still tracks the newest mtime; only the identity is pinned.
+      event_key: `antigravity:${conversationId}`,
       tool: 'antigravity',
       model: null,
       session_id: conversationId,

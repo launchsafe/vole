@@ -38,20 +38,33 @@ export function detectBillableBurn(events: UsageEvent[], now: number): Anomaly[]
       bucket: Number(bucketStr),
       evs,
       raw: evs.reduce((s, e) => s + (e.total_tokens ?? 0), 0),
-      // Cost when the whole window is priced; otherwise uncached tokens, which are
-      // the expensive majority of what is left after 0.1x cache reads come out.
-      score: evs.every((e) => e.cost_usd !== null)
+      // BOTH units are computed per window; which one is compared is decided once
+      // for the whole group below. usd is null unless every row in the window has a
+      // resolvable cost.
+      usd: evs.every((e) => e.cost_usd !== null)
         ? evs.reduce((s, e) => s + (e.cost_usd ?? 0), 0)
-        : evs.reduce((s, e) => s + Math.max(0, (e.total_tokens ?? 0) - (e.cache_read_tokens ?? 0)), 0),
-      priced: evs.every((e) => e.cost_usd !== null),
+        : null,
+      // Uncached tokens: the expensive majority of what is left once 0.1x cache
+      // reads come out.
+      tokens: evs.reduce((s, e) => s + Math.max(0, (e.total_tokens ?? 0) - (e.cache_read_tokens ?? 0)), 0),
     }));
 
     const candidates = scored.filter((w) => w.raw >= MIN_TOKENS_IN_WINDOW);
     if (candidates.length < MIN_BASELINE_WINDOWS + 1) continue;
 
+    // ONE unit for the whole group, decided here rather than per window. Scoring each
+    // window independently meant a single unpriced row anywhere in one window flipped
+    // that window from a ~0.09 DOLLAR score to a ~30000 TOKEN score, which was then
+    // compared against a dollar median — minting a `critical` "333333.3x typical" out
+    // of an utterly ordinary window. The mirror-image false negative was just as real:
+    // a genuine $5 spike measured against a token median could never fire. Dollars and
+    // uncached tokens are not commensurable; a median across a mixed array is meaningless.
+    const priced = candidates.every((w) => w.usd !== null);
+    const scoreOf = (w: (typeof candidates)[number]) => (priced ? (w.usd ?? 0) : w.tokens);
+
     // One O(W log W) pass for the whole group: the leave-one-out median of the
     // surviving candidates for each surviving candidate.
-    const loo = leaveOneOutMedians(candidates.map((c) => c.score));
+    const loo = leaveOneOutMedians(candidates.map(scoreOf));
 
     const [tool, model, session] = key.split('::');
     for (let ci = 0; ci < candidates.length; ci++) {
@@ -61,16 +74,17 @@ export function detectBillableBurn(events: UsageEvent[], now: number): Anomaly[]
       // sub-threshold window, which is noise by definition, not a "normal" one.
       const baseline = loo[ci]!;
       if (baseline <= 0) continue;
-      if (w.score <= baseline * SPIKE_MULTIPLE) continue;
+      const score = scoreOf(w);
+      if (score <= baseline * SPIKE_MULTIPLE) continue;
 
-      const multiple = w.score / baseline;
+      const multiple = score / baseline;
       const first = w.evs[0];
       if (!first) continue;
 
-      const perMin = w.score / (WINDOW_MS / 60000);
-      const money = w.priced
-        ? `$${w.score.toFixed(2)} in 10 min ($${perMin.toFixed(2)}/min)`
-        : `${fmt(w.score)} uncached tokens in 10 min (${fmt(perMin)}/min)`;
+      const perMin = score / (WINDOW_MS / 60000);
+      const money = priced
+        ? `$${score.toFixed(2)} in 10 min ($${perMin.toFixed(2)}/min)`
+        : `${fmt(score)} uncached tokens in 10 min (${fmt(perMin)}/min)`;
 
       out.push({
         anomaly_key: `billable_burn_spike:${tool}:${model}:${session}:${w.bucket}`,
@@ -84,9 +98,9 @@ export function detectBillableBurn(events: UsageEvent[], now: number): Anomaly[]
         title: `Billable burn spike on ${first.tool} (${model})`,
         detail:
           `${money} across ${w.evs.length} calls — ${multiple.toFixed(1)}x this session's typical window ` +
-          `(${w.priced ? `$${baseline.toFixed(2)}` : `${fmt(baseline)} uncached tokens`}). ` +
+          `(${priced ? `$${baseline.toFixed(2)}` : `${fmt(baseline)} uncached tokens`}). ` +
           `Raw ${fmt(w.raw)} tokens including cache reads. Session ${shortId(first.session_id)}.`,
-        observed: w.score,
+        observed: score,
         baseline,
         threshold: baseline * SPIKE_MULTIPLE,
         confidence: worstConfidence(w.evs),

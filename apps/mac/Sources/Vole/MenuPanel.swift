@@ -200,10 +200,17 @@ struct MenuPanel: View {
     }
 
     private var tools: some View {
-        let rows = store.summary.byTool.filter { $0.tokens != nil }.prefix(5)
+        // No token filter. Cursor, Devin and Antigravity record no tokens BY DESIGN
+        // (README's own support table), so filtering on `tokens != nil` emptied this
+        // list on those machines and rendered the literal string "No activity" while
+        // calls were being recorded — the exact opposite of project rule 1, which says
+        // a row with no tokens still counts as a call. The Breakdown pane has always
+        // been honest here; this is the always-on surface, so it mattered more.
+        let rows = store.summary.byTool.prefix(5)
         let mx = max(rows.map { $0.tokens ?? 0 }.max() ?? 1, 1)
         return Card {
-            if rows.isEmpty {
+            // Emptiness is about CALLS, not about tokens.
+            if store.summary.calls == 0 {
                 Text("No activity").font(.caption).foregroundStyle(.secondary)
             } else {
                 VStack(spacing: 6) {
@@ -219,9 +226,10 @@ struct MenuPanel: View {
                                     .frame(maxHeight: .infinity, alignment: .center)
                             }
                             .frame(height: 4)
-                            Text(Fmt.compact(t.tokens))
+                            // A no-token tool shows what it DOES have: its call count.
+                            Text(t.tokens == nil ? "\(t.calls) call\(t.calls == 1 ? "" : "s")" : Fmt.compact(t.tokens))
                                 .font(.caption.monospacedDigit())
-                                .frame(width: 46, alignment: .trailing)
+                                .frame(width: 62, alignment: .trailing)
                             // A mixed group is visibly mixed: tokens are exact, but
                             // N of the calls recorded nothing — never silently one label.
                             if t.activityOnlyCalls > 0 {

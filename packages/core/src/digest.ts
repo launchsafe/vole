@@ -18,7 +18,13 @@ export function digestMarkdown(d: Digest): string {
   const L: string[] = [];
   L.push(`## Your agent ${d.range === '7d' ? 'week' : d.range} · ${day(d.from)} → ${day(d.to)}`);
   L.push('');
-  L.push(`**${compact(s.tokens)} tokens** across **${s.calls.toLocaleString('en-US')} calls** in ${s.sessions} sessions · equivalent value ${usd(s.cost)}`);
+  // Same discipline as the re-warm line below: a partial sum is never printed as a
+  // whole one. Rows whose model has no resolvable rate drop out of SUM(cost_usd), so
+  // with any of them present this figure is a floor, not a total.
+  const headlineCost = s.unpricedCalls > 0
+    ? `${usd(s.cost)}+ (${s.unpricedCalls.toLocaleString('en-US')} call${s.unpricedCalls === 1 ? '' : 's'} unpriced)`
+    : usd(s.cost);
+  L.push(`**${compact(s.tokens)} tokens** across **${s.calls.toLocaleString('en-US')} calls** in ${s.sessions} sessions · equivalent value ${headlineCost}`);
   L.push('');
   L.push('| | |');
   L.push('|---|---|');

@@ -1,3 +1,4 @@
+import { count } from '../util/jsonl.js';
 import { Database } from '../sqlite';
 import { existsSync, statSync } from 'node:fs';
 import { paths } from '../paths';
@@ -236,7 +237,7 @@ export function collectOpencode(_db: DB): CollectorResult {
         cache_write_1h_tokens: 0,
         cache_read_tokens: read,
         reasoning_tokens: reasoning,
-        total_tokens: input + output + reasoning + read + write,
+        total_tokens: count(input) + count(output) + count(reasoning) + count(read) + count(write),
         // OpenCode's own figure. A real 0 (free local model) is kept; only a missing
         // field becomes null.
         cost_usd: typeof d.cost === 'number' ? d.cost : null,

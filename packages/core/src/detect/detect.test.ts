@@ -267,3 +267,30 @@ test('context pressure: a tool-reported window (Codex) wins over the published o
   assert.equal(found.length, 1);
   assert.equal(found[0]?.severity, 'critical');
 });
+
+test('billable_burn_spike scores a whole group in one unit, so a single unpriced row cannot mint a spike', () => {
+  // Regression: score used to be chosen PER WINDOW — dollars when every row in that
+  // window had a cost, uncached tokens otherwise — and the leave-one-out median was
+  // taken across the mixed array. One unpriced row in one window flipped that window
+  // to a token score (~30000) which was then compared against a dollar median (~0.09),
+  // producing a `critical` anomaly at a five-figure multiple out of ordinary usage.
+  const base = (i: number, cost: number | null): UsageEvent => ({
+    event_key: `e${i}`, tool: 'codex', model: 'gpt-5', session_id: 's1',
+    project: null, git_branch: null,
+    ts: 1_700_000_000_000 + i * 10 * 60_000,
+    input_tokens: 25_000, output_tokens: 5_000,
+    cache_write_5m_tokens: 0, cache_write_1h_tokens: 0, cache_read_tokens: 0,
+    reasoning_tokens: 0, total_tokens: 30_000, cost_usd: cost,
+    confidence: 'exact', source: 'live', is_error: 0, stop_reason: null,
+    context_window: null, duration_ms: null, duration_kind: null,
+    raw_ref: null, tools: null, agent_id: null,
+  });
+  // Eight identical windows. Every one is the same size; only the LAST has an
+  // unpriced row, which is the entire difference between them.
+  const events = [0, 1, 2, 3, 4, 5, 6].map((i) => base(i, 0.09));
+  events.push(base(7, null));
+
+  const found = detectBillableBurn(events, 1_700_010_000_000);
+  assert.deepEqual(found, [], 'identical windows must not produce a burn spike');
+});
+

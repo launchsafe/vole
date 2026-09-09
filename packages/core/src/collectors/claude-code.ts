@@ -1,3 +1,4 @@
+import { count } from '../util/jsonl.js';
 import { readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { paths } from '../paths';
@@ -177,8 +178,8 @@ function toEvent(
   // Newer entries split cache creation by TTL, which lets us price it exactly. Older
   // entries only give a total; the 5-minute TTL is the default, so attribute it there.
   const split = usage.cache_creation;
-  const w5m = split?.ephemeral_5m_input_tokens ?? (split ? 0 : (usage.cache_creation_input_tokens ?? 0));
-  const w1h = split?.ephemeral_1h_input_tokens ?? 0;
+  const w5m = split ? count(split.ephemeral_5m_input_tokens) : count(usage.cache_creation_input_tokens);
+  const w1h = split ? count(split.ephemeral_1h_input_tokens) : 0;
 
   const model = entry.message?.model ?? null;
   const content = entry.message?.content;
