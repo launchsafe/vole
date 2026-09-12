@@ -1,0 +1,56 @@
+name: Bug report
+description: A number looks wrong, something crashed, or a tool is not being read
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most bugs here are one of two kinds: a number that disagrees with the tool's
+        own logs, or a source that is not being read at all. The fields below are the
+        ones that let a maintainer reproduce either without a round-trip.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, and what you expected instead.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: tool
+    attributes:
+      label: Which agent is affected
+      multiple: true
+      options: [Claude Code, OpenCode, Codex CLI, Grok CLI, Cursor, Devin, Antigravity, Not tool-specific]
+    validations:
+      required: true
+
+  - type: textarea
+    id: verify
+    attributes:
+      label: Output of `pnpm verify`
+      description: >
+        This reconciles every stored row against its own source record, so it usually
+        localises the problem on its own. Paste the summary lines — they contain counts,
+        not prompts or file contents.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Vole version (Settings → About), macOS version, and `node --version`.
+      placeholder: "Vole 1.0.0 · macOS 26.5 · node v22.11.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: >
+        Screenshots help for UI issues. Please do not paste prompt or tool content —
+        Vole never stores it, and an issue thread should not either.

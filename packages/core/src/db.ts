@@ -1,0 +1,2125 @@
+import { Database } from './sqlite';
+import { mkdirSync, existsSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { hostname, userInfo } from 'node:os';
+import { createHash } from 'node:crypto';
+import { SCHEMA } from './schema';
+import { paths } from './paths';
+import { computeCost } from './pricing';
+import type { Anomaly, Tool, UsageEvent } from './types';
+
+export type DB = Database;
+
+let cached: DB | null = null;
+
+/**
+ * Origin of THIS collection: who and where the data was observed. Stamped on every row
+ * at ingest so that when events from several machines/users share a store they remain
+ * attributable. Rows collected before this column existed keep NULL — origin unknown.
+ */
+function origin(): { user: string | null; machine: string | null } {
+  let user: string | null = null;
+  try {
+    user = userInfo().username || null;
+  } catch {
+    /* uid not resolvable (some container contexts) */
+  }
+  let machine: string | null = null;
+  try {
+    machine = hostname() || null;
+  } catch {
+    /* hostname lookup failed */
+  }
+  return { user, machine };
+}
+
+const ORIGIN = origin();
+
+// ── schema_migrations: a numbered, ledgered, forward-only path ──────────────
+//
+// PRAGMA user_version used to read 0 on every live store: the store could not say
+// which schema it was, and upgrades were three hand-written PRAGMA table_info probes
+// that silently no-op'd when they lost their nerve. This is the replacement: a
+// forward-only list of steps, each applied inside one BEGIN IMMEDIATE with
+// busy_timeout set, each stamped into a ledger table with its duration and row
+// count. A step's `apply` must be idempotent — an old store converges by running
+// everything pending, a fresh store runs the whole list once as no-ops that still
+// get ledgered, so every store can answer "which schema am I".
+//
+// The ledger can only describe steps applied after it exists. A store that predates
+// it gets one synthetic row — version 0, name 'pre-ledger', applied_at NULL — and
+// NULL must render as 'unknown', never as a date.
+
+export interface Migration {
+  version: number;
+  name: string;
+  kind: 'ddl' | 'backfill';
+  /** Idempotent by contract: an old store may apply it as a verified no-op. */
+  apply: (db: DB) => number;
+}
+
+function addColumn(db: DB, table: string, column: string, ddl: string): number {
+  const cols = (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+  if (cols.includes(column)) return 0;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  return 1;
+}
+
+export const MIGRATIONS: Migration[] = [
+  {
+    version: 1,
+    name: 'origin-user-machine-columns',
+    kind: 'ddl',
+    apply: (db) =>
+      addColumn(db, 'usage_events', 'user', 'TEXT') +
+      addColumn(db, 'usage_events', 'machine', 'TEXT') +
+      addColumn(db, 'anomalies', 'user', 'TEXT') +
+      addColumn(db, 'anomalies', 'machine', 'TEXT'),
+  },
+  {
+    version: 2,
+    name: 'tools-agent-context-columns',
+    kind: 'ddl',
+    apply: (db) =>
+      addColumn(db, 'usage_events', 'tools', 'TEXT') +
+      addColumn(db, 'usage_events', 'agent_id', 'TEXT') +
+      addColumn(db, 'usage_events', 'context_window', 'INTEGER'),
+  },
+  {
+    version: 3,
+    name: 'codex-event-key-backfill',
+    kind: 'backfill',
+    // Declared and one-time: Codex event_keys were keyed on sessionId, which
+    // sub-agent rollout files replay verbatim, so parent and child rows collided
+    // on one key and rows were silently lost or had their totals mixed. Keys are
+    // now rollout-file based. The old rows cannot be healed in place — a collided
+    // row's totals may come from whichever file happened to win — and Codex
+    // rollouts are re-read in full on every collection pass, so the rows are
+    // deleted here and rebuilt from source on the next pass. Rows whose rollout
+    // file no longer exists are gone for good, which is the honest horizon: they
+    // cannot be re-proved from local evidence either way.
+    apply: (db) => {
+      const stale = db
+        .prepare("SELECT COUNT(*) AS n FROM usage_events WHERE tool='codex' AND event_key NOT LIKE '%/%'")
+        .get() as { n: number };
+      if (stale.n === 0) return 0;
+      db.exec("DELETE FROM usage_events WHERE tool='codex' AND event_key NOT LIKE '%/%'");
+      return stale.n;
+    },
+  },
+  {
+    version: 4,
+    name: 'collector-runs-heartbeat',
+    kind: 'ddl',
+    // The table itself lives in SCHEMA (fresh installs get it directly); the step
+    // exists so every evolving store gets a ledgered record of the same fact.
+    apply: (db) => {
+      const n = (
+        db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='collector_runs'").get() as { n: number }
+      ).n;
+      if (n === 0) db.exec(COLLECTOR_RUNS_DDL);
+      return 0;
+    },
+  },
+  {
+    version: 5,
+    name: 'scan-state-cadence-lane',
+    kind: 'ddl',
+    // The discovery scanners (codesign per binary, /Applications walk, launchd
+    // enumeration) are orders of magnitude more expensive than a poll and must
+    // never ride the 5-second loop. scan_state is their lane: per-scanner
+    // last-run facts, so a scanner runs at ITS cadence, not the poll's.
+    apply: (db) => {
+      const n = (
+        db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name='scan_state'").get() as { n: number }
+      ).n;
+      if (n === 0) db.exec(SCAN_STATE_DDL);
+      return 0;
+    },
+  },
+  {
+    version: 6,
+    name: 'claude-tools-backfill',
+    kind: 'backfill',
+    // Declared and one-time: the collector unions tool names across content-block
+    // copies since the B5 fix, but incremental offsets never re-read lines already
+    // consumed, so rows stored before that fix keep tools NULL forever — the
+    // tokens-only-grow upsert cannot heal what it is never shown again. This step
+    // re-reads each affected row's own transcript once and heals the union. Rows
+    // whose transcript was pruned stay NULL: unhealable from local evidence, and
+    // reported as such rather than invented.
+    apply: (db) => {
+      const rows = db
+        .prepare(
+          "SELECT id, event_key, raw_ref FROM usage_events WHERE tool = 'claude_code' AND tools IS NULL AND raw_ref IS NOT NULL",
+        )
+        .all() as { id: number; event_key: string; raw_ref: string }[];
+      if (rows.length === 0) return 0;
+
+      // One file read per affected transcript, one union map per file.
+      const byFile = new Map<string, { id: number; messageId: string }[]>();
+      for (const r of rows) {
+        const list = byFile.get(r.raw_ref) ?? [];
+        list.push({ id: r.id, messageId: r.event_key.slice('claude_code:'.length) });
+        byFile.set(r.raw_ref, list);
+      }
+
+      const update = db.prepare('UPDATE usage_events SET tools = ? WHERE id = ?');
+      let healed = 0;
+      for (const [file, targets] of byFile) {
+        let lines: string[];
+        try {
+          lines = readFileSync(file, 'utf8').split('\n');
+        } catch {
+          continue; // pruned or unreadable: the row keeps its honest NULL
+        }
+        const wanted = new Set(targets.map((t) => t.messageId));
+        const union = new Map<string, string[]>();
+        for (const line of lines) {
+          if (!line) continue;
+          let e: {
+            type?: string;
+            message?: { id?: string; content?: { type?: string; name?: string }[] | string };
+          };
+          try {
+            e = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (e.type !== 'assistant' || !e.message?.id || !wanted.has(e.message.id)) continue;
+          const content = e.message.content;
+          if (!Array.isArray(content)) continue;
+          const u = union.get(e.message.id) ?? [];
+          for (const c of content) {
+            if (c?.type === 'tool_use' && c.name && !u.includes(c.name)) u.push(c.name);
+          }
+          union.set(e.message.id, u);
+        }
+        for (const t of targets) {
+          const u = union.get(t.messageId);
+          if (u?.length) healed += update.run(u.join(','), t.id).changes;
+        }
+      }
+      return healed;
+    },
+  },
+  {
+    version: 7,
+    name: 'v-incident-explained-view',
+    kind: 'ddl',
+    // The read-model contract: the incident shape (figures included) lives in the
+    // STORE, not in two diverging SQL strings — both readers SELECT from the view,
+    // so a column added once appears in TS, Swift and the parity diff together.
+    apply: (db) => {
+      db.exec(`
+        CREATE VIEW IF NOT EXISTS v_incident_explained AS
+        SELECT id, anomaly_key, rule, severity, tool, session_id, model,
+               window_start, window_end, title, detail,
+               observed, baseline, threshold, confidence, source, detected_at
+        FROM anomalies`);
+      return 0;
+    },
+  },
+  {
+    version: 8,
+    name: 'ai-surfaces-registry',
+    kind: 'ddl',
+    // The Shadow AI spine: every AI surface on this machine — installed apps,
+    // persistent gateways, CLIs — with first_seen/last_seen. A surface row proves
+    // an artifact exists on disk, never that a human used it, and never a token
+    // or a dollar (the evidence ladder and verify --surfaces keep that honest).
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ai_surfaces (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          surface_key TEXT    NOT NULL UNIQUE,
+          kind        TEXT    NOT NULL,
+          name        TEXT    NOT NULL,
+          path        TEXT,
+          evidence    TEXT,
+          version     TEXT,
+          extra       TEXT,
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL
+        )`);
+      return 0;
+    },
+  },
+  {
+    version: 9,
+    name: 'finding-actions-triage',
+    kind: 'ddl',
+    // The triage layer: an append-only disposition ledger. Writes arrive through
+    // the ~/.vole/inbox spool (the app never writes the store) and are drained
+    // here by the collector — the same single-writer discipline as everything else.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS finding_actions (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          anomaly_key  TEXT    NOT NULL,
+          action       TEXT    NOT NULL,
+          note         TEXT,
+          until        INTEGER,
+          actor        TEXT    NOT NULL DEFAULT 'app',
+          created_at   INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_fa_key ON finding_actions(anomaly_key, created_at);`);
+      return 0;
+    },
+  },
+  {
+    version: 10,
+    name: 'ai-surfaces-sanctioned-column',
+    kind: 'ddl',
+    // The policy join, materialized at scan time: NULL = no policy was loaded at
+    // the last scan (the chip reads "no policy"), 1 = sanctioned, 0 = not in the
+    // declaration. Sanctioned-ness is an admin DECISION, re-evaluated every scan.
+    apply: (db) => addColumn(db, 'ai_surfaces', 'sanctioned', 'INTEGER'),
+  },
+  {
+    version: 11,
+    name: 'secret-sightings-and-scan-state',
+    kind: 'ddl',
+    // The Tier 4 substrate. secret_sightings NEVER holds a secret value: the
+    // fingerprint is a Keychain-keyed HMAC, the location is a byte offset, and
+    // the value can only be re-read from the source file at view time (the
+    // just-in-time evidence viewer). dlp_scan_state carries per-sink cursors so
+    // a scan engine with a byte budget resumes rather than restarts.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS secret_sightings (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          fingerprint    TEXT    NOT NULL,
+          detector       TEXT    NOT NULL,
+          sink_key       TEXT    NOT NULL,
+          path           TEXT    NOT NULL,
+          byte_offset    INTEGER NOT NULL,
+          byte_length    INTEGER NOT NULL,
+          direction      TEXT    NOT NULL DEFAULT 'at_rest',
+          status         TEXT    NOT NULL DEFAULT 'candidate',
+          first_seen     INTEGER NOT NULL,
+          last_seen      INTEGER NOT NULL,
+          UNIQUE (fingerprint, sink_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ss_fp ON secret_sightings(fingerprint);
+        CREATE TABLE IF NOT EXISTS dlp_scan_state (
+          sink_key       TEXT PRIMARY KEY,
+          bytes_scanned  INTEGER NOT NULL DEFAULT 0,
+          bytes_skipped  INTEGER,
+          bytes_unreadable INTEGER,
+          last_seen_at   INTEGER,
+          completed      INTEGER NOT NULL DEFAULT 0
+        );`);
+      return 0;
+    },
+  },
+  {
+    version: 12,
+    name: 'usage-events-duration-column',
+    kind: 'ddl',
+    // Generation speed needs real response durations. OpenCode carries
+    // time.created -> time.completed per message (exact); other collectors leave
+    // NULL — an honest unknown, never an invented zero, and the speed view
+    // prints its coverage beside every figure.
+    apply: (db) => addColumn(db, 'usage_events', 'duration_ms', 'INTEGER'),
+  },
+  {
+    version: 13,
+    name: 'duration-kind-provenance',
+    kind: 'ddl',
+    // Speed provenance: 'measured' = the source states the response span
+    // (OpenCode); 'turn_scoped' = estimated from inter-event gaps, which include
+    // queue time and permission prompts, so the derived speed is a LOWER bound.
+    // NULL = no duration is known at all. A speed figure without its kind is a
+    // benchmark, not a measurement.
+    apply: (db) => addColumn(db, 'usage_events', 'duration_kind', "TEXT"),
+  },
+  {
+    version: 14,
+    name: 'duration-backfill-cursor-reset',
+    kind: 'backfill',
+    // Generation speed needs durations on stored rows, but claude-code reads by
+    // offset and codex by (size, mtime) cursor — both skip everything already
+    // consumed, so rows stored before duration capture would stay NULL forever.
+    // One declared reset: the next pass re-reads every transcript and rollout
+    // from the start; stable event_keys make it a no-op for tokens, and the
+    // NULL-widening upsert heals duration_ms in place.
+    apply: (db) => {
+      const n = db
+        .prepare("DELETE FROM collector_state WHERE tool IN ('claude_code', 'codex')")
+        .run().changes;
+      return n;
+    },
+  },
+  {
+    version: 15,
+    name: 'tool-calls-ledger',
+    kind: 'ddl',
+    // Tier 5's substrate: one row per tool INVOCATION, not per meter event.
+    // Source-native keys + a two-phase NULL-only-widening bind: a tool_use seen
+    // without its result inserts with NULL outcome columns; the result widens
+    // them later — possibly in a later pass. Shape and digest, never content.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS tool_calls (
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          tool_call_key TEXT    NOT NULL UNIQUE,
+          tool          TEXT    NOT NULL,
+          name          TEXT    NOT NULL,
+          shape         TEXT,
+          args_digest   TEXT,
+          session_id    TEXT,
+          agent_id      TEXT,
+          ts            INTEGER NOT NULL,
+          status        TEXT,
+          status_source TEXT,
+          duration_ms   INTEGER,
+          duration_kind TEXT,
+          authority     TEXT,
+          raw_ref       TEXT,
+          first_seen    INTEGER NOT NULL,
+          last_seen     INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_tc_session ON tool_calls(session_id, ts);
+        CREATE INDEX IF NOT EXISTS idx_tc_name ON tool_calls(name, ts);`);
+      return 0;
+    },
+  },
+  {
+    version: 16,
+    name: 'tool-calls-ledger-backfill',
+    kind: 'backfill',
+    // The ledger's rows come from the same incremental reads as usage events,
+    // so rows consumed before this feature landed would never be extracted.
+    // One declared reset of the claude-code/codex cursors: the next pass
+    // re-reads everything, event_keys keep tokens a no-op, and the two-phase
+    // bind fills the ledger in place.
+    apply: (db) =>
+      db.prepare("DELETE FROM collector_state WHERE tool IN ('claude_code', 'codex')").run().changes,
+  },
+  {
+    version: 17,
+    name: 'ledger-shape-tag-backfill',
+    kind: 'backfill',
+    // Structural path tags (sensitive/persistence/own-permissions) landed after
+    // the ledger's first fill; the bind keeps the RICHER shape, so one cursor
+    // reset re-reads Claude transcripts and upgrades shapes in place.
+    apply: (db) =>
+      db.prepare("DELETE FROM collector_state WHERE tool = 'claude_code'").run().changes,
+  },
+  {
+    version: 18,
+    name: 'identity-grants-people',
+    kind: 'ddl',
+    // Tier 3 + Tier 6 substrate. Principals are PSEUDONYMOUS by construction:
+    // the store keeps an HMAC of the username, never the name or email. The
+    // grants table reads each agent's own permission declarations — the file
+    // that granted the authority is the evidence, keyed verbatim.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS principals (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          principal_key TEXT  NOT NULL UNIQUE,  -- keyed HMAC: pseudonymous
+          display     TEXT    NOT NULL,          -- short label, never an email
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS devices (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          device_key  TEXT    NOT NULL UNIQUE,   -- IOPlatformUUID, HMAC'd
+          hostname    TEXT,
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS grants (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          grant_key   TEXT    NOT NULL UNIQUE,   -- agent + file + entry
+          agent       TEXT    NOT NULL,          -- claude_code | codex | ...
+          source_file TEXT    NOT NULL,
+          kind        TEXT    NOT NULL,          -- allow | deny | ask | hook | mcp
+          entry       TEXT    NOT NULL,          -- the verbatim declaration
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_grants_agent ON grants(agent);
+        CREATE VIEW IF NOT EXISTS v_people AS
+        SELECT p.id, p.display, p.principal_key, p.first_seen, p.last_seen,
+               (SELECT COUNT(DISTINCT session_id) FROM usage_events
+                WHERE user IS NOT NULL AND session_id IS NOT NULL) AS sessions
+        FROM principals p;`);
+      return 0;
+    },
+  },
+  {
+    version: 19,
+    name: 'tier5-tier6-tier7-completion',
+    kind: 'ddl',
+    // autonomy_intervals: posture as a timeline. session_identity: the binding
+    // between a session and its principal, with evidence rank. suppression: turn
+    // a rule off centrally, keep counting what it hid. content_packs: versioned
+    // detector packs with checksums. export_seq: the change cursor.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS autonomy_intervals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id TEXT NOT NULL,
+          agent_id TEXT,
+          started_at INTEGER NOT NULL,
+          ended_at INTEGER NOT NULL,
+          calls INTEGER NOT NULL,
+          denied INTEGER NOT NULL DEFAULT 0,
+          errors INTEGER NOT NULL DEFAULT 0,
+          UNIQUE (session_id, agent_id, started_at)
+        );
+        CREATE TABLE IF NOT EXISTS session_identity (
+          session_id TEXT PRIMARY KEY,
+          principal_key TEXT,
+          device_key TEXT,
+          binding_evidence TEXT NOT NULL DEFAULT 'inferred',
+          first_seen INTEGER NOT NULL,
+          last_seen INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS suppression (
+          rule TEXT PRIMARY KEY,
+          reason TEXT,
+          suppressed_at INTEGER NOT NULL,
+          hidden_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS content_packs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          checksum TEXT NOT NULL,
+          loaded_at INTEGER NOT NULL,
+          UNIQUE (kind, version)
+        );
+        CREATE TABLE IF NOT EXISTS export_seq (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          exported_at INTEGER NOT NULL,
+          last_anomaly_id INTEGER NOT NULL DEFAULT 0,
+          last_event_ts INTEGER NOT NULL DEFAULT 0
+        );`);
+      return 0;
+    },
+  },
+  {
+    // ── FOUNDATION (migrations 20–26) ─────────────────────────────────────────
+    //
+    // These steps lay every table and column the remaining roadmap features need,
+    // so feature builders never append a migration of their own and never edit
+    // this file concurrently. Rules of the seam:
+    //   * every column added to an existing table is nullable — NULL is an honest
+    //     unknown, never a defaulted zero;
+    //   * every new table is CREATE IF NOT EXISTS with a UNIQUE upsert key that
+    //     must not contain now()-derived values (idempotency contract);
+    //   * tables are write-side only here — no view or read model depends on them
+    //     until a builder wires one.
+    version: 20,
+    name: 'surfaces-depth-and-readability',
+    kind: 'ddl',
+    // Tier 2 seam: the shadow-AI spine grows the columns the spec names (vendor,
+    // identifier, state, scanner, confidence, evidence_kind, discovery) plus the
+    // attempted-read ledger scan_access — existsSync is not a permission oracle,
+    // and the four-state probe outcome is the only honest observable.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS scan_access (
+          root            TEXT    NOT NULL,
+          launch_context  TEXT,
+          state           TEXT    NOT NULL,
+          errno           TEXT,
+          entries         INTEGER,
+          last_ok_ts      INTEGER,
+          last_ok_entries INTEGER,
+          last_result     TEXT,
+          first_seen      INTEGER NOT NULL,
+          last_seen       INTEGER NOT NULL,
+          UNIQUE (root, launch_context)
+        );
+        CREATE TABLE IF NOT EXISTS agent_roots (
+          root_path    TEXT NOT NULL UNIQUE,
+          tool         TEXT NOT NULL,
+          discovered_by TEXT,
+          first_seen   INTEGER NOT NULL,
+          last_seen     INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS model_routes (
+          route_key      TEXT NOT NULL UNIQUE,
+          alias          TEXT NOT NULL,
+          target_model   TEXT,
+          api_base       TEXT,
+          api_key_present INTEGER,
+          source         TEXT NOT NULL,
+          first_seen     INTEGER NOT NULL,
+          last_seen      INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS surface_activity (
+          surface_key TEXT NOT NULL,
+          counter_kind TEXT NOT NULL,
+          counter     INTEGER NOT NULL DEFAULT 0,
+          watermark   INTEGER,
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL,
+          UNIQUE (surface_key, counter_kind)
+        );
+        CREATE TABLE IF NOT EXISTS provider_keys (
+          key_name    TEXT NOT NULL,
+          source_file TEXT NOT NULL,
+          shape       TEXT,
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL,
+          UNIQUE (key_name, source_file)
+        );
+        CREATE TABLE IF NOT EXISTS ai_dependencies (
+          dep_key  TEXT NOT NULL UNIQUE,
+          name     TEXT NOT NULL,
+          kind     TEXT,
+          source   TEXT,
+          path     TEXT,
+          version  TEXT,
+          first_seen INTEGER NOT NULL,
+          last_seen  INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS site_capabilities (
+          origin    TEXT NOT NULL,
+          capability TEXT NOT NULL,
+          pref_key  TEXT NOT NULL,
+          pref_file TEXT NOT NULL,
+          first_seen INTEGER NOT NULL,
+          last_seen  INTEGER NOT NULL,
+          UNIQUE (origin, capability, pref_file)
+        );
+        CREATE TABLE IF NOT EXISTS column_provenance (
+          table_name            TEXT NOT NULL,
+          column_name           TEXT NOT NULL,
+          migration_version     INTEGER,
+          first_populated_ts     INTEGER,
+          unbackfillable_rows    INTEGER,
+          PRIMARY KEY (table_name, column_name)
+        );`);
+      return (
+        addColumn(db, 'ai_surfaces', 'vendor', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'identifier', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'state', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'scanner', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'confidence', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'evidence_kind', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'account_class', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'class_evidence', 'TEXT') +
+        addColumn(db, 'ai_surfaces', 'discovery', 'TEXT')
+      );
+    },
+  },
+  {
+    version: 21,
+    name: 'identity-machinery',
+    kind: 'ddl',
+    // Tier 3 seam: execution_context_id on every event-bearing ledger (origin
+    // quarantine), the account-class columns on session_identity, hostname
+    // history, the view-governance access log, and the pseudonymised insert
+    // (subject_id) that replaces cleartext user/machine going forward. The
+    // cleartext columns stay — rows collected before this step keep their NULL
+    // honesty and a builder migrates them deliberately.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS hostname_history (
+          device_key TEXT NOT NULL,
+          hostname   TEXT NOT NULL,
+          first_seen INTEGER NOT NULL,
+          last_seen  INTEGER NOT NULL,
+          UNIQUE (device_key, hostname)
+        );
+        CREATE TABLE IF NOT EXISTS access_log (
+          id       INTEGER PRIMARY KEY AUTOINCREMENT,
+          accessor TEXT NOT NULL,
+          purpose  TEXT NOT NULL,
+          view     TEXT NOT NULL,
+          ts       INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS scope_history (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          captured_at INTEGER NOT NULL,
+          sha256      TEXT NOT NULL,
+          diff        TEXT,
+          source      TEXT
+        );
+        CREATE TABLE IF NOT EXISTS vendor_identities (
+          vendor           TEXT NOT NULL,
+          local_key_kind   TEXT NOT NULL,
+          local_key        TEXT NOT NULL,
+          vendor_id_kind   TEXT,
+          vendor_id_hmac   TEXT,
+          plan             TEXT,
+          org_id_hmac      TEXT,
+          auth_path        TEXT,
+          evidence_artifact TEXT,
+          first_seen       INTEGER NOT NULL,
+          last_seen        INTEGER NOT NULL,
+          UNIQUE (vendor, local_key_kind, local_key)
+        );
+        -- v_people was created (migration 18) with an uncorrelated sessions
+        -- subquery and zero readers. Correlated to principals via the
+        -- session_identity join it was always meant to have.
+        DROP VIEW IF EXISTS v_people;
+        CREATE VIEW v_people AS
+        SELECT p.id, p.display, p.principal_key, p.first_seen, p.last_seen,
+               (SELECT COUNT(DISTINCT si.session_id) FROM session_identity si
+                WHERE si.principal_key = p.principal_key) AS sessions
+        FROM principals p;`);
+      return (
+        addColumn(db, 'usage_events', 'execution_context_id', 'TEXT') +
+        addColumn(db, 'usage_events', 'subject_id', 'TEXT') +
+        addColumn(db, 'usage_events', 'cli_version', 'TEXT') +
+        addColumn(db, 'usage_events', 'cost_basis', 'TEXT') +
+        addColumn(db, 'usage_events', 'pricing_rev', 'INTEGER') +
+        addColumn(db, 'usage_events', 'observed_at', 'INTEGER') +
+        addColumn(db, 'anomalies', 'execution_context_id', 'TEXT') +
+        addColumn(db, 'anomalies', 'case_key', 'TEXT') +
+        addColumn(db, 'anomalies', 'detail_key', 'TEXT') +
+        addColumn(db, 'anomalies', 'detail_params', 'TEXT') +
+        addColumn(db, 'anomalies', 'content_rev', 'INTEGER') +
+        addColumn(db, 'anomalies', 'asset_id', 'TEXT') +
+        addColumn(db, 'anomalies', 'asset_tier', 'INTEGER') +
+        addColumn(db, 'anomalies', 'asset_rev', 'INTEGER') +
+        addColumn(db, 'anomalies', 'state', 'TEXT') +
+        addColumn(db, 'anomalies', 'state_ts', 'INTEGER') +
+        addColumn(db, 'anomalies', 'state_actor', 'TEXT') +
+        addColumn(db, 'principals', 'principal_source', 'TEXT') +
+        addColumn(db, 'principals', 'valid_from', 'INTEGER') +
+        addColumn(db, 'principals', 'valid_to', 'INTEGER') +
+        addColumn(db, 'session_identity', 'tool', 'TEXT') +
+        addColumn(db, 'session_identity', 'account_id', 'TEXT') +
+        addColumn(db, 'session_identity', 'org_id', 'TEXT') +
+        addColumn(db, 'session_identity', 'account_class', 'TEXT') +
+        addColumn(db, 'session_identity', 'class_evidence', 'TEXT') +
+        addColumn(db, 'session_identity', 'plan', 'TEXT') +
+        addColumn(db, 'session_identity', 'seat_role', 'TEXT') +
+        addColumn(db, 'session_identity', 'surface', 'TEXT') +
+        addColumn(db, 'session_identity', 'source', 'TEXT')
+      );
+    },
+  },
+  {
+    version: 22,
+    name: 'dlp-ledger-depth',
+    kind: 'ddl',
+    // Tier 4 seam: resumable cursors on dlp_scan_state (the byte-budget
+    // livelock fix), widening columns on secret_sightings, the opaque-payload
+    // ledger, key residency, cross-vendor context imports, the data-terms
+    // chain and the answerability horizon.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS payload_sightings (
+          sighting_key   TEXT NOT NULL UNIQUE,
+          session_id     TEXT,
+          kind           TEXT NOT NULL,
+          media_type     TEXT,
+          bytes_on_disk  INTEGER,
+          bytes_received INTEGER,
+          scannable      INTEGER,
+          context_class  TEXT,
+          first_seen     INTEGER NOT NULL,
+          last_seen      INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS key_residency (
+          repo          TEXT NOT NULL,
+          manifest_path TEXT NOT NULL,
+          var_name      TEXT NOT NULL,
+          target_class  TEXT NOT NULL,
+          source        TEXT,
+          first_seen    INTEGER NOT NULL,
+          last_seen     INTEGER NOT NULL,
+          UNIQUE (repo, manifest_path, var_name)
+        );
+        CREATE TABLE IF NOT EXISTS context_imports (
+          event_key         TEXT PRIMARY KEY,
+          source_tool       TEXT NOT NULL,
+          source_path_hmac  TEXT,
+          source_dir_prefix TEXT,
+          content_sha256    TEXT NOT NULL,
+          dest_tool         TEXT NOT NULL,
+          dest_thread_id    TEXT,
+          imported_at       INTEGER,
+          source_bytes      INTEGER,
+          source_present    INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS terms_basis (
+          surface_key TEXT NOT NULL,
+          basis       TEXT NOT NULL,
+          source      TEXT,
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL,
+          UNIQUE (surface_key, basis)
+        );
+        CREATE TABLE IF NOT EXISTS recipient_state (
+          surface_key  TEXT NOT NULL,
+          state        TEXT NOT NULL,
+          evidence_ref TEXT,
+          first_seen   INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL,
+          UNIQUE (surface_key, state)
+        );
+        CREATE TABLE IF NOT EXISTS residency_evidence (
+          surface_key TEXT NOT NULL,
+          rank        INTEGER,
+          evidence    TEXT,
+          source      TEXT,
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL,
+          UNIQUE (surface_key, evidence)
+        );
+        CREATE TABLE IF NOT EXISTS processing_terms (
+          surface_key TEXT NOT NULL,
+          kind        TEXT NOT NULL,
+          value       TEXT,
+          as_of       INTEGER,
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL,
+          UNIQUE (surface_key, kind)
+        );
+        CREATE TABLE IF NOT EXISTS answerable_from (
+          source         TEXT NOT NULL,
+          indicator_kind TEXT NOT NULL,
+          horizon_ts     INTEGER,
+          basis          TEXT,
+          first_seen     INTEGER NOT NULL,
+          last_seen      INTEGER NOT NULL,
+          PRIMARY KEY (source, indicator_kind)
+        );`);
+      return (
+        addColumn(db, 'dlp_scan_state', 'cursor_kind', 'TEXT') +
+        addColumn(db, 'dlp_scan_state', 'cursor_text', 'TEXT') +
+        addColumn(db, 'dlp_scan_state', 'cursor_int', 'INTEGER') +
+        addColumn(db, 'dlp_scan_state', 'inode', 'INTEGER') +
+        addColumn(db, 'dlp_scan_state', 'backfill_done', 'INTEGER') +
+        addColumn(db, 'dlp_scan_state', 'pack_rev', 'INTEGER') +
+        addColumn(db, 'secret_sightings', 'occurrences', 'INTEGER') +
+        addColumn(db, 'secret_sightings', 'provider', 'TEXT') +
+        addColumn(db, 'secret_sightings', 'class_entry_id', 'TEXT') +
+        addColumn(db, 'secret_sightings', 'validator_checked', 'TEXT') +
+        addColumn(db, 'secret_sightings', 'fixture_reason', 'TEXT') +
+        addColumn(db, 'secret_sightings', 'execution_context_id', 'TEXT')
+      );
+    },
+  },
+  {
+    version: 23,
+    name: 'toolcall-authority-and-behaviour-ledgers',
+    kind: 'ddl',
+    // Tier 5 seam: the authority/basis columns on tool_calls, posture columns
+    // on autonomy_intervals, and the target-system + file-write + remote-action
+    // ledgers the behaviour rules and Blast Radius read from. call_key columns
+    // reference tool_calls.tool_call_key (no FK — the ledger is append-only and
+    // a missing parent must not abort a child write).
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS action_targets (
+          call_key     TEXT NOT NULL,
+          target_kind  TEXT NOT NULL,
+          target_label TEXT,
+          locality     TEXT,
+          env_class    TEXT,
+          reversible   TEXT,
+          resolution   TEXT,
+          evidence_path TEXT,
+          asset_id     TEXT,
+          first_seen   INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL,
+          UNIQUE (call_key, target_kind, target_label)
+        );
+        CREATE INDEX IF NOT EXISTS idx_at_kind ON action_targets(target_kind);
+        CREATE TABLE IF NOT EXISTS anomaly_context (
+          anomaly_key          TEXT PRIMARY KEY,
+          distinct_files       INTEGER,
+          distinct_dirs        INTEGER,
+          out_of_repo_writes   INTEGER,
+          destructive_calls    INTEGER,
+          failed_calls         INTEGER,
+          unknown_outcome_calls INTEGER,
+          top_path_classes     TEXT,
+          contributing_sessions TEXT,
+          window_end           INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS agent_edges (
+          edge_key        TEXT NOT NULL UNIQUE,
+          session_id      TEXT NOT NULL,
+          agent_id        TEXT,
+          parent_agent_id TEXT,
+          workflow_id     TEXT,
+          agent_type      TEXT,
+          spawn_depth     INTEGER,
+          parent_call_key TEXT,
+          first_seen      INTEGER NOT NULL,
+          last_seen       INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ae_session ON agent_edges(session_id);
+        CREATE TABLE IF NOT EXISTS file_writes (
+          write_key        TEXT NOT NULL UNIQUE,
+          tool_call_key    TEXT,
+          session_id       TEXT,
+          path             TEXT,
+          path_class       TEXT,
+          write_class      TEXT,
+          change_risk_class TEXT,
+          class_pattern_id TEXT,
+          content_rev      INTEGER,
+          escape_state     TEXT,
+          visibility_class TEXT,
+          ts               INTEGER,
+          first_seen       INTEGER NOT NULL,
+          last_seen       INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_fw_session ON file_writes(session_id, ts);
+        CREATE TABLE IF NOT EXISTS path_classes (
+          pattern_id   TEXT NOT NULL,
+          pack_version INTEGER NOT NULL,
+          class        TEXT NOT NULL,
+          pattern      TEXT NOT NULL,
+          first_seen   INTEGER NOT NULL,
+          UNIQUE (pattern_id, pack_version)
+        );
+        CREATE TABLE IF NOT EXISTS secret_store_reads (
+          call_key    TEXT NOT NULL,
+          store_kind  TEXT NOT NULL,
+          target_ref  TEXT,
+          item_name   TEXT,
+          field_name   TEXT,
+          materialised TEXT,
+          ts          INTEGER,
+          UNIQUE (call_key, store_kind, item_name, field_name)
+        );
+        CREATE TABLE IF NOT EXISTS grant_deposits (
+          deposit_key  TEXT NOT NULL UNIQUE,
+          tool_call_key TEXT,
+          store_kind   TEXT,
+          target_ref  TEXT,
+          item_name   TEXT,
+          ts          INTEGER,
+          first_seen   INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS db_actions (
+          call_key        TEXT NOT NULL,
+          statement_class TEXT NOT NULL,
+          object_names    TEXT,
+          target_key      TEXT,
+          ts              INTEGER,
+          UNIQUE (call_key, statement_class, object_names)
+        );
+        CREATE TABLE IF NOT EXISTS remote_exec (
+          call_key     TEXT NOT NULL,
+          hop          INTEGER NOT NULL,
+          host         TEXT,
+          user         TEXT,
+          inner_pattern TEXT,
+          ts           INTEGER,
+          UNIQUE (call_key, hop)
+        );
+        CREATE TABLE IF NOT EXISTS vcs_actions (
+          call_key      TEXT NOT NULL,
+          verb          TEXT NOT NULL,
+          repo          TEXT,
+          escape_state  TEXT,
+          push_evidence TEXT,
+          ts            INTEGER,
+          UNIQUE (call_key, verb, repo)
+        );
+        CREATE TABLE IF NOT EXISTS package_execs (
+          call_key       TEXT NOT NULL,
+          package_name   TEXT,
+          registry       TEXT,
+          fetch_and_run  INTEGER,
+          ts             INTEGER,
+          UNIQUE (call_key, package_name)
+        );
+        CREATE TABLE IF NOT EXISTS fetch_ingress (
+          call_key TEXT NOT NULL,
+          url_host TEXT,
+          status   INTEGER,
+          bytes    INTEGER,
+          ts       INTEGER,
+          UNIQUE (call_key, url_host)
+        );
+        CREATE TABLE IF NOT EXISTS context_edges (
+          call_key    TEXT NOT NULL,
+          transport   TEXT,
+          verb        TEXT,
+          destination TEXT,
+          direction   TEXT,
+          ts          INTEGER,
+          UNIQUE (call_key, destination, direction)
+        );
+        CREATE TABLE IF NOT EXISTS sensitive_access (
+          path_class          TEXT NOT NULL,
+          path_hash           TEXT NOT NULL,
+          authorization_basis TEXT,
+          count               INTEGER NOT NULL DEFAULT 0,
+          window_start        INTEGER NOT NULL,
+          UNIQUE (path_class, path_hash, window_start)
+        );
+        CREATE TABLE IF NOT EXISTS bulk_uploads (
+          upload_key     TEXT NOT NULL UNIQUE,
+          repo_path      TEXT,
+          turn           INTEGER,
+          max_file_bytes INTEGER,
+          size_bytes     INTEGER,
+          gcs_path       TEXT,
+          blobs          INTEGER,
+          started_at     INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS upload_decisions (
+          upload_key                 TEXT NOT NULL UNIQUE,
+          uploads_enabled           INTEGER,
+          upload_reason             TEXT,
+          trace_upload_source       TEXT,
+          telemetry_mode            TEXT,
+          data_collection_disabled  INTEGER,
+          in_env_trace_upload       INTEGER,
+          in_cfg_telemetry_trace_upload INTEGER,
+          in_remote_trace_upload_enabled INTEGER,
+          has_remote_settings       INTEGER,
+          ts                        INTEGER
+        );`);
+      return (
+        addColumn(db, 'tool_calls', 'server', 'TEXT') +
+        addColumn(db, 'tool_calls', 'tool_name', 'TEXT') +
+        addColumn(db, 'tool_calls', 'authority_evidence', 'TEXT') +
+        addColumn(db, 'tool_calls', 'authorization_basis', 'TEXT') +
+        addColumn(db, 'tool_calls', 'pattern_id', 'TEXT') +
+        addColumn(db, 'tool_calls', 'pack_version', 'INTEGER') +
+        addColumn(db, 'tool_calls', 'target_scope', 'TEXT') +
+        addColumn(db, 'tool_calls', 'origin_kind', 'TEXT') +
+        addColumn(db, 'tool_calls', 'permission_mode', 'TEXT') +
+        addColumn(db, 'tool_calls', 'autonomy_rank', 'TEXT') +
+        addColumn(db, 'tool_calls', 'execution_context_id', 'TEXT') +
+        addColumn(db, 'autonomy_intervals', 'mode_raw', 'TEXT') +
+        addColumn(db, 'autonomy_intervals', 'autonomy', 'TEXT') +
+        addColumn(db, 'autonomy_intervals', 'fs_policy', 'TEXT') +
+        addColumn(db, 'autonomy_intervals', 'approval_policy', 'TEXT') +
+        addColumn(db, 'autonomy_intervals', 'sandbox_policy', 'TEXT') +
+        addColumn(db, 'autonomy_intervals', 'permission_profile', 'TEXT')
+      );
+    },
+  },
+  {
+    version: 24,
+    name: 'posture-grants-and-pack-plane',
+    kind: 'ddl',
+    // Tier 6 seam: grants precedence columns, the overrides ledger, the MCP
+    // identity table, repo roots/artifacts, the suppression register's proper
+    // shape (entry-keyed, mode-aware, with hidden-count accounting), pack trust
+    // classes, and the posture ledgers (hooks, signing, levers, plugins,
+    // extensions).
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS overrides (
+          override_key TEXT NOT NULL UNIQUE,
+          agent        TEXT NOT NULL,
+          source_file  TEXT NOT NULL,
+          kind         TEXT NOT NULL,
+          entry        TEXT NOT NULL,
+          first_seen   INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS posture_mcp_servers (
+          source         TEXT NOT NULL,
+          config_path    TEXT NOT NULL,
+          client         TEXT NOT NULL,
+          server_name    TEXT NOT NULL,
+          mcp_identity   TEXT NOT NULL,
+          transport      TEXT,
+          command        TEXT,
+          argv           TEXT,
+          url             TEXT,
+          cwd             TEXT,
+          enabled        INTEGER,
+          env_key_names  TEXT,
+          first_seen     INTEGER NOT NULL,
+          last_seen      INTEGER NOT NULL,
+          UNIQUE (source, mcp_identity)
+        );
+        CREATE TABLE IF NOT EXISTS work_roots (
+          root_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+          root_path    TEXT NOT NULL UNIQUE,
+          origin_slug  TEXT,
+          exists_now   INTEGER,
+          disappeared_at INTEGER,
+          first_seen   INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS repo_artifacts (
+          artifact_key TEXT NOT NULL UNIQUE,
+          root_path    TEXT NOT NULL,
+          rel_path     TEXT NOT NULL,
+          kind         TEXT,
+          tracked_state TEXT,
+          sha256       TEXT,
+          size_bytes   INTEGER,
+          mtime        INTEGER,
+          first_seen   INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ra_root ON repo_artifacts(root_path);
+        CREATE TABLE IF NOT EXISTS repo_scan_state (
+          root_path    TEXT PRIMARY KEY,
+          cursor_int   INTEGER,
+          bytes_scanned INTEGER,
+          last_scan_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS suppressed_counts (
+          day       INTEGER NOT NULL,
+          kind      TEXT NOT NULL,
+          entry_id  TEXT NOT NULL,
+          n         INTEGER,
+          UNIQUE (day, kind, entry_id)
+        );
+        CREATE TABLE IF NOT EXISTS hook_ledger (
+          hook_key     TEXT NOT NULL UNIQUE,
+          agent        TEXT NOT NULL,
+          hook_event   TEXT NOT NULL,
+          command_hash TEXT NOT NULL,
+          source_file  TEXT NOT NULL,
+          first_seen   INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS signing_ledger (
+          surface_key   TEXT NOT NULL,
+          team_id       TEXT,
+          cdhash        TEXT,
+          signature_kind TEXT,
+          first_seen    INTEGER NOT NULL,
+          last_seen    INTEGER NOT NULL,
+          UNIQUE (surface_key, cdhash)
+        );
+        CREATE TABLE IF NOT EXISTS posture_levers (
+          agent          TEXT NOT NULL,
+          lever          TEXT NOT NULL,
+          observed_value  TEXT,
+          hardened_value TEXT,
+          source_file    TEXT,
+          first_seen     INTEGER NOT NULL,
+          last_seen      INTEGER NOT NULL,
+          UNIQUE (agent, lever, source_file)
+        );
+        CREATE TABLE IF NOT EXISTS plugins (
+          plugin_key  TEXT NOT NULL UNIQUE,
+          agent       TEXT NOT NULL,
+          name        TEXT NOT NULL,
+          version     TEXT,
+          marketplace TEXT,
+          installed_at INTEGER,
+          enabled     INTEGER,
+          source      TEXT,
+          first_seen  INTEGER NOT NULL,
+          last_seen   INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS extension_versions (
+          root       TEXT NOT NULL,
+          ext_id     TEXT NOT NULL,
+          version   TEXT NOT NULL,
+          first_seen INTEGER NOT NULL,
+          last_seen  INTEGER NOT NULL,
+          UNIQUE (root, ext_id, version)
+        );
+        CREATE TABLE IF NOT EXISTS store_budget (
+          object       TEXT NOT NULL,
+          kind         TEXT NOT NULL,
+          bytes        INTEGER,
+          rows         INTEGER,
+          bytes_per_row REAL,
+          measured_at  INTEGER,
+          PRIMARY KEY (object, kind)
+        );
+        CREATE TABLE IF NOT EXISTS evidence_freeze (
+          freeze_id          TEXT NOT NULL,
+          principal_key       TEXT NOT NULL,
+          declared_at         INTEGER NOT NULL,
+          path                TEXT NOT NULL,
+          present            INTEGER,
+          size_bytes          INTEGER,
+          mtime               INTEGER,
+          sha256              TEXT,
+          consumed_to_offset  INTEGER,
+          rows_referencing    INTEGER,
+          reason              TEXT,
+          ts                  INTEGER,
+          UNIQUE (freeze_id, path)
+        );`);
+      return (
+        addColumn(db, 'grants', 'granted_by', 'TEXT') +
+        addColumn(db, 'grants', 'path_class', 'TEXT') +
+        addColumn(db, 'grants', 'origin', 'TEXT') +
+        addColumn(db, 'grants', 'scope', 'TEXT') +
+        addColumn(db, 'grants', 'entry_class', 'TEXT') +
+        addColumn(db, 'suppression', 'kind', 'TEXT') +
+        addColumn(db, 'suppression', 'entry_id', 'TEXT') +
+        addColumn(db, 'suppression', 'set_by', 'TEXT') +
+        addColumn(db, 'suppression', 'expires_at', 'INTEGER') +
+        addColumn(db, 'suppression', 'mode', 'TEXT') +
+        addColumn(db, 'content_packs', 'trust', 'TEXT') +
+        addColumn(db, 'content_packs', 'signature', 'TEXT') +
+        addColumn(db, 'content_packs', 'path', 'TEXT') +
+        addColumn(db, 'content_packs', 'active', 'INTEGER')
+      );
+    },
+  },
+  {
+    version: 25,
+    name: 'export-triage-and-telemetry',
+    kind: 'ddl',
+    // Tier 7 seam: the disposition ledger's full column set, the durable outbox,
+    // control intents, vendor-join keys, orphan sessions, hunt runs, the store
+    // epoch, and run-level footprint/clock columns.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS export_outbox (
+          seq             INTEGER PRIMARY KEY AUTOINCREMENT,
+          sink            TEXT NOT NULL,
+          doc_id          TEXT NOT NULL,
+          payload_hash    TEXT,
+          bytes           INTEGER,
+          attempts        INTEGER NOT NULL DEFAULT 0,
+          next_attempt_at INTEGER,
+          state           TEXT NOT NULL DEFAULT 'pending',
+          last_error      TEXT,
+          created_at      INTEGER NOT NULL,
+          UNIQUE (sink, doc_id)
+        );
+        CREATE TABLE IF NOT EXISTS control_intents (
+          intent_id    TEXT NOT NULL UNIQUE,
+          intent       TEXT NOT NULL,
+          session_id   TEXT,
+          pid          INTEGER,
+          actor        TEXT,
+          requested_at INTEGER NOT NULL,
+          expires_at   INTEGER,
+          state        TEXT NOT NULL DEFAULT 'requested',
+          source       TEXT
+        );
+        CREATE TABLE IF NOT EXISTS event_links (
+          event_key TEXT NOT NULL,
+          vendor    TEXT NOT NULL,
+          link_kind TEXT NOT NULL,
+          link_id   TEXT NOT NULL,
+          first_seen INTEGER NOT NULL,
+          UNIQUE (event_key, vendor, link_kind, link_id)
+        );
+        CREATE TABLE IF NOT EXISTS orphan_sessions (
+          session_key     TEXT NOT NULL UNIQUE,
+          tool            TEXT NOT NULL,
+          session_id      TEXT,
+          evidence        TEXT,
+          classification  TEXT,
+          first_seen      INTEGER NOT NULL,
+          last_seen       INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS hunt_runs (
+          hunt_id              TEXT NOT NULL UNIQUE,
+          pack_kind            TEXT NOT NULL,
+          pack_version         INTEGER,
+          signature            TEXT,
+          ran_at               INTEGER NOT NULL,
+          verdict_confirmed    INTEGER,
+          verdict_cleared     INTEGER,
+          verdict_unanswerable INTEGER,
+          verdict_not_seen     INTEGER,
+          horizon_ts           INTEGER,
+          answer_sentence      TEXT
+        );
+        CREATE TABLE IF NOT EXISTS store_epoch (
+          epoch_id           TEXT PRIMARY KEY,
+          created_at         INTEGER NOT NULL,
+          device_key         TEXT,
+          first_event_ts     INTEGER,
+          collector_version  TEXT,
+          prev_epoch_id      TEXT,
+          prev_epoch_last_seq INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS detection_epochs (
+          epoch        INTEGER PRIMARY KEY,
+          rule_set_sha256 TEXT NOT NULL,
+          created_at   INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS network_calls (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          caller      TEXT NOT NULL,
+          destination TEXT NOT NULL,
+          purpose     TEXT,
+          ts          INTEGER NOT NULL
+        );`);
+      return (
+        addColumn(db, 'finding_actions', 'action_id', 'TEXT') +
+        addColumn(db, 'finding_actions', 'case_key', 'TEXT') +
+        addColumn(db, 'finding_actions', 'actor_kind', 'TEXT') +
+        addColumn(db, 'finding_actions', 'reason_code', 'TEXT') +
+        addColumn(db, 'finding_actions', 'content_rev', 'INTEGER') +
+        addColumn(db, 'finding_actions', 'label_mode', 'TEXT') +
+        addColumn(db, 'finding_actions', 'batch_id', 'TEXT') +
+        addColumn(db, 'finding_actions', 'source', 'TEXT') +
+        addColumn(db, 'finding_actions', 'ingested_at', 'INTEGER') +
+        addColumn(db, 'collector_runs', 'rss_peak_bytes', 'INTEGER') +
+        addColumn(db, 'collector_runs', 'cpu_user_ms', 'INTEGER') +
+        addColumn(db, 'collector_runs', 'cpu_sys_ms', 'INTEGER') +
+        addColumn(db, 'collector_runs', 'exit_status', 'INTEGER') +
+        addColumn(db, 'collector_runs', 'boot_epoch', 'INTEGER') +
+        addColumn(db, 'collector_runs', 'wall_ms', 'INTEGER') +
+        addColumn(db, 'collector_state', 'prefix_sha256', 'TEXT') +
+        addColumn(db, 'collector_state', 'head_sha256', 'TEXT') +
+        addColumn(db, 'collector_state', 'inode', 'INTEGER') +
+        addColumn(db, 'collector_state', 'birthtime', 'INTEGER')
+      );
+    },
+  },
+  {
+    version: 26,
+    name: 'vendor-cost-and-lifecycle',
+    kind: 'ddl',
+    // Tier 8 seam: the vendor billing ledger, billing-unit declarations,
+    // quota observations, the declared principal lifecycle, and retention
+    // receipts. Nothing here is ever written from observation except the
+    // quota/vendor rows a collector reads from the vendor's own local files.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS vendor_ledger (
+          vendor         TEXT NOT NULL,
+          period_start   INTEGER NOT NULL,
+          period_end     INTEGER NOT NULL,
+          vendor_cost_usd REAL,
+          currency       TEXT,
+          unit           TEXT,
+          rows           INTEGER,
+          pulled_at      INTEGER,
+          source         TEXT,
+          UNIQUE (vendor, period_start, period_end)
+        );
+        CREATE TABLE IF NOT EXISTS billing_units (
+          declaration_key TEXT NOT NULL UNIQUE,
+          vendor         TEXT NOT NULL,
+          unit           TEXT NOT NULL,
+          usd_per_unit   REAL,
+          effective_from INTEGER,
+          note           TEXT,
+          author         TEXT,
+          first_seen     INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS quota_observations (
+          tool         TEXT NOT NULL,
+          session_id   TEXT,
+          ts           INTEGER NOT NULL,
+          kind         TEXT NOT NULL,
+          used_percent REAL,
+          limit_value  REAL,
+          reset_at     INTEGER,
+          UNIQUE (tool, session_id, ts, kind)
+        );
+        CREATE TABLE IF NOT EXISTS principal_lifecycle (
+          principal_key  TEXT NOT NULL,
+          state          TEXT NOT NULL,
+          effective_from INTEGER NOT NULL,
+          effective_to   INTEGER,
+          declared_by    TEXT,
+          basis          TEXT,
+          decl_hash      TEXT,
+          source         TEXT,
+          first_seen     INTEGER NOT NULL,
+          last_seen      INTEGER NOT NULL,
+          UNIQUE (principal_key, state, effective_from)
+        );
+        CREATE TABLE IF NOT EXISTS store_prunes (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          table_name   TEXT NOT NULL,
+          data_class   TEXT,
+          days         INTEGER,
+          deleted_rows INTEGER,
+          bytes_before INTEGER,
+          bytes_after  INTEGER,
+          ran_at       INTEGER NOT NULL
+        );`);
+      return 0;
+    },
+  },
+  // The coordinated foundation columns the deep completion flagged: anomalies'
+  // subject_id (the pseudonymised insert's twin for incidents) and the two
+  // upload_decisions precedence-ladder inputs. addColumn is idempotent, so a
+  // fresh store and an old one converge on the same shape.
+  {
+    version: 27,
+    name: 'pseudonymised-anomaly-subject',
+    kind: 'ddl',
+    apply: (db) =>
+      addColumn(db, 'anomalies', 'subject_id', 'TEXT') +
+      addColumn(db, 'upload_decisions', 'in_requirement_pin', 'INTEGER') +
+      addColumn(db, 'upload_decisions', 'telemetry_source', 'TEXT'),
+  },
+  {
+    version: 28,
+    name: 'drop-dead-export-seq',
+    kind: 'ddl',
+    // export_seq (migration 19) was the tier-7 spec's change-cursor sketch.
+    // The durable outbox (export_outbox, cursor = MAX(seq)) shipped as the
+    // working mechanism instead, because a rowid high-water mark can never
+    // re-send a row the usage upsert rewrote in place (streaming placeholders
+    // would stay zero forever — see export/outbox.ts). export_seq never gained
+    // a writer — 0 rows on every real store — so it is dropped: the honest
+    // move for a dead table, rather than keeping a cursor that lies.
+    apply: (db) => {
+      db.exec('DROP TABLE IF EXISTS export_seq');
+      return 0;
+    },
+  },
+  {
+    version: 29,
+    name: 'estimated-tier-estimation-method',
+    kind: 'ddl',
+    // The `estimated` confidence tier. The column is what makes the tier honest:
+    // an estimate names the deterministic method that produced it, so verify can
+    // re-run that method against the stored inputs and fail on a mismatch. Without
+    // it an "estimate" is just an unfalsifiable number with a badge.
+    // Existing rows keep NULL, which is correct — every row written before this
+    // migration is `exact` or `activity_only`, and neither carries a method.
+    apply: (db) => addColumn(db, 'usage_events', 'estimation_method', 'TEXT'),
+  },
+  {
+    version: 30,
+    name: 'retire-cursor-attribution-rows',
+    kind: 'backfill',
+    // Migration 29's sibling change moved Cursor onto the editor state store, where
+    // the real token counts live. The old collector read the code-hash attribution
+    // DB, which has no token columns, and wrote one activity_only row per requestId.
+    // Those rows survive the switch: they use a different event_key shape, so nothing
+    // dedups them against the new ones, and they keep counting as Cursor calls from a
+    // source this code no longer reads — 8 phantom calls on the development store.
+    //
+    // Scoped by raw_ref, not by tool: only the retired collector ever wrote that
+    // path, so a Cursor row from any other build is left alone. The rows are derived
+    // data and carry no tokens, so nothing measured is lost.
+    apply: (db) =>
+      db
+        .prepare(
+          "DELETE FROM usage_events WHERE tool = 'cursor' AND confidence = 'activity_only'" +
+            " AND raw_ref LIKE '%ai-code-tracking.db#request:%'",
+        )
+        .run().changes,
+  },
+  {
+    version: 31,
+    name: 'session-yield',
+    kind: 'ddl',
+    // Yield tracking: did a session's spend produce a commit? Stored rather than
+    // derived on read because answering it costs a git process per repository, and a
+    // settled verdict describes a window that has closed and cannot change.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS session_yield (
+          session_id   TEXT    NOT NULL,
+          tool         TEXT    NOT NULL,
+          repo_root    TEXT,
+          status       TEXT    NOT NULL,
+          commits      INTEGER NOT NULL DEFAULT 0,
+          window_start INTEGER,
+          window_end   INTEGER,
+          computed_at  INTEGER NOT NULL,
+          PRIMARY KEY (session_id, tool)
+        );
+        CREATE INDEX IF NOT EXISTS idx_yield_status ON session_yield(status);`);
+      return 1;
+    },
+  },
+  {
+    version: 32,
+    name: 'optimize-findings',
+    kind: 'ddl',
+    // `vole optimize`: findings, the apply journal, and the verification result.
+    // Everything the command changes on a machine is written here before it is done
+    // and kept after it is undone, so a fix is always reversible and accountable.
+    apply: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS optimize_findings (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          finding_key     TEXT    NOT NULL UNIQUE,
+          kind            TEXT    NOT NULL,
+          title           TEXT    NOT NULL,
+          detail          TEXT    NOT NULL,
+          fix             TEXT,
+          mechanical      INTEGER NOT NULL DEFAULT 0,
+          predicted_usd   REAL,
+          baseline_usd    REAL,
+          detected_at     INTEGER NOT NULL,
+          applied_at      INTEGER,
+          applied_payload TEXT,
+          verify_after    INTEGER,
+          verified_at     INTEGER,
+          outcome         TEXT,
+          realised_usd    REAL,
+          reverted_at     INTEGER,
+          revert_reason   TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_findings_pending
+          ON optimize_findings(applied_at, verified_at);`);
+      return 1;
+    },
+  },
+]
+;
+
+const SCAN_STATE_DDL = `
+CREATE TABLE IF NOT EXISTS scan_state (
+  scanner          TEXT PRIMARY KEY,
+  cadence_ms       INTEGER NOT NULL,
+  last_started_at  INTEGER,
+  last_duration_ms INTEGER,
+  ok               INTEGER,
+  notes            TEXT
+)`;
+
+const COLLECTOR_RUNS_DDL = `
+CREATE TABLE IF NOT EXISTS collector_runs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  tool        TEXT    NOT NULL,
+  started_at  INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  files       INTEGER NOT NULL,
+  parsed      INTEGER NOT NULL,
+  inserted    INTEGER NOT NULL,
+  source_state TEXT   NOT NULL DEFAULT 'ok',
+  ok          INTEGER NOT NULL DEFAULT 1,
+  notes       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cr_tool_started ON collector_runs(tool, started_at);`;
+
+export interface SchemaMigrationsRow {
+  version: number;
+  name: string;
+  kind: string;
+  applied_at: number | null;
+  duration_ms: number | null;
+  rows_changed: number | null;
+}
+
+/** Highest known migration version. Derived from the max, never from array order. */
+export const LATEST_MIGRATION = MIGRATIONS.reduce((n, m) => Math.max(n, m.version), 0);
+
+function migrate(db: DB, fresh: boolean): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      version     INTEGER PRIMARY KEY,
+      name        TEXT    NOT NULL,
+      kind        TEXT    NOT NULL,
+      applied_at  INTEGER,
+      duration_ms INTEGER,
+      rows_changed INTEGER
+    )`);
+
+  const record = db.prepare(
+    'INSERT INTO schema_migrations (version, name, kind, applied_at, duration_ms, rows_changed) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+  // One BEGIN IMMEDIATE for the whole batch: migrations are store-shape changes,
+  // and a second writer must never observe a half-applied list.
+  //
+  // The version is read INSIDE this transaction, and that placement is the whole
+  // point. Reading it outside made read-decide-act non-atomic: two collectors
+  // opening a fresh store both saw version 0 and both built the same pending list,
+  // so the one that lost the race re-applied migration 1 after the winner had
+  // already committed it and crashed on
+  // `UNIQUE constraint failed: schema_migrations.version` — uncaught, out of
+  // openDb, killing the collector before its first poll. Taking the write lock
+  // first means the loser re-reads the version the winner just stamped and finds
+  // nothing pending.
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const version = (
+      db.prepare('PRAGMA user_version').get() as { user_version: number }
+    ).user_version;
+
+    // A store that predates the ledger cannot say when its early steps ran. The
+    // synthetic row states exactly that: applied_at NULL is 'unknown, before the
+    // ledger', never a date. A store created by this code knows its history and
+    // gets no such row.
+    if (version === 0 && !fresh) {
+      db.prepare(
+        "INSERT OR IGNORE INTO schema_migrations (version, name, kind, applied_at) VALUES (0, 'pre-ledger', 'ddl', NULL)",
+      ).run();
+    }
+
+    const pending = MIGRATIONS.filter((m) => m.version > version);
+    if (pending.length === 0) {
+      db.exec('COMMIT');
+      return;
+    }
+
+    for (const m of pending) {
+      const started = Date.now();
+      const rows = m.apply(db);
+      record.run(m.version, m.name, m.kind, Date.now(), Date.now() - started, rows);
+    }
+    db.exec(`PRAGMA user_version = ${LATEST_MIGRATION}`);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+/** Blocks the calling thread. Used only while racing another opener, in ~25ms slices. */
+function sleepMs(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Switches the store to WAL, tolerating a concurrent opener.
+ *
+ * `PRAGMA journal_mode = WAL` needs a brief exclusive lock and — unlike ordinary
+ * statements — does NOT run SQLite's busy handler, so the `busy_timeout` set just
+ * above does not cover it. Two collectors opening a fresh store therefore race,
+ * and the loser threw straight out of openDb: that call sits outside the guard
+ * around the first pass, so the process exited before polling ever began and the
+ * monitor was silently down — the exact failure that guard exists to prevent.
+ *
+ * WAL is a persistent property of the file, so the loser only has to wait for
+ * whoever is mid-switch. Retry in short slices, and treat a store that is already
+ * in WAL as done — including when the winner set it while we were waiting.
+ */
+export function enableWal(db: DB): void {
+  const deadline = Date.now() + 5000;
+  for (;;) {
+    try {
+      db.pragma('journal_mode = WAL');
+      return;
+    } catch (err) {
+      const busy = /locked|busy/i.test((err as Error).message);
+      if (!busy) throw err;
+      // Someone else may have completed the switch; that is success, not failure.
+      let mode: string | undefined;
+      try {
+        mode = (db.prepare('PRAGMA journal_mode').get() as { journal_mode?: string } | undefined)
+          ?.journal_mode;
+      } catch {
+        /* the read can lose the same race — fall through and retry */
+      }
+      if (mode?.toLowerCase() === 'wal') return;
+      if (Date.now() >= deadline) throw err;
+      sleepMs(25);
+    }
+  }
+}
+
+export function openDb(file: string = paths.db()): DB {
+  if (cached) return cached;
+  const fresh = !existsSync(file);
+  mkdirSync(dirname(file), { recursive: true });
+  const db = new Database(file);
+  // Two writers are an explicitly tolerated configuration (the app spawns the
+  // embedded collector next to a possibly running `pnpm collect`), and SQLite's
+  // default busy_timeout is 0 — any lock overlap would abort the whole pass or the
+  // reader's first query with SQLITE_BUSY, which surfaces as missing data with no
+  // error a user can see. Wait for the lock instead; every write here is a short
+  // transaction, so 5s is generous.
+  db.pragma('busy_timeout = 5000');
+  enableWal(db);
+  db.pragma('synchronous = NORMAL');
+  db.exec(SCHEMA);
+  migrate(db, fresh);
+  // Version gate: a store written by a NEWER Vole has a user_version this binary
+  // cannot understand. Writing to it would land NULL in every column this schema
+  // does not know — indistinguishable downstream from "the source did not carry
+  // this field" — so an older writer refuses loudly instead of being silently wrong.
+  const storeVersion = (
+    db.prepare('PRAGMA user_version').get() as { user_version: number }
+  ).user_version;
+  const known = LATEST_MIGRATION;
+  if (storeVersion > known) {
+    cached = null;
+    try {
+      db.close();
+    } catch {
+      /* already closed */
+    }
+    throw new Error(
+      `This Vole knows schema ${known} but the store at ${file} was written by schema ${storeVersion} ` +
+        '(a newer Vole). Refusing to write it — update Vole, or point VOLE_DB at a store this version owns.',
+    );
+  }
+  cached = db;
+  return db;
+}
+
+/** Test helper: drop the module-level cache so a new path can be opened. */
+export function resetDbCache(): void {
+  cached?.close();
+  cached = null;
+}
+
+/**
+ * Read-only open for reader CLIs (top, pr, digest, statusline, mcp, verify).
+ *
+ * A reader must never create or migrate the store it is only supposed to report on:
+ * `openDb()`'s mkdir + CREATE TABLE turned "ran the reader before the first collect"
+ * into a silently-empty database — the exact failure verify was written to catch. A
+ * missing store is an error with the command that fixes it, not a fresh empty file.
+ *
+ * No busy_timeout here: read-only WAL readers don't take write locks.
+ */
+export function openDbReadOnly(file: string = paths.db()): DB {
+  if (!existsSync(file)) {
+    console.error(
+      `No Vole store at ${file} yet — a reader never creates one.\n` +
+        `Run the collector first: pnpm collect --once`,
+    );
+    process.exit(1);
+  }
+  return new Database(file, { readonly: true, fileMustExist: true });
+}
+
+const INSERT_EVENT = `
+INSERT INTO usage_events (
+  event_key, tool, model, session_id, project, git_branch, ts,
+  input_tokens, output_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
+  cache_read_tokens, reasoning_tokens, total_tokens, cost_usd,
+  confidence, estimation_method, is_error, stop_reason, source, raw_ref, user, machine,
+  tools, agent_id, context_window, duration_ms, duration_kind
+) VALUES (
+  @event_key, @tool, @model, @session_id, @project, @git_branch, @ts,
+  @input_tokens, @output_tokens, @cache_write_5m_tokens, @cache_write_1h_tokens,
+  @cache_read_tokens, @reasoning_tokens, @total_tokens, @cost_usd,
+  @confidence, @estimation_method, @is_error, @stop_reason, @source, @raw_ref, @user, @machine,
+  @tools, @agent_id, @context_window, @duration_ms, @duration_kind
+)
+ON CONFLICT(event_key) DO UPDATE SET
+  input_tokens          = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.input_tokens          ELSE usage_events.input_tokens END,
+  output_tokens         = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.output_tokens         ELSE usage_events.output_tokens END,
+  cache_write_5m_tokens = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.cache_write_5m_tokens ELSE usage_events.cache_write_5m_tokens END,
+  cache_write_1h_tokens = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.cache_write_1h_tokens ELSE usage_events.cache_write_1h_tokens END,
+  cache_read_tokens     = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.cache_read_tokens     ELSE usage_events.cache_read_tokens END,
+  reasoning_tokens      = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.reasoning_tokens      ELSE usage_events.reasoning_tokens END,
+  total_tokens          = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.total_tokens          ELSE usage_events.total_tokens END,
+  cost_usd              = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.cost_usd              ELSE usage_events.cost_usd END,
+  estimation_method     = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.estimation_method     ELSE usage_events.estimation_method END,
+  is_error              = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.is_error              ELSE usage_events.is_error END,
+  stop_reason           = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.stop_reason           ELSE usage_events.stop_reason END,
+  context_window        = CASE WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.context_window        ELSE usage_events.context_window END,
+  ts                    = CASE
+                           WHEN excluded.total_tokens IS NULL AND excluded.ts > usage_events.ts THEN excluded.ts
+                           WHEN excluded.total_tokens > usage_events.total_tokens THEN excluded.ts
+                           ELSE usage_events.ts
+                         END,
+  -- Tool names are only ever widened. The growth branch used to take excluded.tools
+  -- outright, so a later pass that happened to see fewer of the sibling content-block
+  -- copies overwrote a fuller stored list (or nulled it). Keep whichever names more
+  -- tools, and never replace a stored list with NULL.
+  tools                 = CASE
+                           WHEN excluded.tools IS NULL THEN usage_events.tools
+                           WHEN usage_events.tools IS NULL THEN excluded.tools
+                           WHEN (length(excluded.tools) - length(replace(excluded.tools, ',', '')))
+                              > (length(usage_events.tools) - length(replace(usage_events.tools, ',', '')))
+                             THEN excluded.tools
+                           ELSE usage_events.tools
+                         END,
+  -- A duration is only ever gained, never lost. The growth branch used to take
+  -- excluded.duration_ms outright, so a later, larger streaming copy that carried
+  -- no duration ERASED an already-measured span (verified: 999 -> NULL). Kind moves
+  -- in lockstep with the value it describes, so the two can never disagree.
+  duration_ms           = CASE
+                           WHEN excluded.total_tokens > usage_events.total_tokens
+                             THEN COALESCE(excluded.duration_ms, usage_events.duration_ms)
+                           WHEN usage_events.duration_ms IS NULL THEN excluded.duration_ms
+                           ELSE usage_events.duration_ms
+                         END,
+  duration_kind         = CASE
+                           WHEN excluded.total_tokens > usage_events.total_tokens
+                             THEN CASE WHEN excluded.duration_ms IS NOT NULL
+                                       THEN excluded.duration_kind
+                                       ELSE usage_events.duration_kind END
+                           WHEN usage_events.duration_ms IS NULL AND excluded.duration_ms IS NOT NULL
+                             THEN excluded.duration_kind
+                           ELSE usage_events.duration_kind
+                         END
+WHERE excluded.total_tokens > usage_events.total_tokens
+   OR (excluded.total_tokens IS NULL AND excluded.ts > usage_events.ts)
+   OR (usage_events.tools IS NULL AND excluded.tools IS NOT NULL)
+   OR (excluded.tools IS NOT NULL AND excluded.tools IS NOT usage_events.tools)
+   OR (usage_events.duration_ms IS NULL AND excluded.duration_ms IS NOT NULL)`;
+
+/**
+ * Idempotent by construction: `event_key` is UNIQUE. Re-scanning a file can never
+ * double-count.
+ *
+ * The upsert exists for one case: Claude Code writes each assistant message to the
+ * transcript several times as it streams, and the first copy is a placeholder with
+ * `output_tokens: 0`. Incremental reads see the placeholder first, so `INSERT OR
+ * IGNORE` would freeze the row at zero output. The `DO UPDATE` clause upgrades a
+ * stored row only when a later copy carries strictly more tokens — never downgrades,
+ * so re-reading identical data is still a no-op.
+ *
+ * The one deliberate exception is `tools`: Claude Code writes one line per content
+ * block under the same message.id with identical usage, so the tool names sit on
+ * sibling copies whose totals are equal and the token guard can never reach them.
+ * `tools` therefore widens independently: a copy carrying names may heal a stored
+ * NULL even at equal tokens, and every other column keeps its stored value on that
+ * path (the CASE guards), so nothing can regress. A stored non-NULL is never
+ * overwritten by an equal-token copy.
+ *
+ * A row with an unparseable timestamp (`ts` NaN) is dropped rather than inserted: the
+ * NOT NULL constraint would otherwise abort the whole transaction and lose every other
+ * row from the same pass.
+ *
+ * @returns number of rows inserted or upgraded
+ */
+export function insertEvents(db: DB, events: UsageEvent[]): number {
+  if (events.length === 0) return 0;
+  mergeStoredToolNames(db, events);
+  const stmt = db.prepare(INSERT_EVENT);
+  const run = db.transaction((rows: UsageEvent[]) => {
+    let changed = 0;
+    for (const r of rows) {
+      if (!Number.isFinite(r.ts)) continue;
+      changed += stmt.run({ estimation_method: null, ...r, ...ORIGIN }).changes;
+    }
+    return changed;
+  });
+  return run(events);
+}
+
+/**
+ * Unions each event's `tools` with the already-stored list for the same key.
+ * The upsert's CASE picks the wider of the two lists, but a later pass carrying a
+ * DIFFERENT tool (not in the stored list) would lose it — the two lists have equal
+ * counts and the stored one wins. Merging here before the insert means every tool
+ * name ever seen survives across polling passes.
+ */
+function mergeStoredToolNames(db: DB, events: UsageEvent[]): void {
+  const keys = events.filter((e) => e.tools !== null).map((e) => e.event_key);
+  if (keys.length === 0) return;
+  // SQLite caps a statement at 32766 bind variables and this IN (...) builds one hole
+  // per key, so an unchunked query throws "too many SQL variables" on a first scan of
+  // a busy machine — the live store here holds 41806 rows. Same 400-key chunking the
+  // OpenCode collector already uses for exactly this reason.
+  const storedMap = new Map<string, string | null>();
+  for (let i = 0; i < keys.length; i += 400) {
+    const chunk = keys.slice(i, i + 400);
+    const rows = db
+      .prepare(`SELECT event_key, tools FROM usage_events WHERE event_key IN (${chunk.map(() => '?').join(',')})`)
+      .all(...chunk) as { event_key: string; tools: string | null }[];
+    for (const r of rows) storedMap.set(r.event_key, r.tools);
+  }
+  for (const e of events) {
+    if (e.tools === null) continue;
+    const prev = storedMap.get(e.event_key);
+    if (!prev) continue;
+    const seen = new Set<string>();
+    const union: string[] = [];
+    for (const t of [...prev.split(','), ...e.tools.split(',')]) {
+      if (!seen.has(t)) { seen.add(t); union.push(t); }
+    }
+    e.tools = union.join(',');
+  }
+}
+
+const INSERT_ANOMALY = `
+INSERT INTO anomalies (
+  anomaly_key, rule, severity, tool, session_id, model,
+  window_start, window_end, title, detail,
+  observed, baseline, threshold, confidence, source, detected_at,
+  user, machine
+) VALUES (
+  @anomaly_key, @rule, @severity, @tool, @session_id, @model,
+  @window_start, @window_end, @title, @detail,
+  @observed, @baseline, @threshold, @confidence, @source, @detected_at,
+  @user, @machine
+)`;
+
+const SEV_RANK: Record<string, number> = { info: 0, warn: 1, critical: 2 };
+
+export interface AnomalyWriteResult {
+  /** Rows that did not exist before this call. */
+  inserted: Anomaly[];
+  /** Rows whose severity ROSE (warn → critical) — the escalation channel. */
+  escalated: Anomaly[];
+}
+
+/**
+ * Idempotent by `anomaly_key`, but not frozen: a window first seen at 3.1x (warn)
+ * while still open under 5-second polling used to stay warn forever even when it
+ * ended at 8x, because INSERT OR IGNORE kept the first sight. Now a stored row is
+ * upgraded when the new copy carries a strictly larger `observed` or a higher
+ * severity rank — never downgraded — and `detected_at` advances with the upgrade
+ * so downstream watermarks (the app's notification gate) see the change.
+ *
+ * The two outcomes the caller must treat differently come back separately:
+ * `inserted` always notifies; `escalated` is the severity-transition channel and
+ * is the only update path that re-notifies, so a growing window does not page
+ * anyone twice. Rows that changed nothing are not rewritten at all.
+ */
+export function insertAnomalies(db: DB, rows: Anomaly[]): AnomalyWriteResult {
+  const result: AnomalyWriteResult = { inserted: [], escalated: [] };
+  if (rows.length === 0) return result;
+  const insert = db.prepare(INSERT_ANOMALY);
+  const existing = db.prepare('SELECT severity, observed FROM anomalies WHERE anomaly_key = ?');
+  const update = db.prepare(`
+    UPDATE anomalies SET
+      severity   = CASE WHEN :sevRank > CASE severity WHEN 'critical' THEN 2 WHEN 'warn' THEN 1 ELSE 0 END
+                        THEN :severity ELSE severity END,
+      observed   = MAX(observed, :observed),
+      baseline   = :baseline,
+      threshold  = :threshold,
+      detail     = :detail,
+      window_end = :window_end,
+      detected_at = :detected_at
+    WHERE anomaly_key = :anomaly_key
+      AND (:observed > observed
+           OR :sevRank > CASE severity WHEN 'critical' THEN 2 WHEN 'warn' THEN 1 ELSE 0 END)`);
+  const run = db.transaction((rs: Anomaly[]) => {
+    for (const r of rs) {
+      const prev = existing.get(r.anomaly_key) as { severity: string; observed: number } | undefined;
+      if (!prev) {
+        if (insert.run({ ...r, ...ORIGIN }).changes > 0) result.inserted.push(r);
+        continue;
+      }
+      const escalates = (SEV_RANK[r.severity] ?? 0) > (SEV_RANK[prev.severity] ?? 0);
+      const grows = r.observed > prev.observed;
+      if (!escalates && !grows) continue; // identical re-detection: no rewrite, no notify
+      update.run({
+        anomaly_key: r.anomaly_key, severity: r.severity, observed: r.observed,
+        baseline: r.baseline, threshold: r.threshold, detail: r.detail,
+        window_end: r.window_end, detected_at: r.detected_at,
+        sevRank: SEV_RANK[r.severity] ?? 0,
+      });
+      if (escalates) result.escalated.push(r);
+    }
+  });
+  run(rows);
+  return result;
+}
+
+export interface CollectorState {
+  source_path: string;
+  tool: Tool;
+  last_offset: number;
+  last_mtime: number | null;
+  last_scanned_at: number | null;
+}
+
+export interface CollectorRunRow {
+  tool: string;
+  started_at: number;
+  duration_ms: number;
+  files: number;
+  parsed: number;
+  inserted: number;
+  source_state: string;
+  ok: number;
+  notes: string | null;
+}
+
+/**
+ * The per-collector heartbeat: one row per collector per pass, written even when a
+ * pass found nothing. `collector_state.last_scanned_at` is per-file and only Claude
+ * Code writes it, so without this table a Codex- or OpenCode-only Mac is invisible
+ * to every liveness check.
+ */
+/** How many runs to keep per collector. Every reader — latestCollectorRuns here and
+ *  collectorHeartbeats in the Swift app — reads only the NEWEST row per tool, so this
+ *  is pure debugging history. Unbounded, it was the largest table in the store: one
+ *  row per tool per pass at a 5s cadence is ~132k rows/day, and the heartbeat query
+ *  scans it on every poll, so the app got measurably slower the longer it ran. */
+const COLLECTOR_RUN_KEEP = 200;
+
+export function recordCollectorRun(db: DB, r: CollectorRunRow): void {
+  db.prepare(
+    `INSERT INTO collector_runs
+       (tool, started_at, duration_ms, files, parsed, inserted, source_state, ok, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(r.tool, r.started_at, r.duration_ms, r.files, r.parsed, r.inserted, r.source_state, r.ok, r.notes);
+  // Trim this tool's tail. Both the subquery and the delete ride the
+  // (tool, started_at) index, and in the steady state this removes one row.
+  db.prepare(
+    `DELETE FROM collector_runs
+      WHERE tool = ?
+        AND started_at < (SELECT MIN(started_at) FROM
+              (SELECT started_at FROM collector_runs WHERE tool = ?
+                ORDER BY started_at DESC LIMIT ?))`,
+  ).run(r.tool, r.tool, COLLECTOR_RUN_KEEP);
+}
+
+/**
+ * Drop rows belonging to collectors that no longer exist. The per-tool trim above
+ * can only reach a tool that still runs, so a retired collector's rows would sit
+ * there forever — a store carried 9,829 rows each for nine tools this build no
+ * longer ships, and the heartbeat query scanned every one of them on every poll.
+ * Called once per pass with the live registry.
+ */
+export function pruneRetiredCollectorRuns(db: DB, knownTools: string[]): number {
+  if (!knownTools.length) return 0; // never wipe the table on an empty registry
+  const holes = knownTools.map(() => '?').join(',');
+  const r = db.prepare(`DELETE FROM collector_runs WHERE tool NOT IN (${holes})`).run(...knownTools);
+  return Number(r.changes ?? 0);
+}
+
+/**
+ * Bounded notes: the content boundary's shape rule (verify --content) is that no
+ * free-text value exceeds 512 chars or carries a newline. Anything longer is
+ * truncated with the full value's digest appended — deterministic, so a caller
+ * comparing two epochs through this function still sees every change (the
+ * detection-rules rule-set epoch relies on exactly that).
+ */
+export function boundNote(notes: string | null): string | null {
+  if (notes === null) return null;
+  if (notes.length <= 512 && !notes.includes('\n')) return notes;
+  const digest = createHash('sha256').update(notes).digest('hex').slice(0, 12);
+  return `${notes.replace(/\n/g, ' ').slice(0, 470)} …[truncated sha256:${digest}]`;
+}
+
+export function recordScan(
+  db: DB,
+  scanner: string,
+  cadenceMs: number,
+  startedAt: number,
+  durationMs: number,
+  ok: boolean,
+  notes: string | null,
+): void {
+  db.prepare(
+    `INSERT INTO scan_state (scanner, cadence_ms, last_started_at, last_duration_ms, ok, notes)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(scanner) DO UPDATE SET
+       cadence_ms = excluded.cadence_ms,
+       last_started_at = excluded.last_started_at,
+       last_duration_ms = excluded.last_duration_ms,
+       ok = excluded.ok,
+       notes = excluded.notes`,
+  ).run(scanner, cadenceMs, startedAt, durationMs, ok ? 1 : 0, boundNote(notes));
+}
+
+// ── The triage inbox ─────────────────────────────────────────────────────────
+//
+// The app never writes the store (read-only by contract), but triage IS a write:
+// acknowledge, mute, escalate. Those writes go to ~/.vole/inbox/*.json and the
+// collector drains them into finding_actions on its next pass — the same
+// single-writer discipline every other write follows.
+
+export interface InboxItem {
+  anomaly_key: string;
+  action: 'acknowledged' | 'muted' | 'escalated' | 'reopened';
+  note?: string | null;
+  /** Mutes must expire: epoch-ms after which the mute no longer applies. */
+  until?: number | null;
+  actor?: string;
+  created_at: number;
+}
+
+export function inboxDir(): string {
+  return join(dirname(paths.db()), 'inbox');
+}
+
+/** Applies every spooled item, then removes the file it came from. */
+export function drainInbox(db: DB): number {
+  let dir: string[];
+  try {
+    dir = readdirSync(inboxDir());
+  } catch {
+    return 0; // no inbox yet — nothing triaged
+  }
+  const insert = db.prepare(
+    'INSERT INTO finding_actions (anomaly_key, action, note, until, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+  let applied = 0;
+  for (const f of dir.sort()) {
+    if (!f.endsWith('.json')) continue;
+    const p = join(inboxDir(), f);
+    try {
+      const item = JSON.parse(readFileSync(p, 'utf8')) as InboxItem;
+      if (item.anomaly_key && item.action) {
+        insert.run(item.anomaly_key, item.action, item.note ?? null, item.until ?? null, item.actor ?? 'app', item.created_at ?? Date.now());
+        applied++;
+      }
+      rmSync(p);
+    } catch {
+      /* unreadable or malformed: leave it for a human, do not lose the intent */
+    }
+  }
+  return applied;
+}
+
+export function getState(db: DB, sourcePath: string): CollectorState | undefined {
+  return db
+    .prepare('SELECT * FROM collector_state WHERE source_path = ?')
+    .get(sourcePath) as CollectorState | undefined;
+}
+
+export function setState(
+  db: DB,
+  sourcePath: string,
+  tool: Tool,
+  lastOffset: number,
+  lastMtime: number,
+): void {
+  db.prepare(
+    `INSERT INTO collector_state (source_path, tool, last_offset, last_mtime, last_scanned_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(source_path) DO UPDATE SET
+       last_offset = excluded.last_offset,
+       last_mtime = excluded.last_mtime,
+       last_scanned_at = excluded.last_scanned_at`,
+  ).run(sourcePath, tool, lastOffset, lastMtime, Date.now());
+}
+
+/**
+ * Prices rows that were stored before a rate existed for their model — a new model in
+ * the built-in table, or one the user added to ~/.vole/pricing.json. The upsert only
+ * rewrites a row when its tokens grow, so without this pass a rate change would apply
+ * to future rows only. Codex rows are priced only when the breakdown covers the meter,
+ * the same rule its collector applies; OpenCode carries its own figure and is skipped.
+ *
+ * @returns number of rows that gained a cost
+ */
+export function repriceUnpriced(db: DB): number {
+  const rows = db
+    .prepare(
+      `SELECT id, tool, model, input_tokens, output_tokens, cache_write_5m_tokens,
+              cache_write_1h_tokens, cache_read_tokens, total_tokens
+       FROM usage_events
+       WHERE cost_usd IS NULL AND confidence = 'exact' AND model IS NOT NULL
+         AND input_tokens IS NOT NULL AND tool != 'opencode'`,
+    )
+    .all() as (Pick<UsageEvent, 'tool' | 'model' | 'input_tokens' | 'output_tokens' |
+      'cache_write_5m_tokens' | 'cache_write_1h_tokens' | 'cache_read_tokens' | 'total_tokens'> & { id: number })[];
+  const update = db.prepare('UPDATE usage_events SET cost_usd = ? WHERE id = ?');
+  return db.transaction(() => {
+    let n = 0;
+    for (const r of rows) {
+      if (r.tool === 'codex') {
+        const attributed = (r.input_tokens ?? 0) + (r.cache_read_tokens ?? 0) + (r.output_tokens ?? 0);
+        if (attributed !== r.total_tokens) continue;
+      }
+      const cost = computeCost(r.model, r);
+      if (cost === null) continue;
+      update.run(cost, r.id);
+      n++;
+    }
+    return n;
+  })();
+}
+
+/**
+ * Drops anomalies whose rule is no longer in the registry.
+ *
+ * The rule epoch already forces a re-detect when the registry changes, so a NEW
+ * rule sees historical rows. The mirror case was missing: a rule that is RETIRED
+ * leaves its findings behind forever, and nothing filters them at read time, so
+ * the incident feed keeps showing verdicts the current code would never reach.
+ * That is not merely stale — a retired rule is usually retired because it was
+ * wrong, so its rows are exactly the ones a user should stop seeing.
+ *
+ * Runs only on an epoch change, so the steady-state poll is untouched.
+ */
+export function purgeRetiredRules(db: DB, ruleIds: readonly string[]): number {
+  if (ruleIds.length === 0) return 0; // never interpret "no rules" as "delete everything"
+  const holes = ruleIds.map(() => '?').join(',');
+  return db.prepare(`DELETE FROM anomalies WHERE rule NOT IN (${holes})`).run(...ruleIds).changes;
+}
+
+/** Removes all demo rows. Live collected data is never touched. */
+export function purgeSeed(db: DB): { events: number; anomalies: number } {
+  const events = db.prepare("DELETE FROM usage_events WHERE source = 'seed'").run().changes;
+  const anomalies = db.prepare("DELETE FROM anomalies WHERE source = 'seed'").run().changes;
+  return { events, anomalies };
+}

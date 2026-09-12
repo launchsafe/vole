@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/launchsafe/vole/security/advisories/new
+    about: Report privately, not in a public issue. See SECURITY.md.
+  - name: Add support for another agent
+    url: https://github.com/launchsafe/vole/blob/main/docs/EXTENDING.md
+    about: EXTENDING.md walks through adding a collector end to end.

@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest something Vole should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to find out that Vole cannot tell you today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: data
+    attributes:
+      label: Where would the data come from
+      description: >
+        Vole only reports what a tool actually writes to disk — it never estimates a
+        number it cannot read. If you know the artifact that would back this, say so;
+        if you are not sure, say that instead.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered

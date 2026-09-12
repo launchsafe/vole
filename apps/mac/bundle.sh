@@ -1,0 +1,158 @@
+#!/bin/bash
+# Assemble Vole.app from a release build.
+#
+#   ./bundle.sh                 → build/Vole.app, ad-hoc signed (local use only)
+#   ./bundle.sh --open          → also `open` it
+#   ./bundle.sh --release       → Developer ID signed, notarised, stapled, + a .dmg
+#   VERSION=0.2.0 ./bundle.sh   → stamp a version
+#
+# --release needs two things set up once, both requiring an Apple ID in a browser:
+#
+#   1. A "Developer ID Application" certificate in the login keychain.
+#      Xcode → Settings → Accounts → Manage Certificates → + → Developer ID Application.
+#      Check it landed:  security find-identity -v -p codesigning
+#
+#   2. A stored notarytool credential, so no secret lives in this repo:
+#      Create an app-specific password at https://appleid.apple.com (Sign-In and Security),
+#      then run:
+#        xcrun notarytool store-credentials vole-notary \
+#          --apple-id "<your-apple-id>" --team-id "<TEAMID>" --password "<app-specific-password>"
+set -euo pipefail
+cd "$(dirname "$0")"
+
+APP="build/Vole.app"
+# Version defaults to the repo's own package.json — the app must never
+# misreport an older version than the code actually is.
+VERSION="${VERSION:-$(python3 -c 'import json;print(json.load(open("../../package.json"))["version"])')}"
+DMG="build/Vole-$VERSION.dmg"
+NOTARY_PROFILE="${NOTARY_PROFILE:-vole-notary}"
+RELEASE=false
+OPEN=false
+REGEN_ICON=false
+for a in "$@"; do
+  case "$a" in
+    --release)    RELEASE=true ;;
+    --open)       OPEN=true ;;
+    --regen-icon) REGEN_ICON=true ;;
+    *) echo "unknown flag: $a" >&2; exit 2 ;;
+  esac
+done
+
+# 1. icon — prebuilt and committed. Regeneration is explicit (--regen-icon), never
+#    automatic, so a fresh clone (or CI, or a release pipeline) bundles the committed
+#    artwork. Icon/build.mjs is the retired cube design and would silently swap the
+#    mark out; Icon/from-export.swift renders the shipped one from the Icon Composer
+#    export in Icon/exports/, placing it on Apple's 824/1024 macOS grid.
+if [ "$REGEN_ICON" = true ]; then
+  mkdir -p build && rm -rf build/Vole.iconset
+  swift Icon/from-export.swift Icon/exports/vole-iOS-Default-1024x1024@1x.png build/Vole.iconset
+  iconutil -c icns build/Vole.iconset -o Icon/Vole.icns
+  cp build/Vole.iconset/icon_512x512@2x.png Icon/AppIcon.appiconset/icon_512x512@2x.png
+  cp build/Vole.iconset/icon_512x512@2x.png Sources/Vole/Resources/AppIcon.png
+  rm -rf build/Vole.iconset
+fi
+if [ ! -f Icon/Vole.icns ]; then
+  echo "Icon/Vole.icns is missing. It is committed prebuilt — restore it with" >&2
+  echo "  git checkout -- apps/mac/Icon/Vole.icns" >&2
+  echo "or regenerate deliberately: ./bundle.sh --regen-icon" >&2
+  exit 1
+fi
+
+# 2. release binary
+swift build -c release
+BIN="$(swift build -c release --show-bin-path)/Vole"
+
+# 2b. the collector, as one self-contained executable (no Node install required to run
+#     it) — see packages/core/scripts/build-sea.mjs. This is what lets the app run
+#     without the user starting `pnpm collect` themselves.
+(cd ../../packages/core && pnpm build:sea)
+COLLECTOR="../../packages/core/dist/vole-collector"
+
+# 3. lay out the bundle
+rm -rf "$APP" "$DMG"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cp "$BIN" "$APP/Contents/MacOS/Vole"
+cp "$COLLECTOR" "$APP/Contents/MacOS/vole-collector"
+cp Icon/Vole.icns "$APP/Contents/Resources/AppIcon.icns"
+cp -R "$(dirname "$BIN")/Vole_Vole.bundle" "$APP/Contents/Resources/"   # SwiftPM resources
+# plutil, not sed: sed is silent on a miss, so a template change would ship a bundle
+# still stamped 0.1.0 while the script reported the intended version. CFBundleVersion
+# was never touched at all — every release through 1.0.0 shipped build 1, which Apple
+# requires to increase monotonically and LaunchServices uses to tell bundles apart.
+cp Info.plist "$APP/Contents/Info.plist"
+plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "$(echo "$VERSION" | tr -d '.')" "$APP/Contents/Info.plist"
+[ "$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")" = "$VERSION" ] \
+  || { echo "Info.plist version stamp failed" >&2; exit 1; }
+printf 'APPL????' > "$APP/Contents/PkgInfo"
+
+if [ "$RELEASE" = false ]; then
+  # 4a. ad-hoc sign (deep, so vole-collector — real nested Mach-O — gets covered too;
+  #     Vole_Vole.bundle, the SwiftPM resource bundle, is plain PNGs with no Info.plist,
+  #     so --deep silently treats it as a resource rather than nested code, which is
+  #     correct — it seals in via CodeResources instead).
+  codesign --force --deep --sign - "$APP"
+  echo "built $APP  (v$VERSION, ad-hoc — Gatekeeper will reject this on another Mac)"
+  [ "$OPEN" = true ] && open "$APP"
+  exit 0
+fi
+
+# 4b. Developer ID signing. vole-collector is real executable code — signed before the
+#     outer app, same Hardened Runtime + timestamp, per Apple's nested-code-first rule.
+#     Vole_Vole.bundle (SwiftPM's resource bundle) has no Info.plist and no executable
+#     code, so it can't be signed as nested code and doesn't need to be — signing the
+#     outer app alone seals it in via CodeResources.
+ID="$(security find-identity -v -p codesigning \
+      | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)"
+[ -n "$ID" ] || { echo "no 'Developer ID Application' certificate in the keychain — see the header of this script" >&2; exit 1; }
+echo "signing as: $ID"
+
+# --options runtime (Hardened Runtime) and --timestamp are both required for notarisation.
+# vole-collector additionally needs the JIT entitlements below — Hardened Runtime blocks
+# W^X executable-memory allocation by default, which V8 needs; without them it crashes
+# instantly on launch (FatalProcessOutOfMemory during Isolate::Init). Caught by actually
+# running a --release build, not just letting notarytool accept the signature — Apple's
+# scanner has no opinion on whether the binary can survive its own first line of code.
+codesign --force --timestamp --options runtime --entitlements Collector.entitlements --sign "$ID" "$APP/Contents/MacOS/vole-collector"
+codesign --force --timestamp --options runtime --sign "$ID" "$APP"
+codesign --verify --strict --verbose=2 "$APP"
+
+# 5. notarise the app, then staple the ticket into it, so a first launch works offline.
+ZIP="build/Vole-$VERSION.zip"
+ditto -c -k --keepParent "$APP" "$ZIP"
+xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+xcrun stapler staple "$APP"
+rm -f "$ZIP"
+
+# 5b. the auto-update pair: the zip the in-app updater installs, plus its
+#     published sha256 — no checksum, no silent install, by design.
+# NAME MATTERS: UpdateChecker constructs its download URL as
+#   releases/download/<tag>/Vole-<version>.zip
+# and no longer asks the GitHub API for the asset list, so this filename IS the
+# contract. Emitting Vole.app.zip here and renaming by hand at upload time is how
+# a release ships that every installed app 404s on.
+ZIP_UPD="build/Vole-$VERSION.zip"
+ditto -c -k --keepParent "$APP" "$ZIP_UPD"
+# awk reads stdin here, so FILENAME is empty — the old form wrote "<hash>  " with
+# no name at all. Print the basename explicitly so the published file is well formed.
+shasum -a 256 "$ZIP_UPD" | awk -v n="$(basename "$ZIP_UPD")" '{print $1"  "n}' > "$ZIP_UPD.sha256"
+echo "auto-update pair: $ZIP_UPD + $ZIP_UPD.sha256 — upload BOTH as release assets"
+
+# 6. drag-to-Applications disk image, containing the already-stapled app
+STAGE="build/dmg"
+rm -rf "$STAGE"; mkdir -p "$STAGE"
+cp -R "$APP" "$STAGE/"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -volname "Vole" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+rm -rf "$STAGE"
+
+# 7. the disk image is what users download, so it is signed and notarised too
+codesign --force --timestamp --sign "$ID" "$DMG"
+xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+xcrun stapler staple "$DMG"
+
+echo
+spctl -a -vvv "$APP" || true          # must say: accepted, source=Notarized Developer ID
+echo "built $DMG  (v$VERSION, signed + notarised)"
+[ "$OPEN" = true ] && open build/
+exit 0
